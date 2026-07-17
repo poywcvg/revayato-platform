@@ -1,0 +1,14 @@
+.venv
+.venv-*
+__pycache__
+*.py[cod]
+*.sqlite3
+db.sqlite3*
+.env
+.env.*
+media
+staticfiles
+logs
+*.log
+out.txt
+.git

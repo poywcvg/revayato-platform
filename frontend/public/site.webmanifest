@@ -1,0 +1,19 @@
+{
+  "name": "روایتو",
+  "short_name": "روایتو",
+  "description": "پلتفرم فارسی کشف و تماشای فیلم و سریال",
+  "lang": "fa",
+  "dir": "rtl",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#060607",
+  "theme_color": "#060607",
+  "icons": [
+    {
+      "src": "/favicon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}

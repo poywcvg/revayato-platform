@@ -1,0 +1,59 @@
+# Secrets and local environment overrides
+.env
+.env.*
+!.env.example
+!.env.production.example
+**/.env
+**/.env.*
+!**/.env.example
+!**/.env.production.example
+backend/catalog-media-manifest.json
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+**/.venv/
+.venv*/
+**/.venv*/
+.pytest_cache/
+.mypy_cache/
+backend/db.sqlite3*
+backend/media/
+backend/staticfiles/
+backups/
+**/db.sqlite3*
+**/media/
+**/uploads/
+**/staticfiles/
+*.sqlite3
+*.sqlite3-*
+
+# Nuxt / Node
+node_modules/
+**/node_modules/
+.nuxt/
+**/.nuxt/
+.output/
+**/.output/
+.nitro/
+.cache/
+dist/
+build/
+**/build/
+
+# Local tooling and generated command output
+.claude/
+.agents/
+*.out
+**/out.txt
+.chrome-*/
+**/.chrome-*/
+
+# Logs and editor/OS files
+*.log
+logs/
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
