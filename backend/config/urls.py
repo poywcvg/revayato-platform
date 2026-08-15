@@ -142,6 +142,7 @@ urlpatterns = [
     path('api/admin/provider-import/jobs/<uuid:job_id>/logs/', provider_import_job_logs, name='admin_provider_import_logs'),
     path('api/series/', series_list, name='series_list'),
     path('api/series/<uslug:slug>/', series_detail, name='series_detail'),
+    path('api/series/<uslug:slug>/similar/', series_similar, name='series_similar'),
     path('api/genres/', genre_list, name='genre_list'),
     path('api/home/rails/', home_rails, name='home_rails'),
     path('api/countries/', country_list, name='country_list'),
