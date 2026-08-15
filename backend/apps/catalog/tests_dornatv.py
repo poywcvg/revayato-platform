@@ -3,6 +3,9 @@
 from django.test import SimpleTestCase, TestCase, override_settings
 
 from apps.catalog.provider_import.providers.dornatv_parser import (
+    _decode_player_vtt,
+    _dedupe_download_rows,
+    extract_embedded_subtitle_tracks,
     parse_download_links,
     parse_wp_rest_item,
     split_fa_en_titles,
@@ -153,6 +156,142 @@ class DornatvParserTests(SimpleTestCase):
             'categories': [28, 7],
         })
         self.assertEqual(series['content_type'], 'series')
+
+
+class DornatvOptimizationTests(SimpleTestCase):
+    """New: link de-dup, player ``sub=`` subtitle capture, and page caching."""
+
+    def test_dedupe_repeated_cdn_rows_preserves_distinct_qualities(self):
+        # Same CDN path, same episode, same kind+quality repeated across release
+        # groups must collapse to one row; distinct qualities must both survive.
+        rows = [
+            {'url': 'https://s8.dlyar.top/x/Show.S01E01.1080p.SoftSub.mkv?md5=a&expires=1',
+             'kind': 'softsub', 'quality': '1080p',
+             'season_number': 1, 'episode_number': 1},
+            {'url': 'https://s8.dlyar.top/x/Show.S01E01.1080p.SoftSub.mkv?md5=b&expires=2',
+             'kind': 'softsub', 'quality': '1080p',
+             'season_number': 1, 'episode_number': 1},
+            {'url': 'https://s8.dlyar.top/x/Show.S01E01.720p.SoftSub.mkv?md5=c&expires=3',
+             'kind': 'softsub', 'quality': '720p',
+             'season_number': 1, 'episode_number': 1},
+            # A genuinely different file (dubbed) must be kept.
+            {'url': 'https://s8.dlyar.top/x/Show.S01E01.1080p.Dubbed.mkv?md5=d&expires=4',
+             'kind': 'dubbed', 'quality': '1080p',
+             'season_number': 1, 'episode_number': 1},
+        ]
+        out = _dedupe_download_rows(rows)
+        self.assertEqual(len(out), 3)  # 720p softsub, 1080p softsub, 1080p dubbed
+        self.assertEqual(len({r['url'] for r in out}), 3)
+
+    def test_dedupe_keeps_distinct_seasons_and_episodes(self):
+        rows = [
+            {'url': 'https://s8.dlyar.top/x/Show.S01E01.720p.mkv', 'kind': 'dubbed',
+             'quality': '720p', 'season_number': 1, 'episode_number': 1},
+            {'url': 'https://s8.dlyar.top/x/Show.S01E02.720p.mkv', 'kind': 'dubbed',
+             'quality': '720p', 'season_number': 1, 'episode_number': 2},
+            {'url': 'https://s8.dlyar.top/x/Show.S02E01.720p.mkv', 'kind': 'dubbed',
+             'quality': '720p', 'season_number': 2, 'episode_number': 1},
+        ]
+        out = _dedupe_download_rows(rows)
+        self.assertEqual(len(out), 3)
+
+    def test_player_sub_payload_decodes_to_signed_vtt(self):
+        import base64
+        import urllib.parse
+        vtt_url = 'https://s8.dlyar.top/subtitles/Show.S01E01.fa.vtt?md5=abc&expires=9999999999'
+        token = base64.b64encode(urllib.parse.quote(vtt_url, safe='').encode()).decode()
+        decoded = _decode_player_vtt(token)
+        self.assertEqual(decoded, vtt_url)
+
+    def test_parse_download_links_extracts_subtitle_tracks(self):
+        import base64
+        import urllib.parse
+        vtt_url = 'https://s8.dlyar.top/subtitles/Show.S01E01.fa.vtt?md5=abc&expires=9999999999'
+        token = base64.b64encode(urllib.parse.quote(vtt_url, safe='').encode()).decode()
+        html = f'''
+        <html><body>
+        <h1>دانلود سریال تست Test Series</h1>
+        <div class="boxHead"><p>زیرنویس نرم</p></div>
+        <a class="download" href="https://cdn.example/series/tt/SoftSub/S01/1080p/Show.S01E01.1080p.SoftSub.mkv">قسمت</a>
+        </body></html>
+        <iframe src="https://dornatv.com/player?pid=1&file=abc&sub={token}"></iframe>
+        '''
+        parsed = parse_download_links(html, page_path='/test-series/')
+        tracks = parsed.get('subtitle_tracks') or []
+        self.assertEqual(len(tracks), 1)
+        track = tracks[0]
+        self.assertEqual(track['source_url'], vtt_url)
+        self.assertEqual(track['language'], 'fa')
+        self.assertEqual(track['provider'], 'dornatv')
+        self.assertEqual(track['id'], 'dornatv-S1E1')
+        self.assertEqual(track['season_number'], 1)
+        self.assertEqual(track['episode_number'], 1)
+
+    def test_extract_embedded_subtitle_tracks_dedupes(self):
+        import base64
+        import urllib.parse
+        def token(url):
+            return base64.b64encode(urllib.parse.quote(url, safe='').encode()).decode()
+        html = (
+            f'<a href="?pid=1&file=a&sub={token("https://s8.dlyar.top/S1E1.fa.vtt?x=1")}">'
+            f'<a href="?pid=1&file=b&#038;sub={token("https://s8.dlyar.top/S1E1.fa.vtt?x=2")}">'
+        )
+        tracks = extract_embedded_subtitle_tracks(html, rows=[])
+        self.assertEqual(len(tracks), 1)
+        self.assertEqual(tracks[0]['id'], 'dornatv-S1E1')
+
+    def test_detail_page_cache_serves_second_request_from_cache(self):
+        """A second GET for the same detail path must not re-hit the network."""
+        import types
+
+        from django.core.cache import cache
+        from apps.catalog.provider_import.providers.dornatv import DornatvConnector
+        from apps.catalog.provider_import.exceptions import ProviderImportError
+
+        calls = {'n': 0}
+
+        class _FakeClient:
+            def request(self, method, path, **kwargs):
+                calls['n'] += 1
+                if path.startswith('/wp-json/'):
+                    return types.SimpleNamespace(
+                        status_code=200,
+                        headers={'X-WP-Total': '1', 'X-WP-TotalPages': '1'},
+                        json=lambda: [],
+                    )
+                req = types.SimpleNamespace(
+                    status_code=200,
+                    headers={'content-type': 'text/html'},
+                    text='<h1>دانلود فیلم تست Test Movie 2026</h1>'
+                         '<div class="downloadBox"><div class="boxHead"><p>دوبله فارسی</p></div>'
+                         '<a class="download" href="https://s8.dlyar.top/x/Test.2026.1080p.Dubbed.mkv">د</a>'
+                         '</div>',
+                    url=path,
+                )
+                req.raise_for_status = lambda: None
+                return req
+
+            def close(self):
+                pass
+
+        with override_settings(DORNATV_PAGE_CACHE_TTL_SECONDS=300):
+            cache.clear()
+            conn = DornatvConnector()
+            conn._client = _FakeClient()
+            conn._client_or_create = lambda: _FakeClient()
+            try:
+                r1 = conn.crawl_download_links('/test-movie-2026/', content_type='movie')
+                calls_before = calls['n']
+                self.assertEqual(r1.get('code'), 'ok')
+                self.assertEqual(r1.get('total_entries'), 1)
+                # Second crawl of the same path — served from the page cache, so
+                # no new network request.
+                r2 = conn.crawl_download_links('/test-movie-2026/', content_type='movie')
+                self.assertEqual(calls['n'], calls_before)
+                self.assertEqual(r2.get('page_path'), r1.get('page_path'))
+                self.assertEqual(r2.get('code'), 'ok')
+            finally:
+                cache.clear()
 
 
 class DornatvIdentityTests(SimpleTestCase):

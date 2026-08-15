@@ -21,8 +21,9 @@ from users.dashboard_api import admin_dashboard
 from apps.catalog.api import (
     recent_catalog,
     actor_detail, actor_list, country_list, director_detail, director_list,
-    genre_list, home_rails, movie_detail, movie_list, playback_subtitle_ensure, search_content,
-    series_detail, series_list, trending,
+    genre_list, home_rails, movie_detail, movie_list, movie_similar,
+    playback_subtitle_ensure, search_content, series_detail, series_list, series_similar,
+    trending,
 )
 from apps.catalog.admin_api import (
     admin_movie_detail, admin_movie_list_create,
@@ -91,6 +92,7 @@ urlpatterns = [
     path('api/catalog/playback-subtitle-ensure/', playback_subtitle_ensure, name='playback_subtitle_ensure'),
     path('api/movies/', movie_list, name='movie_list'),
     path('api/movies/<uslug:slug>/', movie_detail, name='movie_detail'),
+    path('api/movies/<uslug:slug>/similar/', movie_similar, name='movie_similar'),
     path('api/admin/tmdb/search/', tmdb_search, name='admin_tmdb_search'),
     path('api/admin/tmdb/movie/<int:tmdb_id>/preview/', tmdb_movie_preview, name='admin_tmdb_preview'),
     path('api/admin/tmdb/movie/<int:tmdb_id>/import/', tmdb_movie_import, name='admin_tmdb_import'),

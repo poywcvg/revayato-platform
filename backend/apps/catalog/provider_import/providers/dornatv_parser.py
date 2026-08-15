@@ -13,10 +13,11 @@ Titles look like: «دانلود فیلم ضربهٔ شانس Lucky Strike 2026�
 
 from __future__ import annotations
 
+import base64
 import re
 from html import unescape
 from typing import Any
-from urllib.parse import urlsplit, urlunsplit
+from urllib.parse import parse_qs, urlsplit, urlunsplit
 
 from .cdn_link_parse import (
     AUDIO_ONLY_RE,
@@ -245,6 +246,78 @@ def _row_for_link(
     return canonicalize_download_link(row)
 
 
+def _decode_player_vtt(encoded: str) -> str:
+    """Decode a ``player?...&sub=<base64(signed vtt url)>`` payload.
+
+    Returns the decoded signed .vtt URL or an empty string. Base64 payloads may
+    contain url-encoded chars (``%2F`` etc.) before decoding.
+    """
+    raw = str(encoded or '').strip()
+    if not raw:
+        return ''
+    from urllib.parse import unquote as _urlunquote
+
+    token = _urlunquote(raw)
+    if not token:
+        return ''
+    try:
+        decoded = base64.b64decode(token, validate=False).decode('utf-8', 'replace')
+    except Exception:
+        return ''
+    decoded = _urlunquote(decoded)
+    if decoded.startswith('http://') or decoded.startswith('https://'):
+        return decoded[:2000]
+    return decoded if decoded and '.' in decoded and '//' in decoded else ''
+
+
+def extract_embedded_subtitle_tracks(html: str, *, rows: list[dict]) -> list[dict]:
+    """Capture the signed .vtt sidecar subtitles embedded in player links.
+
+    Dornatv player links look like
+    ``https://dornatv.com/player?pid=NNN&file=<base64>&sub=<base64(signed .vtt)>``.
+    The ``sub`` payload is the direct CDN .vtt URL for that episode. We return
+    subtitle-track dicts following the subtitle_contract shape (``source_url``
+    set, ``key`` empty) so an extractor can later download them.
+    """
+    if not html:
+        return []
+    tracks: list[dict] = []
+    seen: dict[tuple, bool] = {}
+
+    # Match any base64-ish sub= parameter (handles &amp; and & both, and
+    # parameter order variations). Require a decoded http(s) value.
+    subs = re.findall(r'(?:(?:\?|&|&#038;|&amp;)[\w-]*sub=)([A-Za-z0-9+/=%_.\-~]{16,})', html, re.I)
+    unique_vals: list[str] = []
+    for token in subs:
+        vtt = _decode_player_vtt(token)
+        if vtt and vtt not in unique_vals:
+            unique_vals.append(vtt)
+
+    for vtt in unique_vals:
+        season_number, episode_number = _shared_episode_from_url(vtt)
+        s_e_key = (season_number, episode_number)
+        if s_e_key in seen and episode_number is not None:
+            continue
+        seen[s_e_key] = True
+        track_id = f'dornatv-{episode_number or "0"}'
+        if season_number is not None:
+            track_id = f'dornatv-S{int(season_number)}E{int(episode_number or 0)}'
+        track: dict[str, Any] = {
+            'id': track_id,
+            'label': 'فارسی',
+            'language': 'fa',
+            'source_url': vtt,
+            'provider': 'dornatv',
+        }
+        if season_number is not None:
+            track['season_number'] = int(season_number)
+        if episode_number is not None:
+            track['episode_number'] = int(episode_number)
+        tracks.append(track)
+
+    return tracks[:60]
+
+
 def _extract_heading(html: str) -> str:
     match = H1_RE.search(html or '')
     if match:
@@ -326,6 +399,78 @@ def _content_type_from_path_or_urls(path: str, urls: list[str] | None = None, he
     return 'movie'
 
 
+def _dedupe_download_rows(rows: list[dict]) -> list[dict]:
+    """Collapse repeated encodes so a detail page stays compact.
+
+    A Dornatv series page can list the *same* episode encode across several
+    release groups (e.g. 720p PSA + 720p RMTeam + SoftSub mirrors of the same
+    file). We keep one best row per (episode, kind, quality) and one best row
+    per (quality, kind) for movies, dropping repeat groups.
+
+    Row identity is the CDN path (query string stripped — signatures differ per
+    refresh) combined with season/episode so signed-URL refreshes and duplicate
+    groups are unified.
+    """
+    from django.conf import settings
+
+    out: list[dict] = []
+    seen_best: dict[tuple, dict] = {}
+
+    def _row_rank(row: dict) -> int:
+        q = str(row.get('quality') or '').lower()
+        rank = 0
+        for token, weight in (('2160', 60), ('4k', 60), ('1080', 40),
+                              ('720', 30), ('480', 20), ('360', 10)):
+            if token in q:
+                rank = weight
+                break
+        if 'x265' in q or 'hevc' in q or '10bit' in q:
+            rank -= 5
+        return rank
+
+    def _path_identity(row: dict) -> str:
+        url = str(row.get('url') or '').strip()
+        if not url:
+            return ''
+        try:
+            parts = urlsplit(url)
+        except ValueError:
+            return url
+        return (parts.scheme + '://' + parts.netloc + parts.path).lower() or url
+
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        path_id = _path_identity(row)
+        if not path_id:
+            out.append(row)
+            continue
+        season = row.get('season_number')
+        episode = row.get('episode_number')
+        kind = str(row.get('kind') or row.get('type') or '').strip().lower() or 'full'
+        quality = str(row.get('quality') or '').strip().lower() or ''
+        # Unique identity: same file per episode and same (quality, kind) — a
+        # release group repeating the identical encode collapses into one row.
+        key = (path_id, season if season is not None else 0, episode if episode is not None else -1, kind, quality)
+        existing = seen_best.get(key)
+        if existing is None:
+            seen_best[key] = row
+            out.append(row)
+            continue
+        # Same path+quality+kind across groups — keep whichever has a better
+        # size/extras, otherwise the first.
+        if _row_rank(row) > _row_rank(existing) or len(str(row.get('url') or '')) < len(str(existing.get('url') or '')):
+            idx = out.index(existing)
+            seen_best[key] = row
+            out[idx] = row
+
+    attrs = getattr(settings, 'DORNATV_DEDUPE', None)
+    if attrs:
+        # Honor a runtime toggle if ever configured (default keeps dedup on).
+        _ = attrs
+    return out
+
+
 def parse_download_links(html: str, *, page_path: str = '') -> dict[str, Any]:
     """Parse BartarTheme download boxes into normalized link rows + metadata."""
     body = re.sub(r'<script[\s\S]*?</script>', '', html or '', flags=re.I)
@@ -396,6 +541,8 @@ def parse_download_links(html: str, *, page_path: str = '') -> dict[str, Any]:
                     )
                 )
 
+    rows = _dedupe_download_rows(rows)
+
     urls = [r['url'] for r in rows]
     heading = _extract_heading(html)
     titles = split_fa_en_titles(heading)
@@ -453,6 +600,7 @@ def parse_download_links(html: str, *, page_path: str = '') -> dict[str, Any]:
         'countries': _split_people(info.get('محصول') or ''),
         'genres': _split_people(info.get('ژانر') or ''),
         'has_both_titles': bool(title_fa and title_en),
+        'subtitle_tracks': extract_embedded_subtitle_tracks(html, rows=rows),
         'code': 'ok' if rows else 'dornatv_links_empty',
         'message': '' if rows else 'No download links found on Dornatv page.',
     }

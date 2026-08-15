@@ -3,10 +3,10 @@ from django.test import TestCase
 from django.urls import reverse
 from rest_framework.test import APIClient
 
-from apps.catalog.models import Actor, Genre, Movie, MovieActor
+from apps.catalog.models import Actor, Director, Genre, Movie, MovieActor, Series
 from apps.engagement.models import Like, UserActivityEvent, WatchlistItem
 
-from .services import get_recommendations_for_user, normalize_preferences
+from .services import get_recommendations_for_user, normalize_preferences, _similar_content
 
 
 User = get_user_model()
@@ -228,3 +228,54 @@ class RecommendationApiTests(TestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.data['recommendations'][0]['item']['slug'], 'action-hit')
+
+
+class SimilarContentTests(TestCase):
+    """``_similar_content`` must surface director/cast/genre ties, not just genre."""
+
+    def setUp(self):
+        self.action, _ = Genre.objects.update_or_create(slug='action', defaults={'title': 'Action'})
+        self.drama, _ = Genre.objects.update_or_create(slug='drama', defaults={'title': 'Drama'})
+        self.nolan = Director.objects.create(name='Christopher Nolan', slug='christopher-nolan')
+        self.bardem = Actor.objects.create(name='Javier Bardem', slug='javier-bardem')
+
+    def _movie(self, title, slug, genre, director=None, actor=None, views=10):
+        item = Movie.objects.create(
+            title=title, slug=slug, is_published=True, view_count=views,
+        )
+        item.genres.add(genre)
+        if director:
+            item.directors.add(director)
+        if actor:
+            MovieActor.objects.create(movie=item, actor=actor, order=0)
+        return item
+
+    def test_self_is_excluded(self):
+        source = self._movie('Source', 'source', self.action, views=999)
+        similar = self._movie('Other', 'other', self.action)
+        self.assertNotIn(source, _similar_content(source))
+
+    def test_director_tie_breaks_same_genre(self):
+        source = self._movie('Nolan A', 'nolan-a', self.action, director=self.nolan, views=100)
+        same_director = self._movie('Nolan B', 'nolan-b', self.action, director=self.nolan, views=50)
+        genre_only = self._movie('Action B', 'action-b', self.action, views=999)
+
+        results = _similar_content(source, limit=2)
+        self.assertEqual(results[0], same_director)
+        self.assertEqual(results[1], genre_only)
+
+    def test_cast_tie_counts(self):
+        source = self._movie('Bardem A', 'bardem-a', self.action, actor=self.bardem, views=100)
+        same_cast = self._movie('Bardem B', 'bardem-b', self.action, actor=self.bardem, views=50)
+        unrelated = self._movie('Action C', 'action-c', self.action, views=999)
+
+        results = _similar_content(source, limit=2)
+        self.assertEqual(results[0], same_cast)
+
+    def test_different_content_type_is_excluded(self):
+        source = self._movie('Film', 'film', self.action, views=100)
+        series = Series.objects.create(title='Show', slug='show', start_year=2026, is_published=True, view_count=999)
+        series.genres.add(self.action)
+
+        results = _similar_content(source)
+        self.assertNotIn(series, results)

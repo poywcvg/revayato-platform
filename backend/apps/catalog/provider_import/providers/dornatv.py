@@ -12,6 +12,7 @@ from dataclasses import dataclass, field
 from urllib.parse import quote_plus, urljoin, urlsplit
 
 from django.conf import settings
+from django.core.cache import cache
 
 from ..base import ProviderAuthResult, ProviderMovie, ProviderSeries
 from ..exceptions import ProviderImportError, ProviderNotConfigured, ProviderRateLimited
@@ -55,6 +56,32 @@ class ProviderTitleCandidate:
             'imdb_id': self.imdb_id,
             'sanitized_metadata': sanitize_payload(self.sanitized_metadata),
         }
+
+
+class CachedDornatvPage:
+    """Minimal httpx.Response-compatible stand-in for cached detail HTML.
+
+    Only the attributes the dornatv connector reads off a live response are
+    exposed (text / status_code / url), so cached and live fetches are
+    interchangeable for parsing callers.
+    """
+
+    def __init__(self, html: str, *, final_path: str, headers: dict | None = None):
+        self._html = html
+        self.text = html
+        self.content = html.encode('utf-8', 'replace')
+        self.status_code = 200
+        self.url = final_path  # used only for url-splitting by callers
+        self.headers = headers or {
+            'content-type': 'text/html; charset=UTF-8',
+            'x-wp-cached': '1',
+        }
+
+    def raise_for_status(self):  # pragma: no cover - status is always 200
+        pass
+
+    def json(self):  # pragma: no cover - cached pages are HTML, not JSON
+        raise ValueError('Cached Dornatv page is HTML, not JSON.')
 
 
 class DornatvConnector:
@@ -114,7 +141,75 @@ class DornatvConnector:
             return path
         return urljoin(self.base_url + '/', path.lstrip('/'))
 
+    # --- detail-page HTML cache -----------------------------------------
+    # Signed CDN download links self-expire in ~13 h, so we only cache the raw
+    # detail-page HTML for a short time. This stops repeated beat ticks and
+    # multi-provider crawls from re-downloading 200-400 KB pages, while the
+    # refresh pass (which runs below the TTL) keeps reaching the live page.
+    def _cache_key(self, path: str) -> str:
+        import hashlib
+
+        digest = hashlib.sha1(str(path).encode('utf-8', 'replace')).hexdigest()
+        return f'catalog:dornatv:page:{digest}'
+
+    def _cacheable_detail_path(self, path: str) -> bool:
+        """Only exact detail pages (not REST/listing/search endpoints) are cached."""
+        raw = str(path or '').lstrip('/')
+        if raw.startswith('wp-json'):
+            return False
+        if raw.startswith('?'):
+            return False
+        for marker in ('/wp-json/', '/page/', '/?s=', '/search', '/categories', '/tag/'):
+            if marker in path:
+                return False
+        return True
+
+    def _detail_from_cache(self, path: str) -> str | None:
+        try:
+            ttl = int(getattr(settings, 'DORNATV_PAGE_CACHE_TTL_SECONDS', 1500))
+        except (TypeError, ValueError):
+            ttl = 1500
+        if ttl <= 0 or not self._cacheable_detail_path(path):
+            return None
+        try:
+            blob = cache.get(self._cache_key(path))
+        except Exception:
+            return None
+        if isinstance(blob, bytes):
+            try:
+                return blob.decode('utf-8', 'replace')
+            except Exception:
+                return None
+        if isinstance(blob, str) and blob:
+            return blob
+        return None
+
+    def _detail_to_cache(self, path: str, html: str) -> None:
+        try:
+            ttl = int(getattr(settings, 'DORNATV_PAGE_CACHE_TTL_SECONDS', 1500))
+        except (TypeError, ValueError):
+            ttl = 1500
+        if ttl <= 0 or not self._cacheable_detail_path(path):
+            return
+        try:
+            max_bytes = int(getattr(settings, 'DORNATV_PAGE_CACHE_MAX_BYTES', 512 * 1024))
+        except (TypeError, ValueError):
+            max_bytes = 512 * 1024
+        if not html or len(html) > max_bytes:
+            return
+        try:
+            cache.set(self._cache_key(path), html, timeout=ttl)
+        except Exception:
+            pass
+
     def _request(self, method: str, path: str, **kwargs):
+        # Serve cached detail HTML for GET requests so beat-tick crawls do not
+        # hammer dornatv.com with 200-400 KB downloads every few minutes.
+        cached = None
+        if method.upper() == 'GET' and self._cacheable_detail_path(path):
+            cached = self._detail_from_cache(path)
+            if cached is not None:
+                return CachedDornatvPage(cached, final_path=path)
         self._throttle()
         client = self._client_or_create()
         self._last_request_at = time.monotonic()
@@ -127,6 +222,8 @@ class DornatvConnector:
             ) from exc
         if response.status_code == 429:
             raise ProviderRateLimited('Dornatv rate-limited the crawler.')
+        if method.upper() == 'GET' and response.status_code < 400 and self._cacheable_detail_path(path):
+            self._detail_to_cache(path, response.text or '')
         return response
 
     def validate_credentials(self) -> ProviderAuthResult:

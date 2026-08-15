@@ -765,6 +765,57 @@ def _similarity(first, second):
     )
 
 
+def _similar_content(instance, limit=8):
+    """Return published titles of the same type that are genuinely similar.
+
+    Deterministic per title (no user profile), so the result is safe to cache
+    at the API layer. Reuses ``_similarity`` (genre Jaccard + director + cast
+    + content-type/format) and the shared ``_related_prefetch`` hydration.
+    """
+    from apps.catalog.trending import lean_public_queryset
+
+    model = instance.__class__
+    related = _related_prefetch(model)
+    genre_ids = (
+        list(instance.genres.values_list('id', flat=True))
+        if instance.pk
+        else []
+    )
+
+    qs = model.objects.filter(is_published=True).exclude(pk=instance.pk)
+    if genre_ids:
+        qs = qs.filter(genres__in=genre_ids).distinct()
+    qs = qs.order_by('-view_count', '-like_count', '-popularity')[:200]
+    candidates = list(lean_public_queryset(qs).prefetch_related(*related))
+
+    if not candidates and genre_ids:
+        # Nothing shares a genre; fall back to the broad same-type pool.
+        qs = (
+            model.objects.filter(is_published=True)
+            .exclude(pk=instance.pk)
+            .order_by('-view_count', '-like_count', '-popularity')[:200]
+        )
+        candidates = list(lean_public_queryset(qs).prefetch_related(*related))
+
+    if not candidates:
+        return []
+
+    # Hydrate the source's relations too, so _similarity reads every genre/
+    # director/cast set from the prefetch cache instead of re-querying them
+    # once per candidate. If the caller already passed a prefetched instance
+    # (the API views do), this is a no-op.
+    if not getattr(instance, '_prefetched_objects_cache', None):
+        instance = model.objects.prefetch_related(*related).get(pk=instance.pk)
+
+    scored = [
+        (score, candidate)
+        for candidate in candidates
+        if (score := _similarity(instance, candidate)) >= 0.30
+    ]
+    scored.sort(key=lambda row: (-row[0], row[1].pk))
+    return [candidate for _score, candidate in scored[:limit]]
+
+
 def _reason_for(item, profile, preferences, best_genre, best_genre_score, best_director, best_director_score, best_cast, best_cast_score):
     recent_similar = None
     for context in reversed(profile['positive_items']):

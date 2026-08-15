@@ -137,6 +137,77 @@ def ensure_dornatv_provider() -> ProviderSource:
     return provider
 
 
+def _ingest_embedded_subtitle_tracks(obj, tracks: list[dict]) -> bool:
+    """Download + store signed .vtt sidecars embedded in Dornatv player links.
+
+    Dornatv embeds ``player?sub=<base64(signed .vtt)>`` per episode/movie. These
+    are real Persian WebVTT files; we download + normalize them now (while the
+    ~13 h signature is current) and write stored ``key``-based tracks. Tracks
+    whose signature already expired are skipped silently — the link refresh pass
+    will retry them on a later tick.
+    """
+    if not tracks:
+        return False
+    try:
+        from apps.catalog.subtitle_contract import normalize_subtitle_tracks
+        from apps.catalog.subtitle_extract import _store_webvtt, extract_webvtt_from_url
+    except Exception:
+        return False
+
+    appended = False
+    stored = list(getattr(obj, 'subtitle_tracks', None) or [])
+    existing_urls = {
+        str(t.get('source_url') or '').split('?', 1)[0]
+        for t in stored if isinstance(t, dict)
+    }
+    for index, track in enumerate(tracks):
+        if not isinstance(track, dict):
+            continue
+        source_url = str(track.get('source_url') or '').strip()
+        if not source_url:
+            continue
+        if source_url.split('?', 1)[0] in existing_urls:
+            continue
+        payload = extract_webvtt_from_url(source_url, timeout_seconds=90, snappy=True)
+        if not payload:
+            continue
+        safe_id = re.sub(r'[^A-Za-z0-9._-]+', '_', str(track.get('id') or 'fa'))[:60] or 'fa'
+        filename = f'dornatv-{safe_id}.vtt'
+        try:
+            object_key = _store_webvtt(payload, filename=filename)
+        except Exception:
+            continue
+        if not object_key:
+            continue
+        row: dict = {
+            'id': str(track.get('id') or f'dornatv-{index + 1}')[:80] or 'fa',
+            'label': str(track.get('label') or 'فارسی')[:80] or 'فارسی',
+            'language': str(track.get('language') or 'fa')[:16] or 'fa',
+            'key': object_key,
+            'default': False,
+            'provider': 'dornatv',
+        }
+        if source_url:
+            row['source_url'] = source_url[:2000]
+        for num_key in ('season_number', 'episode_number'):
+            try:
+                number = int(track[num_key])
+            except (TypeError, KeyError, ValueError):
+                continue
+            if number > 0:
+                row[num_key] = number
+        stored.append(row)
+        existing_urls.add(source_url.split('?', 1)[0])
+        appended = True
+
+    if not appended:
+        return False
+    obj.subtitle_tracks = normalize_subtitle_tracks(stored)
+    obj.has_subtitle = bool(obj.subtitle_tracks)
+    obj.save(update_fields=['subtitle_tracks', 'has_subtitle', 'updated_at'])
+    return True
+
+
 def _apply_dornatv_page_metadata(obj, crawled: dict) -> list[str]:
     """Fill catalog fields from Dornatv page metadata. Prefer FA title + EN original_title."""
     fields: list[str] = []
@@ -194,6 +265,13 @@ def _apply_dornatv_page_metadata(obj, crawled: dict) -> list[str]:
     if duration_i and isinstance(obj, Movie) and not getattr(obj, 'duration_minutes', None):
         obj.duration_minutes = duration_i
         fields.append('duration_minutes')
+
+    # Capture signed WebVTT sidecars embedded in player links (movie/series).
+    # Ingestion saves its own subtitle_tracks so runs independent of `fields`.
+    try:
+        _ingest_embedded_subtitle_tracks(obj, crawled.get('subtitle_tracks') or [])
+    except Exception:
+        logger.exception('dornatv embedded subtitle ingest failed for %s', getattr(obj, 'pk', None))
 
     if fields:
         obj.save(update_fields=[*dict.fromkeys(fields), 'updated_at'])

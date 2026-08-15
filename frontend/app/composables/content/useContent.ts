@@ -367,19 +367,59 @@ export function useFilteredMovies(filters: MaybeRefOrGetter<CatalogFilters>) {
   return useSearch(filters).results
 }
 
+function heuristicRelated(item: Movie, catalog: Movie[], limit: number): Movie[] {
+  const genreSlugs = new Set(item.genres.map(genre => genre.slug))
+  return catalog
+    .filter(candidate => candidate.id !== item.id && candidate.type === item.type)
+    .sort((a, b) => {
+      const scoreA = a.genres.filter(genre => genreSlugs.has(genre.slug)).length
+      const scoreB = b.genres.filter(genre => genreSlugs.has(genre.slug)).length
+      return scoreB - scoreA || b.rating - a.rating
+    })
+    .slice(0, limit)
+}
+
 export function useRelatedMovies(item: MaybeRefOrGetter<Movie | null>, limit = 6) {
   const { catalog } = useCatalog()
-  return computed(() => {
-    const current = toValue(item)
-    if (!current) return []
-    const genreSlugs = new Set(current.genres.map(genre => genre.slug))
-    return catalog.value
-      .filter(candidate => candidate.id !== current.id && candidate.type === current.type)
-      .sort((a, b) => {
-        const scoreA = a.genres.filter(genre => genreSlugs.has(genre.slug)).length
-        const scoreB = b.genres.filter(genre => genreSlugs.has(genre.slug)).length
-        return scoreB - scoreA || b.rating - a.rating
-      })
-      .slice(0, limit)
-  })
+  const { api } = useApi()
+  const config = useRuntimeConfig()
+  const related = ref<Movie[]>([])
+  const mediaBase = String(config.public.mediaCdnBaseUrl)
+
+  // Render immediately with the local heuristic so the tab/rail never flashes.
+  watch(
+    () => toValue(item),
+    (current) => {
+      related.value = current ? heuristicRelated(current, catalog.value, limit) : []
+    },
+    { immediate: true },
+  )
+
+  // Then upgrade to the server-computed similarity (director/cast-aware) once
+  // it returns. Fall back to the heuristic value on error or empty payload.
+  // Client-only (like loadReviews): SSR renders the heuristic rail and never
+  // waits on an extra API round-trip.
+  if (import.meta.client) {
+    watch(
+      () => toValue(item),
+      async (current) => {
+        if (!current) return
+        try {
+          const data = await api<ApiListResponse<ApiCatalogItem> | ApiCatalogItem[]>(
+            `/${current.type}/${current.slug}/similar/`,
+            { query: { limit } },
+          )
+          const items = unwrapApiList(data)
+            .map(entry => adaptApiCatalogListItem(entry, current.type, mediaBase))
+            .filter(entry => entry.id !== current.id)
+          if (items.length) related.value = items.slice(0, limit)
+        } catch {
+          // Keep the heuristic rail; the similar endpoint is an enhancement.
+        }
+      },
+      { immediate: true },
+    )
+  }
+
+  return computed(() => related.value)
 }

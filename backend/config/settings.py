@@ -239,6 +239,19 @@ DORNATV_IMPORT_CHECKPOINT = os.environ.get(
     'DORNATV_IMPORT_CHECKPOINT', '/app/media/dornatv_import_checkpoint.json',
 ).strip() or '/app/media/dornatv_import_checkpoint.json'
 
+# Dornatv crawl performance knobs.
+# Detail-page HTML is cached so repeated beat ticks (and the modified-order
+# sweep) do not re-download 200-400 KB pages. CDN download signatures self-expire
+# in ~13 h, so a short page TTL keeps listings fresh without hammering the site.
+DORNATV_PAGE_CACHE_TTL_SECONDS = max(30, int(os.environ.get('DORNATV_PAGE_CACHE_TTL_SECONDS', '1500')))
+DORNATV_PAGE_CACHE_MAX_BYTES = max(64 * 1024, int(os.environ.get('DORNATV_PAGE_CACHE_MAX_BYTES', str(512 * 1024))))
+# Per-tick cap on recently-modified listing pages walked before the year-walk.
+DORNATV_MODIFIED_PAGES_PER_TICK = max(1, min(20, int(os.environ.get('DORNATV_MODIFIED_PAGES_PER_TICK', '3'))))
+# Per-tick budget for re-crawling already-imported titles whose signed CDN links
+# have gone stale (see DORNATV_REFRESH_LINK_MAX_AGE_SECONDS).
+DORNATV_REFRESH_PER_TICK = max(0, min(40, int(os.environ.get('DORNATV_REFRESH_PER_TICK', '4'))))
+DORNATV_REFRESH_LINK_MAX_AGE_SECONDS = max(300, int(os.environ.get('DORNATV_REFRESH_LINK_MAX_AGE_SECONDS', str(6 * 60 * 60))))
+
 # SubtitleStar — public Persian sidecar subtitle fallback for movie playback.
 # Matching is IMDb-strict and requests are throttled/cached to avoid hammering
 # the provider. SUBTITLESTAR_COOKIE is optional for an authorized session only;

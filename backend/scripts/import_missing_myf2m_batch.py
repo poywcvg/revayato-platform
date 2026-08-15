@@ -11,10 +11,13 @@ from __future__ import annotations
 
 import argparse
 import html
+import json
 import os
 import re
 import sys
+import threading
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -176,6 +179,28 @@ def main() -> int:
         action='store_true',
         help='Only publish movies with a direct stream URL and series with playable episodes.',
     )
+    parser.add_argument(
+        '--workers',
+        type=int,
+        default=int(os.environ.get('MYF2M_CRAWL_WORKERS', '4')),
+        help='Number of parallel worker threads for per-title import (default 4).',
+    )
+    parser.add_argument(
+        '--listing-delay',
+        type=float,
+        default=float(os.environ.get('MYF2M_LISTING_DELAY', '0.15')),
+        help='Delay between listing-page requests (cheap page walk; separate from --delay).',
+    )
+    parser.add_argument(
+        '--checkpoint',
+        default=os.environ.get('MYF2M_CRAWL_CHECKPOINT', ''),
+        help='Path to a JSON resume/checkpoint file for the listing walk.',
+    )
+    parser.add_argument(
+        '--resume',
+        action='store_true',
+        help='When --checkpoint is set, continue from the last saved listing page instead of page 1.',
+    )
     args = parser.parse_args()
 
     target = max(0, int(args.target))
@@ -201,10 +226,57 @@ def main() -> int:
             movies_target = target
 
     delay = max(0.0, float(args.delay))
+    listing_delay = max(0.0, float(args.listing_delay))
+    workers = max(1, int(args.workers))
     require_both = bool(args.require_both)
     enrich_dornatv = not bool(args.no_dornatv_enrich)
     new_only = bool(args.new_only)
     require_playback = bool(args.require_playback)
+    checkpoint_path = (args.checkpoint or '').strip() or None
+    resume = bool(args.resume)
+
+    # --- resume / checkpoint state -------------------------------------
+    check_state = {
+        'movie_page': 1,
+        'series_page': 1,
+        'movies_kept': 0,
+        'series_kept': 0,
+    }
+    if checkpoint_path:
+        ck = Path(checkpoint_path)
+        if resume and ck.exists() and ck.is_file():
+            try:
+                loaded = json.loads(ck.read_text(encoding='utf-8'))
+                if isinstance(loaded, dict):
+                    check_state['movie_page'] = max(1, int(loaded.get('movie_page') or 1))
+                    check_state['series_page'] = max(1, int(loaded.get('series_page') or 1))
+                    check_state['movies_kept'] = int(loaded.get('movies_kept') or 0)
+                    check_state['series_kept'] = int(loaded.get('series_kept') or 0)
+            except Exception as exc:
+                print(f'  -> checkpoint load failed ({exc}); starting from page 1', flush=True)
+        if check_state['movie_page'] > 1:
+            print(f'  -> resume movie listing from page {check_state["movie_page"]}', flush=True)
+        if check_state['series_page'] > 1:
+            print(f'  -> resume series listing from page {check_state["series_page"]}', flush=True)
+
+    def _save_checkpoint(*, also=False):
+        if not checkpoint_path:
+            return
+        try:
+            ck = Path(checkpoint_path)
+            ck.parent.mkdir(parents=True, exist_ok=True)
+            payload = {
+                'movie_page': stats.get('last_movie_page', check_state['movie_page']),
+                'series_page': stats.get('last_series_page', check_state['series_page']),
+                'movies_kept': stats.get('movies_kept', 0),
+                'series_kept': stats.get('series_kept', 0),
+                'updated_at': time.time(),
+            }
+            tmp = ck.with_suffix('.tmp')
+            tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding='utf-8')
+            tmp.replace(ck)
+        except Exception as exc:  # pragma: no cover - best effort
+            print(f'  -> checkpoint save failed: {exc}', flush=True)
 
     def tmdb_details_with_retry(call, *, label: str, attempts: int = 3):
         """Retry the complete TMDB details call, including client-level retries."""
@@ -291,6 +363,57 @@ def main() -> int:
     connector = get_connector('myf2m')
     connector.authenticate()
 
+    # --- parallel worker infrastructure -------------------------------
+    # MyF2MConnector is stateful (throttle clock + httpx client) and NOT
+    # thread-safe, so each worker thread gets its own connector instance. A
+    # shared lock keeps the aggregate request rate to myf2m within the
+    # configured per-minute budget regardless of worker count, so parallel
+    # crawling cannot trip the provider WAF / 429s.
+    provider_request_lock = threading.Lock()
+    provider_min_interval = max(0.0, 60.0 / max(1, int(getattr(settings, 'MYF2M_RATE_LIMIT_PER_MINUTE', 30))))
+    _provider_last_request = [0.0]
+
+    def _provider_throttle():
+        now = time.monotonic()
+        with provider_request_lock:
+            wait = provider_min_interval - (now - _provider_last_request[0])
+            if wait > 0:
+                time.sleep(wait)
+            _provider_last_request[0] = time.monotonic()
+
+    def _new_connector():
+        conn = get_connector('myf2m')
+        conn.authenticate()
+        return conn
+
+    def _fetch_detail(conn, path: str, *, label: str, retries: int = 5):
+        """Fetch a myf2m detail page honoring the shared provider rate budget."""
+        last_exc: Exception | None = None
+        for attempt in range(1, retries + 1):
+            _provider_throttle()
+            try:
+                response = conn._request('GET', path)
+            except ProviderRateLimited as exc:
+                last_exc = exc
+                print(f'  -> {label} rate limited: {exc}; sleep 25s', flush=True)
+                time.sleep(25)
+                continue
+            except Exception as exc:
+                last_exc = exc
+                wait = min(30.0, 2.0 * attempt)
+                print(f'  -> {label} fetch error attempt={attempt}/{retries} {type(exc).__name__}: {exc}; sleep {wait:.0f}s', flush=True)
+                time.sleep(wait)
+                continue
+            code = int(getattr(response, 'status_code', 200) or 200)
+            if code in {429, 500, 502, 503, 504} or code >= 520:
+                wait = min(45.0, 3.0 * attempt)
+                print(f'  -> {label} http={code} attempt={attempt}/{retries}; sleep {wait:.0f}s', flush=True)
+                time.sleep(wait)
+                continue
+            return response
+        print(f'  -> {label} gave up after {retries} retries last={last_exc}', flush=True)
+        return None
+
     stats = {
         'movies_kept': 0,
         'series_kept': 0,
@@ -311,6 +434,10 @@ def main() -> int:
         'with_dub': 0,
         'with_sub': 0,
         'with_both': 0,
+        'last_movie_page': 1,
+        'last_series_page': 1,
+        'movies_submitted': 0,
+        'series_submitted': 0,
         'kept_movie_ids': [],
         'kept_series_ids': [],
     }
@@ -375,13 +502,17 @@ def main() -> int:
     def iter_movie_paths():
         seen: set[str] = set()
         empty_streak = 0
-        first_page = max(1, int(args.start_movie_page))
+        first_page = max(1, int(check_state['movie_page']), int(args.start_movie_page))
         for page in range(first_page, max(first_page, int(args.max_movie_pages)) + 1):
             path = '/movies/' if page == 1 else f'/movies/page/{page}/'
+            if listing_delay:
+                time.sleep(listing_delay)
             response = _listing_get(path, label='movie', page=page)
             if response is None:
                 # Soft skip this page and keep walking; Film2Media often flaps 502.
                 empty_streak += 1
+                stats['last_movie_page'] = page
+                _save_checkpoint()
                 if empty_streak >= 5:
                     print(f'movie listing abort after {empty_streak} consecutive failures', flush=True)
                     break
@@ -395,15 +526,15 @@ def main() -> int:
                 seen.add(item_path)
                 found += 1
                 yield item_path, match.group('slug')
+            stats['last_movie_page'] = page
             print(f'movie listing page={page} items={found} unique_total={len(seen)}', flush=True)
+            _save_checkpoint()
             if found == 0:
                 empty_streak += 1
                 if empty_streak >= 3:
                     break
             else:
                 empty_streak = 0
-            if delay:
-                time.sleep(delay)
 
     def iter_series_slugs():
         seen: set[str] = set()

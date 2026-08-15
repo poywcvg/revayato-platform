@@ -256,6 +256,9 @@ def run_dornatv_missing_import(
             'series_page': series_page,
             'movie_year': movie_year,
             'series_year': series_year,
+            'modified_page': modified_page,
+            'modified_cursor': modified_cursor,
+            'newest_modified': newest_modified,
             # Keep legacy key for older readers / ops dashboards.
             'current_year': min(movie_year, series_year),
             'year_start': year_hi,
@@ -264,7 +267,7 @@ def run_dornatv_missing_import(
             'updated_at': time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime()),
         })
 
-    def import_one(*, content_type: str, item: dict, expected_year: int) -> str:
+    def import_one(*, content_type: str, item: dict, expected_year: int, enforce_year: bool = True) -> str:
         nonlocal stats
         parsed = parse_wp_rest_item(item, content_type=content_type)
         page_path = parsed['provider_item_id']
@@ -321,7 +324,9 @@ def run_dornatv_missing_import(
             year_i = None
         # When walking a release-year taxonomy, skip titles that clearly belong
         # elsewhere — but do NOT checkpoint them, so the real year can import later.
-        if year_i and abs(year_i - int(expected_year)) > 1:
+        # The modified-sweep (enforce_year=False) accepts any year; it discovers
+        # new/updated titles without walking release taxonomies.
+        if enforce_year and year_i and abs(year_i - int(expected_year)) > 1:
             stats['skipped_wrong_year'] += 1
             return 'wrong_year'
 
@@ -530,8 +535,191 @@ def run_dornatv_missing_import(
             persist()
         return 'ok'
 
+    modified_pages = max(1, int(getattr(settings, 'DORNATV_MODIFIED_PAGES_PER_TICK', 3)))
+    modified_page = max(1, int(state.get('modified_page') or 1))
+    modified_cursor = state.get('modified_cursor') or ''  # oldest mod ever processed (informational)
+    newest_modified = state.get('newest_modified') or ''  # newest mod seen at the front of the listing
+
+    def scan_recent_modified() -> str:
+        """Incremental 'recently modified' sweep, newest → oldest.
+
+        Runs before the year-walk so newly added/dubbed/updated titles are
+        discovered on every tick without walking the release-year taxonomy.
+
+        Front-reset + resume-page design:
+        * Every tick peeks at listing page 1. If a row at the front is newer than
+          the last ``newest_modified`` we ever saw, a title was added/edited, so
+          we reset ``modified_page`` to 1 to sweep from the top again.
+        * Otherwise we *resume* at the persisted ``modified_page`` (monotonic),
+          processing :data:`DORNATV_MODIFIED_PAGES_PER_TICK` pages. Already-
+          handled rows hit the done-set fast path in import_one (no HTTP), so
+          reprocessing is cheap. The page pointer guarantees full coverage of the
+          whole listing over many ticks; ``modified_cursor`` is informational.
+        """
+        nonlocal modified_page, modified_cursor, newest_modified
+        all_categories = sorted(set(MOVIE_CATEGORY_IDS) | set(SERIES_CATEGORY_IDS))
+
+        # 1) Front-check: any activity newer than we've seen → restart from page 1.
+        front_rows, _ = connector._rest_list_by_category(
+            category_ids=all_categories, page=1, embed=True, orderby='modified',
+        )
+        if front_rows:
+            front_mod = str(front_rows[0].get('modified') or '')
+            if front_mod and (not newest_modified or front_mod > newest_modified):
+                modified_page = 1
+                newest_modified = front_mod
+
+        pages = 0
+        while pages < modified_pages:
+            rows, meta = connector._rest_list_by_category(
+                category_ids=all_categories, page=modified_page, embed=True,
+                orderby='modified',
+            )
+            if not rows:
+                break  # window exhausted; keep page pointer where it is
+            total_pages = int(meta.get('total_pages') or 0)
+            page_oldest_mod = ''  # smallest (oldest) modified in this page
+            for item in rows:
+                mod = str(item.get('modified') or '')
+                if mod and (not page_oldest_mod or mod < page_oldest_mod):
+                    page_oldest_mod = mod
+                ctype = parse_wp_rest_item(item).get('content_type', '')
+                if ctype == 'movie':
+                    result = import_one(
+                        content_type='movie', item=item,
+                        expected_year=_mod_year(item), enforce_year=False,
+                    )
+                elif ctype == 'series':
+                    result = import_one(
+                        content_type='series', item=item,
+                        expected_year=_mod_year(item), enforce_year=False,
+                    )
+                else:
+                    result = 'unknown'
+                if result == 'rate_limited':
+                    persist()
+                    return 'rate_limited'
+                if delay:
+                    time.sleep(delay)
+            # Informational high-water mark: oldest row we've actually processed.
+            if page_oldest_mod and (not modified_cursor or page_oldest_mod < modified_cursor):
+                modified_cursor = page_oldest_mod
+            if total_pages and modified_page >= total_pages:
+                break
+            modified_page += 1
+            pages += 1
+        return 'ok'
+
+    def _mod_year(item: dict) -> int:
+        try:
+            return int(str((item.get('modified') or '')[:4]) or 2026)
+        except (TypeError, ValueError):
+            return 2026
+
+    def refresh_stale_links() -> int:
+        """Re-crawl published dornatv-sourced rows whose signed CDN links expired.
+
+        Signed dlyar.top URLs self-expire in ~13 h; without a re-crawl the stored
+        links quietly become 403/410. Picks a small bounded set per tick to keep
+        the beat cheap, refreshing via crawl_dornatv_downloads_for_movie/series
+        (which re-validates identity with the detail page).
+        """
+        from apps.catalog.provider_import.dornatv_sync import crawl_dornatv_downloads_for_movie, crawl_dornatv_downloads_for_series
+        from django.utils import timezone as _tz
+        from datetime import timedelta as _timedelta
+
+        # A --dry-run must never modify existing catalog rows (the crawl helpers
+        # re-write download_links / metadata with replace=True).
+        if dry_run:
+            return 0
+        budget = int(getattr(settings, 'DORNATV_REFRESH_PER_TICK', 4))
+        if budget <= 0:
+            return 0
+        max_age = int(getattr(settings, 'DORNATV_REFRESH_LINK_MAX_AGE_SECONDS', 6 * 60 * 60))
+        cutoff = _tz.now() - _timedelta(seconds=max_age)
+        done = 0
+
+        # Pick the stalest published rows that are actually sourced from dornatv
+        # (a row carries source='dornatv' and the detail page_path). Sorted by
+        # updated_at so the most-expired links refresh first.
+        dornatv_movies = [
+            m for m in (
+                Movie.objects.filter(is_published=True, updated_at__lt=cutoff)
+                .order_by('updated_at')[:200]
+            )
+            if _has_dornatv_row(m)
+        ]
+        for movie in dornatv_movies[:budget]:
+            try:
+                # crawl_dornatv_downloads_for_* manage their own connector (and
+                # page cache) — no need to open one here.
+                result = crawl_dornatv_downloads_for_movie(
+                    movie=movie,
+                    provider_item_id=_dornatv_path_for(movie),
+                    replace=True,
+                    queue_softsub_extract=False,
+                )
+                if result.get('code') in ('ok', 'dornatv_links_empty'):
+                    done += 1
+                    stats['refreshed'] = stats.get('refreshed', 0) + 1
+            except Exception as exc:
+                stats['errors'] += 1
+                logger.info('dornatv refresh movie %s failed: %s', movie.pk, exc)
+            if done >= budget:
+                break
+
+        # Series: same but with Series rows.
+        dornatv_series = [
+            s for s in (
+                Series.objects.filter(is_published=True, updated_at__lt=cutoff)
+                .order_by('updated_at')[:200]
+            )
+            if _has_dornatv_row(s)
+        ]
+        for series in dornatv_series[:budget]:
+            try:
+                result = crawl_dornatv_downloads_for_series(
+                    series=series,
+                    provider_item_id=_dornatv_path_for(series),
+                    replace=True,
+                    queue_softsub_extract=False,
+                )
+                if result.get('code') in ('ok', 'dornatv_links_empty'):
+                    done += 1
+                    stats['refreshed'] = stats.get('refreshed', 0) + 1
+            except Exception as exc:
+                stats['errors'] += 1
+                logger.info('dornatv refresh series %s failed: %s', series.pk, exc)
+            if done >= budget:
+                break
+        return done
+
+    def _has_dornatv_row(obj) -> bool:
+        for item in (getattr(obj, 'download_links', None) or []):
+            if isinstance(item, dict):
+                src = str(item.get('source') or '').strip().lower()
+                page = str(item.get('page_path') or '').strip()
+                if src == 'dornatv' or (page and page.startswith('/') and 'dlyar' in str(item.get('url') or '')):
+                    return True
+        return False
+
+    def _dornatv_path_for(obj) -> str:
+        for item in (getattr(obj, 'download_links', None) or []):
+            if isinstance(item, dict):
+                page = str(item.get('page_path') or '').strip()
+                if page:
+                    return page
+        return ''
+
     try:
         with _suppress_provider_publish_signals():
+            # 1) Incremental recent-changes sweep first — cheap, catches new titles.
+            if modified_pages > 0:
+                status = scan_recent_modified()
+                if status == 'rate_limited':
+                    return {'status': 'rate_limited', **stats}
+            # 2) Refresh signed-link staleness on published titles (small budget).
+            refresh_stale_links()
             if movies_limit > 0:
                 status = scan_content(
                     content_type='movie',
@@ -560,6 +748,9 @@ def run_dornatv_missing_import(
         stats['series_page'] = series_page
         stats['movie_year'] = movie_year
         stats['series_year'] = series_year
+        stats['modified_cursor'] = modified_cursor
+        stats['modified_page'] = modified_page
+        stats['newest_modified'] = newest_modified
         persist()
 
     return {'status': 'ok', **stats}

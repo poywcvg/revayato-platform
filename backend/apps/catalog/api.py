@@ -554,6 +554,42 @@ def series_detail(request, slug):
 
 @api_view(['GET'])
 @throttle_classes([CatalogReadThrottle])
+def movie_similar(request, slug):
+    """Published movies genuinely similar to ``slug`` (same director/cast/genres)."""
+
+    def build():
+        from apps.recommendations.services import _similar_content
+
+        movie = get_object_or_404(
+            Movie.objects.filter(is_published=True)
+            .prefetch_related('genres', 'directors', 'countries', 'movie_actors__actor'),
+            slug=slug,
+        )
+        return MovieListSerializer(_similar_content(movie), many=True).data
+
+    return _cached_response(request, f'similar-movie:{slug}', 'detail', build)
+
+
+@api_view(['GET'])
+@throttle_classes([CatalogReadThrottle])
+def series_similar(request, slug):
+    """Published series genuinely similar to ``slug`` (same director/cast/genres)."""
+
+    def build():
+        from apps.recommendations.services import _similar_content
+
+        series = get_object_or_404(
+            Series.objects.filter(is_published=True)
+            .prefetch_related('genres', 'directors', 'countries', 'series_actors__actor'),
+            slug=slug,
+        )
+        return SeriesListSerializer(_similar_content(series), many=True).data
+
+    return _cached_response(request, f'similar-series:{slug}', 'detail', build)
+
+
+@api_view(['GET'])
+@throttle_classes([CatalogReadThrottle])
 def recent_catalog(request):
     """Published movies and series mixed by created_at (newest first)."""
     limit = _bounded_int(request.GET.get('limit'), 24, 1, 48)
