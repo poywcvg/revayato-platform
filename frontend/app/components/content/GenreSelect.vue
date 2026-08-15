@@ -27,6 +27,7 @@ const searchInput = useTemplateRef<HTMLInputElement>('searchInput')
 const instanceId = useId()
 const isOpen = ref(false)
 const openAbove = ref(false)
+const alignToInlineEnd = ref(false)
 const searchQuery = ref('')
 const activeIndex = ref(0)
 
@@ -62,6 +63,13 @@ function openMenu() {
   if (!props.genres.length) return
   const rect = trigger.value?.getBoundingClientRect()
   openAbove.value = Boolean(rect && rect.bottom + 400 > window.innerHeight && rect.top > 400)
+  if (rect) {
+    const desiredWidth = Math.min(Math.max(rect.width, 256), window.innerWidth - 16)
+    const isRtl = getComputedStyle(trigger.value!).direction === 'rtl'
+    alignToInlineEnd.value = isRtl
+      ? rect.right - desiredWidth < 8
+      : rect.left + desiredWidth > window.innerWidth - 8
+  }
   searchQuery.value = ''
   activeIndex.value = props.modelValue
     ? props.genres.findIndex(g => g.slug === props.modelValue)
@@ -196,7 +204,10 @@ onClickOutside(root, () => closeMenu())
         :id="`${instanceId}-listbox`"
         role="listbox"
         class="genre-select__menu soft-scrollbar"
-        :class="openAbove ? 'genre-select__menu--above' : 'genre-select__menu--below'"
+        :class="[
+          openAbove ? 'genre-select__menu--above' : 'genre-select__menu--below',
+          alignToInlineEnd && 'genre-select__menu--align-end',
+        ]"
         :aria-labelledby="`${instanceId}-trigger`"
       >
         <div class="genre-select__search" role="presentation">
@@ -306,7 +317,7 @@ onClickOutside(root, () => closeMenu())
 }
 
 .genre-select--compact .genre-select__trigger {
-  @apply min-h-10 py-2 text-xs;
+  @apply min-h-11 py-2 text-xs;
 }
 
 .genre-select__trigger-icon {
@@ -318,9 +329,18 @@ onClickOutside(root, () => closeMenu())
 }
 
 .genre-select__menu {
-  @apply absolute mt-1 w-full overflow-hidden rounded-xl border border-line bg-elevated shadow-2xl;
+  @apply absolute start-0 mt-1 overflow-hidden rounded-xl border border-line bg-elevated shadow-2xl;
   @apply backdrop-blur-xl;
+  width: min(max(100%, 16rem), calc(100dvw - 1rem));
+  max-width: calc(100dvw - 1rem);
+  max-height: min(22rem, 62dvh);
+  display: flex;
+  flex-direction: column;
   z-index: 60;
+}
+
+.genre-select__menu--align-end {
+  inset-inline: auto 0;
 }
 
 .genre-select__menu--below {
@@ -340,7 +360,7 @@ onClickOutside(root, () => closeMenu())
 }
 
 .genre-select__search-clear {
-  @apply grid size-5 shrink-0 place-items-center rounded-md text-muted transition hover:bg-white/10 hover:text-ink;
+  @apply grid size-11 shrink-0 place-items-center rounded-lg text-muted transition hover:bg-surface hover:text-ink;
 }
 
 .genre-select__all {
@@ -348,7 +368,8 @@ onClickOutside(root, () => closeMenu())
 }
 
 .genre-select__options {
-  @apply max-h-56 overflow-y-auto;
+  @apply min-h-0 flex-1 overflow-y-auto;
+  max-height: min(14rem, 42dvh);
 }
 
 .genre-select__empty {
@@ -356,11 +377,11 @@ onClickOutside(root, () => closeMenu())
 }
 
 .genre-select__option {
-  @apply flex w-full items-center gap-2 px-3 py-2.5 text-right transition-colors;
+  @apply flex min-h-11 w-full items-center gap-2 px-3 py-2.5 text-right transition-colors;
 }
 
 .genre-select__option--active {
-  @apply bg-white/[.06];
+  @apply bg-surface;
 }
 
 .genre-select__option--selected {
@@ -372,7 +393,7 @@ onClickOutside(root, () => closeMenu())
 }
 
 .genre-select__option-icon {
-  @apply grid size-7 shrink-0 place-items-center rounded-lg bg-white/[.06] text-primary-400;
+  @apply grid size-7 shrink-0 place-items-center rounded-lg bg-surface text-primary-400 ring-1 ring-line;
 }
 
 .genre-select__option--selected .genre-select__option-icon {

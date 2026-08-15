@@ -1,18 +1,68 @@
 ﻿from django.contrib import admin
-from django.urls import path
+from django.urls import path, register_converter
 from rest_framework_simplejwt.views import TokenRefreshView
+
+from config.converters import UnicodeSlugConverter
+
+register_converter(UnicodeSlugConverter, 'uslug')
 
 from apps.accounts.api import (
     confirm_password_reset, login_user, logout_user, me, register, request_password_reset,
 )
+from users.admin_api import admin_user_detail, admin_user_list_create
+from users.analytics_api import (
+    analytics_content_top,
+    analytics_engagement,
+    analytics_overview,
+    analytics_presence,
+    analytics_users,
+)
+from users.dashboard_api import admin_dashboard
 from apps.catalog.api import (
-    actor_detail, actor_list, director_detail, director_list,
-    genre_list, movie_detail, movie_list, search_content,
+    recent_catalog,
+    actor_detail, actor_list, country_list, director_detail, director_list,
+    genre_list, home_rails, movie_detail, movie_list, playback_subtitle_ensure, search_content,
     series_detail, series_list, trending,
 )
+from apps.catalog.admin_api import (
+    admin_movie_detail, admin_movie_list_create,
+    admin_series_detail, admin_series_list_create,
+    catalog_importer_settings,
+    catalog_sync_run_cancel, catalog_sync_run_detail, catalog_sync_run_list_create,
+    movie_sync_tmdb, series_sync_tmdb,
+    tmdb_movie_import, tmdb_movie_preview, tmdb_search,
+    tmdb_series_import, tmdb_series_preview,
+)
+from apps.catalog.archive_api import (
+    archive_asset_delete, archive_asset_download_url, archive_asset_status,
+    archive_upload_abort, archive_upload_complete, archive_upload_initiate,
+    archive_upload_presign_parts,
+)
+from apps.catalog.provider_import.api import (
+    movie_provider_crawl_downloads,
+    movie_provider_discover,
+    provider_import_job_approve_match,
+    provider_import_job_cancel,
+    provider_import_job_candidates,
+    provider_import_job_detail,
+    provider_import_job_import_selected,
+    provider_import_job_items,
+    provider_import_job_list,
+    provider_import_job_logs,
+    provider_source_detail,
+    provider_source_discover,
+    provider_source_import,
+    provider_source_list_create,
+    provider_source_validate,
+    series_provider_crawl_downloads,
+    series_provider_discover,
+)
 from apps.engagement.api import (
-    create_event, create_privacy_safe_event, like_toggle, rate_content, rating_summary,
-    watchlist_list, watchlist_toggle,
+    create_event, create_privacy_safe_event, like_toggle, likes_list, rate_content, rating_summary,
+    support_ticket_detail, support_ticket_list_create, watch_stats, watchlist_list, watchlist_toggle,
+)
+from apps.engagement.admin_api import (
+    admin_review_detail, admin_reviews_list, admin_support_inbox, admin_support_ticket_detail,
 )
 from apps.recommendations.api import recommendations
 from apps.watchparty.api import (
@@ -37,15 +87,66 @@ urlpatterns = [
     path('api/watch-party/rooms/<str:invite_code>/leave/', leave_room, name='watchparty_leave'),
     path('api/watch-party/rooms/<str:invite_code>/messages/', recent_messages, name='watchparty_messages'),
     path('api/watch-party/rooms/<str:invite_code>/end/', end_room, name='watchparty_end'),
+    path('api/catalog/recent/', recent_catalog, name='catalog_recent'),
+    path('api/catalog/playback-subtitle-ensure/', playback_subtitle_ensure, name='playback_subtitle_ensure'),
     path('api/movies/', movie_list, name='movie_list'),
-    path('api/movies/<slug:slug>/', movie_detail, name='movie_detail'),
+    path('api/movies/<uslug:slug>/', movie_detail, name='movie_detail'),
+    path('api/admin/tmdb/search/', tmdb_search, name='admin_tmdb_search'),
+    path('api/admin/tmdb/movie/<int:tmdb_id>/preview/', tmdb_movie_preview, name='admin_tmdb_preview'),
+    path('api/admin/tmdb/movie/<int:tmdb_id>/import/', tmdb_movie_import, name='admin_tmdb_import'),
+    path('api/admin/tmdb/series/<int:tmdb_id>/preview/', tmdb_series_preview, name='admin_tmdb_series_preview'),
+    path('api/admin/tmdb/series/<int:tmdb_id>/import/', tmdb_series_import, name='admin_tmdb_series_import'),
+    path('api/admin/movies/', admin_movie_list_create, name='admin_movie_list_create'),
+    path('api/admin/movies/<int:movie_id>/', admin_movie_detail, name='admin_movie_detail'),
+    path('api/admin/movies/<int:movie_id>/sync-tmdb/', movie_sync_tmdb, name='admin_movie_sync_tmdb'),
+    path('api/admin/series/<int:series_id>/sync-tmdb/', series_sync_tmdb, name='admin_series_sync_tmdb'),
+    path('api/admin/series/', admin_series_list_create, name='admin_series_list_create'),
+    path('api/admin/series/<int:series_id>/', admin_series_detail, name='admin_series_detail'),
+    path('api/admin/users/', admin_user_list_create, name='admin_user_list_create'),
+    path('api/admin/users/<int:user_id>/', admin_user_detail, name='admin_user_detail'),
+    path('api/admin/dashboard/', admin_dashboard, name='admin_dashboard'),
+    path('api/analytics/overview/', analytics_overview, name='analytics_overview'),
+    path('api/analytics/users/', analytics_users, name='analytics_users'),
+    path('api/analytics/content/top/', analytics_content_top, name='analytics_content_top'),
+    path('api/analytics/engagement/', analytics_engagement, name='analytics_engagement'),
+    path('api/analytics/presence/', analytics_presence, name='analytics_presence'),
+    path('api/admin/catalog-sync/runs/', catalog_sync_run_list_create, name='admin_catalog_sync_runs'),
+    path('api/admin/catalog-sync/settings/', catalog_importer_settings, name='admin_catalog_importer_settings'),
+    path('api/admin/catalog-sync/runs/<int:run_id>/', catalog_sync_run_detail, name='admin_catalog_sync_run'),
+    path('api/admin/catalog-sync/runs/<int:run_id>/cancel/', catalog_sync_run_cancel, name='admin_catalog_sync_cancel'),
+    path('api/admin/archive/uploads/initiate/', archive_upload_initiate, name='admin_archive_upload_initiate'),
+    path('api/admin/archive/uploads/<uuid:asset_id>/presign-parts/', archive_upload_presign_parts, name='admin_archive_presign_parts'),
+    path('api/admin/archive/uploads/<uuid:asset_id>/complete/', archive_upload_complete, name='admin_archive_complete'),
+    path('api/admin/archive/uploads/<uuid:asset_id>/abort/', archive_upload_abort, name='admin_archive_abort'),
+    path('api/admin/archive/assets/<uuid:asset_id>/status/', archive_asset_status, name='admin_archive_status'),
+    path('api/admin/archive/assets/<uuid:asset_id>/download-url/', archive_asset_download_url, name='admin_archive_download_url'),
+    path('api/admin/archive/assets/<uuid:asset_id>/delete/', archive_asset_delete, name='admin_archive_delete'),
+    path('api/admin/provider-sources/', provider_source_list_create, name='admin_provider_sources'),
+    path('api/admin/provider-sources/<int:provider_id>/', provider_source_detail, name='admin_provider_source'),
+    path('api/admin/provider-sources/<int:provider_id>/validate/', provider_source_validate, name='admin_provider_validate'),
+    path('api/admin/provider-sources/<int:provider_id>/discover/', provider_source_discover, name='admin_provider_discover'),
+    path('api/admin/provider-sources/<int:provider_id>/import/', provider_source_import, name='admin_provider_import'),
+    path('api/admin/catalog/movies/<int:movie_id>/provider-discover/', movie_provider_discover, name='admin_movie_provider_discover'),
+    path('api/admin/catalog/movies/<int:movie_id>/provider-crawl-downloads/', movie_provider_crawl_downloads, name='admin_movie_provider_crawl_downloads'),
+    path('api/admin/catalog/series/<int:series_id>/provider-discover/', series_provider_discover, name='admin_series_provider_discover'),
+    path('api/admin/catalog/series/<int:series_id>/provider-crawl-downloads/', series_provider_crawl_downloads, name='admin_series_provider_crawl_downloads'),
+    path('api/admin/provider-import/jobs/', provider_import_job_list, name='admin_provider_import_jobs'),
+    path('api/admin/provider-import/jobs/<uuid:job_id>/', provider_import_job_detail, name='admin_provider_import_job'),
+    path('api/admin/provider-import/jobs/<uuid:job_id>/cancel/', provider_import_job_cancel, name='admin_provider_import_cancel'),
+    path('api/admin/provider-import/jobs/<uuid:job_id>/approve-match/', provider_import_job_approve_match, name='admin_provider_import_approve'),
+    path('api/admin/provider-import/jobs/<uuid:job_id>/import/', provider_import_job_import_selected, name='admin_provider_import_selected'),
+    path('api/admin/provider-import/jobs/<uuid:job_id>/items/', provider_import_job_items, name='admin_provider_import_items'),
+    path('api/admin/provider-import/jobs/<uuid:job_id>/candidates/', provider_import_job_candidates, name='admin_provider_import_candidates'),
+    path('api/admin/provider-import/jobs/<uuid:job_id>/logs/', provider_import_job_logs, name='admin_provider_import_logs'),
     path('api/series/', series_list, name='series_list'),
-    path('api/series/<slug:slug>/', series_detail, name='series_detail'),
+    path('api/series/<uslug:slug>/', series_detail, name='series_detail'),
     path('api/genres/', genre_list, name='genre_list'),
+    path('api/home/rails/', home_rails, name='home_rails'),
+    path('api/countries/', country_list, name='country_list'),
     path('api/actors/', actor_list, name='actor_list'),
-    path('api/actors/<slug:slug>/', actor_detail, name='actor_detail'),
+    path('api/actors/<uslug:slug>/', actor_detail, name='actor_detail'),
     path('api/directors/', director_list, name='director_list'),
-    path('api/directors/<slug:slug>/', director_detail, name='director_detail'),
+    path('api/directors/<uslug:slug>/', director_detail, name='director_detail'),
     path('api/search/', search_content, name='search_content'),
     path('api/trending/', trending, name='trending'),
     path('api/events/', create_privacy_safe_event, name='create_privacy_safe_event'),
@@ -54,5 +155,17 @@ urlpatterns = [
     path('api/engagement/ratings/summary/', rating_summary, name='rating_summary'),
     path('api/engagement/watchlist/', watchlist_list, name='watchlist_list'),
     path('api/engagement/watchlist/toggle/', watchlist_toggle, name='watchlist_toggle'),
+    path('api/engagement/likes/', likes_list, name='likes_list'),
     path('api/engagement/likes/toggle/', like_toggle, name='like_toggle'),
+    path('api/engagement/watch-stats/', watch_stats, name='watch_stats'),
+    path('api/support/tickets/', support_ticket_list_create, name='support_ticket_list_create'),
+    path('api/support/tickets/<str:tracking_code>/', support_ticket_detail, name='support_ticket_detail'),
+    path('api/admin/reviews/', admin_reviews_list, name='admin_reviews_list'),
+    path('api/admin/reviews/<int:rating_id>/', admin_review_detail, name='admin_review_detail'),
+    path('api/admin/support/tickets/', admin_support_inbox, name='admin_support_inbox'),
+    path(
+        'api/admin/support/tickets/<str:tracking_code>/',
+        admin_support_ticket_detail,
+        name='admin_support_ticket_detail',
+    ),
 ]

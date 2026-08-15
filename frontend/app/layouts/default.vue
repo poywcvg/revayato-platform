@@ -1,19 +1,29 @@
-<script setup lang="ts">
-const route = useRoute()
-const cinematic = computed(() => route.path === '/' || route.path.startsWith('/watch'))
-</script>
-
 <template>
-  <div class="cinematic-app flex min-h-dvh flex-col overflow-x-clip">
+  <!-- Avoid overflow-x-clip on sticky ancestors — it breaks sticky header/tabs. -->
+  <div class="cinematic-app flex min-h-dvh flex-col">
     <AppHeader />
-    <div class="mx-auto flex w-full max-w-[1600px] flex-1">
-      <main id="main-content" class="min-h-[calc(100dvh-132px)] min-w-0 flex-1 overflow-x-clip md:min-h-[calc(100dvh-68px)]" :class="cinematic ? 'bg-transparent' : 'app-light-page'">
-        <span id="page-top-sentinel" class="pointer-events-none absolute h-px w-px" aria-hidden="true" />
-        <slot />
-      </main>
-    </div>
+    <main
+      id="main-content"
+      tabindex="-1"
+      class="min-h-[calc(100dvh-var(--header-height))] min-w-0 flex-1"
+    >
+      <span id="page-top-sentinel" class="pointer-events-none absolute h-px w-px" aria-hidden="true" />
+      <slot />
+    </main>
     <AppFooter />
-    <MobileBottomNav />
     <ScrollToTop />
+    <TelegramWelcomeModal />
   </div>
 </template>
+
+<style scoped>
+.cinematic-app {
+  padding-bottom: calc(var(--mobile-bottom-nav-height) + env(safe-area-inset-bottom, 0px));
+}
+
+@media (min-width: 768px) {
+  .cinematic-app {
+    padding-bottom: 0;
+  }
+}
+</style>

@@ -122,13 +122,14 @@ function isSafeEventsEndpoint(value: unknown) {
 export function useAnalyticsEvent() {
   const config = useRuntimeConfig()
   const { api } = useApi()
+  const authStore = useAuthStore()
   const { consent, events, personalizationEnabled, eventCount } = usePersonalizationState()
   const preferences = useState<RecommendationPreferences>('recommendation-preferences', defaultPreferences)
   const hydrated = useState('analytics-local-hydrated', () => false)
   const syncing = useState('analytics-syncing', () => false)
 
   function persistEvents() {
-    if (!import.meta.client || !personalizationEnabled.value) return
+    if (!import.meta.client || !personalizationEnabled.value || !authStore.isAuthenticated) return
     try {
       localStorage.setItem(EVENTS_STORAGE_KEY, JSON.stringify(events.value))
     } catch {
@@ -149,7 +150,7 @@ export function useAnalyticsEvent() {
     if (!import.meta.client || hydrated.value) return
     hydrated.value = true
 
-    if (!personalizationEnabled.value) {
+    if (!personalizationEnabled.value || !authStore.isAuthenticated) {
       events.value = []
       try { localStorage.removeItem(EVENTS_STORAGE_KEY) } catch { /* Optional storage. */ }
       return
@@ -169,19 +170,6 @@ export function useAnalyticsEvent() {
     } catch {
       events.value = []
       preferences.value = defaultPreferences()
-    }
-  }
-
-  function getAnonymousSessionId() {
-    if (!import.meta.client || !personalizationEnabled.value) return undefined
-    try {
-      const existing = sessionStorage.getItem(SESSION_STORAGE_KEY)
-      if (existing) return existing
-      const sessionId = crypto.randomUUID()
-      sessionStorage.setItem(SESSION_STORAGE_KEY, sessionId)
-      return sessionId
-    } catch {
-      return undefined
     }
   }
 
@@ -221,7 +209,7 @@ export function useAnalyticsEvent() {
   }
 
   function track(input: AnalyticsEventInput) {
-    if (!import.meta.client || !personalizationEnabled.value) return null
+    if (!import.meta.client || !personalizationEnabled.value || !authStore.isAuthenticated) return null
     hydrateLocalState()
 
     const event: AnalyticsEvent = {
@@ -230,8 +218,6 @@ export function useAnalyticsEvent() {
       source_page: sanitizeSourcePage(input.source_page || window.location.pathname),
       timestamp: input.timestamp || new Date().toISOString(),
     }
-    const sessionId = getAnonymousSessionId()
-    if (sessionId) event.anonymous_session_id = sessionId
     if (input.user_id) event.user_id = input.user_id
     if (input.title_id) event.title_id = Math.max(1, Math.trunc(input.title_id))
     if (input.title_slug) event.title_slug = sanitizeText(input.title_slug, 120)
@@ -372,7 +358,8 @@ export function useAnalyticsEvent() {
   }
 
   async function syncPendingEvents(): Promise<AnalyticsSyncResult> {
-    if (!personalizationEnabled.value
+    if (!authStore.isAuthenticated
+      || !personalizationEnabled.value
       || config.public.analyticsTransport !== 'api'
       || !isSafeEventsEndpoint(config.public.eventsEndpoint)
       || syncing.value) {
@@ -403,7 +390,7 @@ export function useAnalyticsEvent() {
   }
 
   function scheduleSync() {
-    if (!import.meta.client || config.public.analyticsTransport !== 'api' || !personalizationEnabled.value) return
+    if (!import.meta.client || !authStore.isAuthenticated || config.public.analyticsTransport !== 'api' || !personalizationEnabled.value) return
     if (syncTimer) clearTimeout(syncTimer)
     syncTimer = setTimeout(() => {
       syncTimer = null

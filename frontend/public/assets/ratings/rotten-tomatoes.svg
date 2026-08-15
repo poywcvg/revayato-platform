@@ -1,0 +1,5 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" role="img" aria-label="Rotten Tomatoes">
+  <circle cx="16" cy="18" r="11" fill="#FA320A"/>
+  <path d="M10 9c2.2-3 5.4-4.4 8.8-3.2.4 1.8-.2 3.4-1.6 4.6-2.4.2-4.8-.2-7.2-1.4Z" fill="#2ECC71"/>
+  <circle cx="16" cy="19" r="4.5" fill="#fff" opacity=".92"/>
+</svg>

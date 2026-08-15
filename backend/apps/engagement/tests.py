@@ -169,3 +169,114 @@ class PrivacySafeEventApiTests(TestCase):
         self.assertEqual(second.status_code, 201)
         self.assertEqual(first.data['id'], second.data['id'])
         self.assertEqual(UserActivityEvent.objects.count(), 1)
+
+
+class ReviewAndSupportApiTests(TestCase):
+    def setUp(self):
+        self.client = APIClient()
+        self.user = User.objects.create_user(
+            username='reviewer', email='reviewer@example.com', password='pass12345',
+        )
+        self.staff = User.objects.create_user(
+            username='staffer', email='staff@example.com', password='pass12345', is_staff=True,
+        )
+        self.movie = Movie.objects.create(title='Comment Movie', slug='comment-movie')
+
+    def test_rate_with_review_appears_in_summary(self):
+        self.client.force_authenticate(self.user)
+        response = self.client.post(reverse('rate_content'), {
+            'content_type': 'movie',
+            'object_id': self.movie.pk,
+            'score': 9,
+            'review': 'فیلم فوق‌العاده‌ای بود.',
+            'is_spoiler': False,
+        }, format='json')
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data['review'], 'فیلم فوق‌العاده‌ای بود.')
+
+        summary = self.client.get(reverse('rating_summary'), {
+            'content_type': 'movie', 'object_id': self.movie.pk,
+        })
+        self.assertEqual(summary.status_code, 200)
+        self.assertEqual(len(summary.data['reviews']), 1)
+        self.assertEqual(summary.data['reviews'][0]['username'], 'reviewer')
+
+    def test_hidden_review_is_excluded_from_public_summary(self):
+        rating = services.rate_content(
+            self.user, 'movie', self.movie.pk, score=7, review='مخفی شود',
+        )
+        services.set_rating_hidden(rating, True)
+        summary = self.client.get(reverse('rating_summary'), {
+            'content_type': 'movie', 'object_id': self.movie.pk,
+        })
+        self.assertEqual(summary.data['reviews'], [])
+
+    def test_support_ticket_flow_user_to_admin(self):
+        self.client.force_authenticate(self.user)
+        created = self.client.post(reverse('support_ticket_list_create'), {
+            'category': 'content_request',
+            'subject': 'درخواست فیلم جدید',
+            'body': 'لطفاً فیلم Inception را اضافه کنید.',
+            'related_title': 'Inception',
+            'related_year': 2010,
+        }, format='json')
+        self.assertEqual(created.status_code, 201)
+        code = created.data['tracking_code']
+        self.assertTrue(code.startswith('HS-'))
+
+        self.client.force_authenticate(self.staff)
+        inbox = self.client.get(reverse('admin_support_inbox'))
+        self.assertEqual(inbox.status_code, 200)
+        self.assertGreaterEqual(inbox.data['unread_count'], 1)
+        self.assertEqual(inbox.data['results'][0]['tracking_code'], code)
+
+        reply = self.client.post(
+            reverse('admin_support_ticket_detail', kwargs={'tracking_code': code}),
+            {'body': 'در صف ورود قرار گرفت.'},
+            format='json',
+        )
+        self.assertEqual(reply.status_code, 200)
+        self.assertEqual(len(reply.data['messages']), 2)
+
+        self.client.force_authenticate(self.user)
+        detail = self.client.get(reverse('support_ticket_detail', kwargs={'tracking_code': code}))
+        self.assertEqual(detail.status_code, 200)
+        self.assertTrue(any(m['is_staff_reply'] for m in detail.data['messages']))
+
+
+class WatchStatsApiTests(TestCase):
+    def setUp(self):
+        self.client = APIClient()
+        self.user = User.objects.create_user(
+            username='watcher', email='watcher@example.com', password='pass12345',
+        )
+        self.movie = Movie.objects.create(
+            title='Long Watch', slug='long-watch', duration_minutes=100, is_published=True,
+        )
+
+    def test_requires_auth(self):
+        response = self.client.get(reverse('watch_stats'))
+        self.assertEqual(response.status_code, 401)
+
+    def test_estimates_minutes_from_progress_and_duration(self):
+        UserActivityEvent.objects.create(
+            user=self.user,
+            content_type='movie',
+            object_id=self.movie.pk,
+            action='watch_progress',
+            progress=50,
+        )
+        UserActivityEvent.objects.create(
+            user=self.user,
+            content_type='movie',
+            object_id=self.movie.pk,
+            action='complete_watch',
+            progress=100,
+        )
+        self.client.force_authenticate(self.user)
+        response = self.client.get(reverse('watch_stats'))
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data['total_minutes'], 100.0)
+        self.assertEqual(response.data['titles_completed'], 1)
+        self.assertIn('milestone', response.data)
+        self.assertIn('equivalents', response.data)

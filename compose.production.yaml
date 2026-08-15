@@ -25,16 +25,27 @@ services:
       NUXT_PUBLIC_ANALYTICS_TRANSPORT: api
       NUXT_PUBLIC_EVENTS_ENDPOINT: /events/
       NUXT_API_INTERNAL_BASE: http://backend:8000/api
+      # Keep the SSR process under the container mem_limit on 4Gi hosts.
+      NODE_OPTIONS: --max-old-space-size=768
+      NITRO_COMPRESS_PUBLIC_ASSETS: "1"
     expose:
       - "3000"
     healthcheck:
-      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"]
-      interval: 15s
-      timeout: 5s
+      # Prefer /health (no SSR). Fall back to favicon for images built before that route.
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "const urls=['http://127.0.0.1:3000/health','http://127.0.0.1:3000/favicon.svg'];(async()=>{for(const u of urls){try{const r=await fetch(u);if(r.ok)process.exit(0)}catch{}};process.exit(1)})()",
+        ]
+      interval: 20s
+      timeout: 10s
       retries: 5
-      start_period: 30s
-    mem_limit: 1536m
-    cpus: 1.5
+      start_period: 45s
+    mem_limit: 1024m
+    cpus: 1.25
+    cpu_shares: 1536
     logging: *default-logging
     networks:
       - edge
@@ -57,9 +68,20 @@ services:
       DB_PASSWORD: ${POSTGRES_PASSWORD}
       DB_HOST: postgres
       DB_PORT: "5432"
+      DB_CONN_MAX_AGE: "30"
+      # Public requests must never pin a worker/database connection indefinitely.
+      DB_STATEMENT_TIMEOUT_MS: "5000"
       REDIS_URL: redis://redis:6379/0
       CACHE_URL: redis://redis:6379/1
+      CELERY_BROKER_URL: redis://redis-queue:6379/0
+      CELERY_RESULT_BACKEND: redis://redis-queue:6379/1
       CHANNEL_LAYER_BACKEND: channels_redis.core.RedisChannelLayer
+      # 2 workers fit a 4Gi host; raise via WEB_CONCURRENCY when more RAM is available.
+      WEB_CONCURRENCY: ${WEB_CONCURRENCY:-2}
+      WEB_LIMIT_CONCURRENCY: ${WEB_LIMIT_CONCURRENCY:-80}
+      WEB_KEEPALIVE_SECONDS: ${WEB_KEEPALIVE_SECONDS:-15}
+      WEB_MAX_REQUESTS: ${WEB_MAX_REQUESTS:-1500}
+      WEB_MAX_REQUESTS_JITTER: ${WEB_MAX_REQUESTS_JITTER:-150}
     volumes:
       - static_data:/app/staticfiles
       - media_data:/app/media
@@ -71,31 +93,41 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+      redis-queue:
+        condition: service_healthy
     healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/health/', timeout=2).read()"]
-      interval: 15s
-      timeout: 5s
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import os, urllib.request; host=(os.environ.get('DJANGO_ALLOWED_HOSTS') or 'localhost').split(',')[0].strip() or 'localhost'; req=urllib.request.Request('http://127.0.0.1:8000/api/health/', headers={'Host': host}); urllib.request.urlopen(req, timeout=6).read()",
+        ]
+      interval: 20s
+      timeout: 10s
       retries: 5
-      start_period: 45s
-    mem_limit: 2g
-    cpus: 2.0
+      start_period: 60s
+    mem_limit: 1536m
+    cpus: 1.5
+    cpu_shares: 2048
     logging: *default-logging
     networks:
       - edge
       - data
 
   catalog-worker:
-    build:
-      context: ./backend
+    image: revayato-backend
     restart: unless-stopped
     init: true
     read_only: true
     tmpfs:
-      - /tmp:size=128m,noexec,nosuid
+      - /tmp:size=768m,noexec,nosuid
     env_file:
       - .env.production
     entrypoint: []
-    command: ["celery", "-A", "config", "worker", "--loglevel=INFO", "--concurrency=2"]
+    # Background imports/ffmpeg must leave CPU headroom for the public API on
+    # the 2-vCPU production host. Both values remain environment-tunable.
+    command: ["celery", "-A", "config", "worker", "--loglevel=INFO", "--concurrency=${CATALOG_WORKER_CONCURRENCY:-1}", "--prefetch-multiplier=1", "--max-tasks-per-child=20", "-Q", "celery"]
     environment:
       DJANGO_DEBUG: "False"
       DB_ENGINE: django.db.backends.postgresql
@@ -104,27 +136,136 @@ services:
       DB_PASSWORD: ${POSTGRES_PASSWORD}
       DB_HOST: postgres
       DB_PORT: "5432"
+      DB_CONN_MAX_AGE: "30"
       REDIS_URL: redis://redis:6379/0
       CACHE_URL: redis://redis:6379/1
-      CELERY_BROKER_URL: redis://redis:6379/2
-      CELERY_RESULT_BACKEND: redis://redis:6379/3
+      CELERY_BROKER_URL: redis://redis-queue:6379/0
+      CELERY_RESULT_BACKEND: redis://redis-queue:6379/1
     volumes:
+      # SoftSub WebVTT extracts must land on the same media volume the API serves.
+      - media_data:/app/media
       - ${CATALOG_MEDIA_MANIFEST_HOST_PATH:-./backend/catalog-media-manifest.example.json}:/run/catalog-media-manifest.json:ro
     depends_on:
       backend:
         condition: service_healthy
       redis:
         condition: service_healthy
-    mem_limit: 1g
-    cpus: 1.0
+      redis-queue:
+        condition: service_healthy
+    mem_limit: 768m
+    cpus: ${CATALOG_WORKER_CPUS:-0.35}
+    cpu_shares: 128
+    logging: *default-logging
+    networks:
+      - edge
+      - data
+
+  catalog-worker-urgent:
+    image: revayato-backend
+    restart: unless-stopped
+    init: true
+    read_only: true
+    tmpfs:
+      - /tmp:size=768m,noexec,nosuid
+    env_file:
+      - .env.production
+    entrypoint: []
+    command: ["celery", "-A", "config", "worker", "--loglevel=INFO", "--concurrency=${CATALOG_URGENT_WORKER_CONCURRENCY:-1}", "--prefetch-multiplier=1", "--max-tasks-per-child=15", "-Q", "softsub-urgent"]
+    environment:
+      DJANGO_DEBUG: "False"
+      DB_ENGINE: django.db.backends.postgresql
+      DB_NAME: ${POSTGRES_DB}
+      DB_USER: ${POSTGRES_USER}
+      DB_PASSWORD: ${POSTGRES_PASSWORD}
+      DB_HOST: postgres
+      DB_PORT: "5432"
+      DB_CONN_MAX_AGE: "30"
+      REDIS_URL: redis://redis:6379/0
+      CACHE_URL: redis://redis:6379/1
+      CELERY_BROKER_URL: redis://redis-queue:6379/0
+      CELERY_RESULT_BACKEND: redis://redis-queue:6379/1
+    volumes:
+      # SoftSub WebVTT extracts must land on the same media volume the API serves.
+      - media_data:/app/media
+      - ${CATALOG_MEDIA_MANIFEST_HOST_PATH:-./backend/catalog-media-manifest.example.json}:/run/catalog-media-manifest.json:ro
+    depends_on:
+      backend:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      redis-queue:
+        condition: service_healthy
+    mem_limit: 768m
+    cpus: ${CATALOG_URGENT_WORKER_CPUS:-0.35}
+    cpu_shares: 128
+    logging: *default-logging
+    networks:
+      - edge
+      - data
+
+  # Permanent low-priority Film2Media delta crawler. Every round imports only
+  # new, directly playable titles and backfills their download sizes, then the
+  # process sleeps. A hard CPU cap protects public API/frontend latency.
+  catalog-crawler:
+    image: revayato-backend
+    restart: unless-stopped
+    init: true
+    read_only: true
+    tmpfs:
+      - /tmp:size=128m,noexec,nosuid
+    env_file:
+      - .env.production
+    entrypoint: []
+    command: ["python", "/app/scripts/run_myf2m_catalog_loop.py"]
+    environment:
+      DJANGO_DEBUG: "False"
+      DB_ENGINE: django.db.backends.postgresql
+      DB_NAME: ${POSTGRES_DB}
+      DB_USER: ${POSTGRES_USER}
+      DB_PASSWORD: ${POSTGRES_PASSWORD}
+      DB_HOST: postgres
+      DB_PORT: "5432"
+      DB_CONN_MAX_AGE: "0"
+      # Bulk ingestion has its own CPU cap and may legitimately run longer reads.
+      DB_STATEMENT_TIMEOUT_MS: "30000"
+      REDIS_URL: redis://redis:6379/0
+      CACHE_URL: redis://redis:6379/1
+      CELERY_BROKER_URL: redis://redis-queue:6379/0
+      CELERY_RESULT_BACKEND: redis://redis-queue:6379/1
+      MYF2M_CRAWL_INTERVAL_SECONDS: ${MYF2M_CRAWL_INTERVAL_SECONDS:-21600}
+      MYF2M_BULK_CRAWL_DELAY_SECONDS: ${MYF2M_BULK_CRAWL_DELAY_SECONDS:-3.0}
+      MYF2M_SIZE_WORKERS: ${MYF2M_SIZE_WORKERS:-4}
+      MYF2M_SIZE_TIMEOUT_SECONDS: ${MYF2M_SIZE_TIMEOUT_SECONDS:-10}
+      MYF2M_CRAWLER_NICE: ${MYF2M_CRAWLER_NICE:-10}
+    volumes:
+      - media_data:/app/media
+      - ${CATALOG_MEDIA_MANIFEST_HOST_PATH:-./backend/catalog-media-manifest.example.json}:/run/catalog-media-manifest.json:ro
+      # Keep the operations runner hot-patchable without rebuilding the large
+      # backend image; normal future images also contain these scripts.
+      - ./backend/scripts/run_myf2m_catalog_loop.py:/app/scripts/run_myf2m_catalog_loop.py:ro
+      - ./backend/scripts/import_missing_myf2m_batch.py:/app/scripts/import_missing_myf2m_batch.py:ro
+      - ./backend/scripts/backfill_download_sizes.py:/app/scripts/backfill_download_sizes.py:ro
+      - ./backend/apps/catalog/provider_import/providers/cdn_link_parse.py:/app/apps/catalog/provider_import/providers/cdn_link_parse.py:ro
+    depends_on:
+      backend:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      redis-queue:
+        condition: service_healthy
+    stop_grace_period: 30s
+    mem_limit: 384m
+    cpus: ${MYF2M_BULK_CRAWLER_CPUS:-0.15}
+    cpu_shares: 64
     logging: *default-logging
     networks:
       - edge
       - data
 
   catalog-beat:
-    build:
-      context: ./backend
+    image: revayato-backend
     restart: unless-stopped
     init: true
     read_only: true
@@ -142,15 +283,21 @@ services:
       DB_PASSWORD: ${POSTGRES_PASSWORD}
       DB_HOST: postgres
       DB_PORT: "5432"
+      DB_CONN_MAX_AGE: "30"
       REDIS_URL: redis://redis:6379/0
       CACHE_URL: redis://redis:6379/1
+      CELERY_BROKER_URL: redis://redis-queue:6379/0
+      CELERY_RESULT_BACKEND: redis://redis-queue:6379/1
     depends_on:
       backend:
         condition: service_healthy
       redis:
         condition: service_healthy
+      redis-queue:
+        condition: service_healthy
     mem_limit: 512m
     cpus: 0.5
+    cpu_shares: 128
     logging: *default-logging
     networks:
       - edge
@@ -159,6 +306,9 @@ services:
   postgres:
     image: postgres:17-alpine
     restart: unless-stopped
+    # Parallel query workers exchange data through /dev/shm; Docker's default
+    # 64MB is far too small and causes "No space left on device" 500s on search.
+    shm_size: 1g
     environment:
       POSTGRES_DB: ${POSTGRES_DB}
       POSTGRES_USER: ${POSTGRES_USER}
@@ -166,13 +316,27 @@ services:
     command:
       - postgres
       - -c
-      - max_connections=100
+      - max_connections=150
       - -c
       - shared_buffers=512MB
       - -c
       - effective_cache_size=1536MB
       - -c
       - maintenance_work_mem=128MB
+      - -c
+      - work_mem=16MB
+      - -c
+      - random_page_cost=1.1
+      - -c
+      - effective_io_concurrency=200
+      - -c
+      - checkpoint_completion_target=0.9
+      - -c
+      - wal_buffers=16MB
+      - -c
+      - default_statistics_target=100
+      - -c
+      - idle_in_transaction_session_timeout=60000
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
@@ -183,6 +347,7 @@ services:
       start_period: 20s
     mem_limit: 2g
     cpus: 1.5
+    cpu_shares: 2048
     logging: *default-logging
     networks:
       - data
@@ -197,16 +362,48 @@ services:
       - --appendonly
       - "no"
       - --maxmemory
-      - 384mb
+      - 512mb
       - --maxmemory-policy
       - allkeys-lru
+      - --tcp-keepalive
+      - "60"
+      - --timeout
+      - "300"
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 10s
       timeout: 3s
       retries: 10
-    mem_limit: 512m
+    mem_limit: 640m
     cpus: 0.5
+    cpu_shares: 512
+    logging: *default-logging
+    networks:
+      - data
+
+  redis-queue:
+    image: redis:7.4-alpine
+    restart: unless-stopped
+    command:
+      - redis-server
+      - --appendonly
+      - "yes"
+      - --appendfsync
+      - everysec
+      - --maxmemory
+      - 512mb
+      - --maxmemory-policy
+      - noeviction
+    volumes:
+      - celery_queue_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+    mem_limit: 640m
+    cpus: 0.5
+    cpu_shares: 512
     logging: *default-logging
     networks:
       - data
@@ -216,9 +413,7 @@ services:
     restart: unless-stopped
     environment:
       SITE_DOMAIN: ${SITE_DOMAIN}
-      API_DOMAIN: ${API_DOMAIN}
-      MEDIA_DOMAIN: ${MEDIA_DOMAIN}
-      DOWNLOAD_DOMAIN: ${DOWNLOAD_DOMAIN}
+      WWW_DOMAIN: ${WWW_DOMAIN:-www.${SITE_DOMAIN}}
       ACME_EMAIL: ${ACME_EMAIL}
       HSTS_MAX_AGE: ${DJANGO_SECURE_HSTS_SECONDS:-3600}
     ports:
@@ -239,6 +434,7 @@ services:
         condition: service_healthy
     mem_limit: 384m
     cpus: 0.5
+    cpu_shares: 1024
     logging: *default-logging
     networks:
       - edge
@@ -250,6 +446,7 @@ volumes:
   downloads_data:
   caddy_data:
   caddy_config:
+  celery_queue_data:
 
 networks:
   edge:

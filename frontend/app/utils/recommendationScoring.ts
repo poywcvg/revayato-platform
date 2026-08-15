@@ -37,8 +37,9 @@ export interface BehaviorProfile {
 }
 
 const DAY_MS = 86_400_000
-const RECENCY_HALF_LIFE_DAYS = 14
-const MAX_DIVERSITY_POOL = 40
+const RECENCY_HALF_LIFE_DAYS = 10
+const MAX_DIVERSITY_POOL = 48
+const EXPLORATION_SLOTS = 1
 
 const languageAliases: Record<string, string[]> = {
   fa: ['fa', 'فارسی', 'persian', 'farsi'],
@@ -329,13 +330,33 @@ export function buildBehaviorProfile(events: readonly AnalyticsEvent[], catalog:
   return profile
 }
 
-function buildDemandScores(signals: readonly AggregateDemandSignal[]) {
+function buildDemandScores(signals: readonly AggregateDemandSignal[], catalog: readonly Movie[] = []) {
   const scores = new Map<string, number>()
   for (const signal of signals) {
     const boundedScore = Math.min(10, Math.max(0, signal.score)) / 5
     signal.genre_slugs.forEach(slug => addSignal(scores, slug, boundedScore))
   }
+  // Live catalog demand: popular + trending titles seed cold-start genre affinity.
+  if (!signals.length && catalog.length) {
+    [...catalog]
+      .sort((a, b) => (Number(b.is_trending) - Number(a.is_trending)) || b.popularity - a.popularity)
+      .slice(0, 24)
+      .forEach((item, index) => {
+        const weight = Math.max(0.2, 1.4 - index * 0.04)
+        item.genres.forEach(genre => addSignal(scores, genre.slug, weight))
+      })
+  }
   return scores
+}
+
+function playableBoost(item: Movie) {
+  let boost = 0
+  if (item.is_dubbed) boost += 2.4
+  if (item.has_subtitle) boost += 2.1
+  if ((item.download_links || []).some(link => Boolean(link.url))) boost += 3.2
+  if (item.hls_url || item.playback?.signed_playback_url || item.playback?.hls_url) boost += 1.5
+  if ((item.playback?.subtitle_tracks || item.subtitle_tracks || []).length) boost += 1.8
+  return boost
 }
 
 function sensitivityScore(item: Movie, preference: RecommendationPreferences['content_sensitivity']) {
@@ -381,19 +402,24 @@ function recommendationReasons(item: Movie, preferences: RecommendationPreferenc
     .map(slug => catalogBySlug.get(slug))
     .find(candidate => candidate && candidate.slug !== item.slug && similarity(item, candidate) >= 0.35)
 
-  if (favoriteGenre) reasons.push(`چون ${favoriteGenre.title} را در علاقه‌مندی‌ها انتخاب کردی`)
-  if (recentSimilar) reasons.push(`نزدیک به حال‌وهوای «${recentSimilar.title}» که اخیراً پسندیدی`)
-  if (item.director && (profile.directors.get(item.director) || 0) >= 1.8) reasons.push(`به خاطر علاقه‌ات به آثار ${item.director}`)
-  if (behaviorGenre) reasons.push(`بر اساس تماشای واقعی تو در ژانر ${behaviorGenre.title}`)
+  if (favoriteGenre) reasons.push(`چون به ${favoriteGenre.title} علاقه داری`)
+  if (recentSimilar) reasons.push(`نزدیک به «${recentSimilar.title}»`)
+  if (item.director && (profile.directors.get(item.director) || 0) >= 1.8) reasons.push(`از ${item.director}`)
+  if (behaviorGenre) reasons.push(`در حال‌وهوای ${behaviorGenre.title}`)
   const matchingCast = item.cast.find(person => (profile.cast.get(person.name) || 0) >= 1.8)
-  if (matchingCast) reasons.push(`با حضور ${matchingCast.name} از انتخاب‌های موردعلاقه‌ات`)
-  if (preferences.playback_preference === 'dubbed' && item.is_dubbed) reasons.push('با دوبله فارسی مطابق ترجیح تو')
-  if (preferences.playback_preference === 'subtitle' && item.has_subtitle) reasons.push('دارای زیرنویس مطابق ترجیح تو')
-  if (includesPreference(item.country, preferences.preferred_countries)) reasons.push('از کشورهای منتخب تو')
-  if (includesLanguage(item.language, preferences.preferred_languages)) reasons.push('هم‌زبان با انتخاب‌های تو')
-  if (preferences.content_sensitivity === 'reduced' && !item.is_uncensored && item.age_rating !== '18+' && item.content_warnings.length <= 1) reasons.push('هماهنگ با اولویت محتوای کم‌حساسیت‌تر تو')
-  if (!reasons.length && item.is_trending) reasons.push('ترند این هفته در پلتفرم')
-  if (!reasons.length) reasons.push(item.recommendation_reason || 'انتخاب باکیفیت و محبوب برای شروع کشف')
+  if (matchingCast) reasons.push(`با حضور ${matchingCast.name}`)
+  if (preferences.playback_preference === 'dubbed' && item.is_dubbed) reasons.push('با دوبله فارسی')
+  if (preferences.playback_preference === 'subtitle' && item.has_subtitle) reasons.push('با زیرنویس فارسی')
+  if (includesPreference(item.country, preferences.preferred_countries)) reasons.push('از کشورهای موردعلاقه‌ات')
+  if (includesLanguage(item.language, preferences.preferred_languages)) reasons.push('هم‌زبان با سلیقه تو')
+  if (preferences.content_sensitivity === 'reduced' && !item.is_uncensored && item.age_rating !== '18+' && item.content_warnings.length <= 1) reasons.push('سبک‌تر و کم‌حساسیت‌تر')
+  if (!reasons.length && item.is_trending) reasons.push('از انتخاب‌های امروز')
+  if (!reasons.length) reasons.push(item.recommendation_reason || 'پیشنهاد روایتو')
+  if (item.is_dubbed && preferences.playback_preference === 'any' && reasons.length < 2) {
+    reasons.push('دوبله فارسی')
+  } else if (item.has_subtitle && preferences.playback_preference === 'any' && reasons.length < 2) {
+    reasons.push('زیرنویس فارسی')
+  }
   return [...new Set(reasons)].slice(0, 2)
 }
 
@@ -404,9 +430,14 @@ function diversify(ranked: RankedRecommendation[], limit: number) {
   while (selected.length < limit && pool.length) {
     let bestIndex = 0
     let bestAdjustedScore = Number.NEGATIVE_INFINITY
+    const explore = selected.length >= Math.max(1, limit - EXPLORATION_SLOTS)
     pool.forEach((candidate, index) => {
       const overlap = selected.length ? Math.max(...selected.map(entry => similarity(candidate.item, entry.item))) : 0
-      const adjustedScore = candidate.score - overlap * 3.25
+      // Last slot: slightly prefer less-similar / fresher titles (exploration).
+      const novelty = explore
+        ? (candidate.item.is_new ? 1.4 : 0) + (candidate.item.is_trending ? 0.8 : 0) - overlap * 1.1
+        : 0
+      const adjustedScore = candidate.score - overlap * 3.25 + novelty
       if (adjustedScore > bestAdjustedScore) {
         bestAdjustedScore = adjustedScore
         bestIndex = index
@@ -426,18 +457,19 @@ export function rankRecommendations(
   now = Date.now(),
 ): RankedRecommendation[] {
   const profile = buildBehaviorProfile(events, catalog, now)
-  const demand = buildDemandScores(demandSignals)
+  const demand = buildDemandScores(demandSignals, catalog)
   const catalogBySlug = new Map(catalog.map(item => [item.slug, item]))
-  const behaviorBlend = 0.45 + profile.confidence * 0.55
+  const behaviorBlend = 0.42 + profile.confidence * 0.58
   const recentContextItems = profile.recentPositiveSlugs
     .map(slug => catalogBySlug.get(slug))
     .filter((item): item is Movie => Boolean(item))
 
   const ranked = catalog.map((item) => {
-    let score = item.rating * 1.35 + item.popularity / 20
-    score += item.is_recommended ? 7 : 0
-    score += item.is_trending ? 2.5 : 0
-    score += item.is_new ? 0.8 : 0
+    let score = item.rating * 1.25 + item.popularity / 18
+    score += item.is_recommended ? 6.5 : 0
+    score += item.is_trending ? 3.2 : 0
+    score += item.is_new ? 1.1 : 0
+    score += playableBoost(item)
     score += profile.items.get(item.slug) || 0
     score += playbackScore(item, preferences.playback_preference)
     score += sensitivityScore(item, preferences.content_sensitivity)
@@ -447,19 +479,19 @@ export function rankRecommendations(
     if (preferences.preferred_age_ratings.includes(item.age_rating)) score += 4
     else if (preferences.preferred_age_ratings.length) score -= 2
 
-    let behavioralScore = mapScore(profile.directors, item.director, 0.9)
+    let behavioralScore = mapScore(profile.directors, item.director, 0.95)
       + mapScore(profile.formats, item.format, 0.65)
-      + mapScore(profile.contentTypes, item.type, 0.7)
-    item.cast.slice(0, 5).forEach(person => { behavioralScore += mapScore(profile.cast, person.name, 0.35) })
+      + mapScore(profile.contentTypes, item.type, 0.75)
+    item.cast.slice(0, 5).forEach(person => { behavioralScore += mapScore(profile.cast, person.name, 0.38) })
     normalizedTokens(item.country).forEach(country => { behavioralScore += mapScore(profile.countries, country, 0.45) })
     normalizedTokens(item.language).forEach(language => { behavioralScore += mapScore(profile.languages, language, 0.45) })
-    if (item.is_dubbed) behavioralScore += mapScore(profile.playback, 'dubbed', 0.65)
-    if (item.has_subtitle) behavioralScore += mapScore(profile.playback, 'subtitle', 0.55)
+    if (item.is_dubbed) behavioralScore += mapScore(profile.playback, 'dubbed', 0.8)
+    if (item.has_subtitle) behavioralScore += mapScore(profile.playback, 'subtitle', 0.7)
 
     for (const genre of item.genres) {
-      if (preferences.favorite_genres.includes(genre.slug)) score += 11
-      if (preferences.disliked_genres.includes(genre.slug)) score -= 22
-      behavioralScore += mapScore(profile.genres, genre.slug, 1.05)
+      if (preferences.favorite_genres.includes(genre.slug)) score += 12
+      if (preferences.disliked_genres.includes(genre.slug)) score -= 24
+      behavioralScore += mapScore(profile.genres, genre.slug, 1.12)
       score += demand.get(genre.slug) || 0
     }
     score += behavioralScore * behaviorBlend
@@ -467,13 +499,19 @@ export function rankRecommendations(
     const recentContextSimilarity = recentContextItems.length
       ? Math.max(...recentContextItems.filter(context => context.slug !== item.slug).map(context => similarity(item, context)), 0)
       : 0
-    score += recentContextSimilarity * (7 + profile.confidence * 7)
+    score += recentContextSimilarity * (7.5 + profile.confidence * 7.5)
 
     if (profile.preferredDuration !== null) score += Math.max(-1.5, 2.2 - Math.abs(item.duration_minutes - profile.preferredDuration) / 28)
     if (profile.preferredYear !== null) score += Math.max(-1, 1.4 - Math.abs(item.year - profile.preferredYear) / 5)
-    score -= Math.max(item.progress_percent, profile.progress.get(item.slug) || 0) * 0.04
-    if (profile.completed.has(item.slug)) score -= 25
-    if (profile.disliked.has(item.slug)) score -= 80
+    score -= Math.max(item.progress_percent, profile.progress.get(item.slug) || 0) * 0.045
+    if (profile.completed.has(item.slug)) score -= 28
+    if (profile.disliked.has(item.slug)) score -= 85
+
+    // Cold-start: lean on today's trends + playable quality until confidence grows.
+    if (profile.confidence < 0.2) {
+      score += item.is_trending ? 4 : 0
+      score += playableBoost(item) * 0.45
+    }
 
     const reasons = recommendationReasons(item, preferences, profile, catalogBySlug)
     return {

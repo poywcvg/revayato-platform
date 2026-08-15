@@ -4,6 +4,7 @@ from django.contrib.auth.password_validation import validate_password
 from rest_framework import serializers
 
 from config.public_urls import media_url
+from users.username_policy import validate_username_policy
 
 from .models import Profile, UserPrivacySetting
 
@@ -30,11 +31,14 @@ def validate_user_password(password, user=None):
 
 
 class LoginSerializer(serializers.Serializer):
-    email = serializers.EmailField()
+    login = serializers.CharField(max_length=254)
     password = serializers.CharField(write_only=True, trim_whitespace=False, max_length=128)
 
-    def validate_email(self, value):
-        return value.strip().lower()
+    def validate_login(self, value):
+        value = value.strip()
+        if not value:
+            raise serializers.ValidationError('ایمیل یا نام کاربری را وارد کن.')
+        return value
 
 
 class PasswordResetRequestSerializer(serializers.Serializer):
@@ -77,6 +81,8 @@ class MeSerializer(serializers.Serializer):
     email = serializers.EmailField(source='user.email', read_only=True)
     username = serializers.CharField(source='user.username', read_only=True)
     is_verified = serializers.BooleanField(source='user.is_verified', read_only=True)
+    is_staff = serializers.BooleanField(source='user.is_staff', read_only=True)
+    is_superuser = serializers.BooleanField(source='user.is_superuser', read_only=True)
     profile = ProfileSerializer(read_only=True)
 
 
@@ -92,13 +98,14 @@ class RegisterSerializer(serializers.Serializer):
         return value
 
     def validate_username(self, value):
-        value = value.strip()
-        if len(value) < 3:
-            raise serializers.ValidationError('نام کاربری باید حداقل ۳ کاراکتر باشد.')
-        if any(character.isspace() for character in value):
-            raise serializers.ValidationError('نام کاربری نباید فاصله داشته باشد.')
-        if User.objects.filter(username__iexact=value).exists():
-            raise serializers.ValidationError('این نام کاربری قبلاً استفاده شده است.')
+        try:
+            value = validate_username_policy(value)
+        except DjangoValidationError as exc:
+            raise serializers.ValidationError(exc.messages) from exc
+        if User.all_objects.filter(username__iexact=value).exists():
+            raise serializers.ValidationError(
+                f'نام کاربری «{value}» قبلاً گرفته شده است. یک نام کاربری دیگر انتخاب کن.',
+            )
         return value
 
     def validate(self, attrs):

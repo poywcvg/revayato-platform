@@ -1,20 +1,36 @@
 <script setup lang="ts">
 import type { Movie } from '~/types'
+import type { MorphItem } from '~/utils/morphEngine'
+import { isMostlyLatin } from '~/utils/displayNames'
 
 const props = withDefaults(defineProps<{
   items: Movie[]
   autoplayInterval?: number
+  loading?: boolean
 }>(), {
-  autoplayInterval: 7000,
+  autoplayInterval: 6000,
+  loading: false,
 })
 
 const root = useTemplateRef<HTMLElement>('root')
+const media = useTemplateRef<HTMLElement>('media')
+const morphReady = ref(false)
+
+const morphSlider = useTemplateRef<{
+  beginDrag: () => boolean
+  drag: (ndx: number) => void
+  endDrag: () => void
+  setPointer: (x: number, y: number) => void
+}>('morphSlider')
 const thumbnailRail = useTemplateRef<HTMLElement>('thumbnailRail')
-const modalOpen = ref(false)
-const requestedItem = ref<Movie | null>(null)
-const requestedMode = ref<'full' | 'trailer'>('full')
 const manualAnnouncement = ref('')
 let visibilityObserver: IntersectionObserver | null = null
+let suppressHitClick = false
+let suppressHitClickTimer: ReturnType<typeof setTimeout> | null = null
+let dragActive = false
+let dragStartX = 0
+let dragWidth = 1
+let dragMoved = false
 
 const {
   currentIndex,
@@ -28,61 +44,59 @@ const {
 } = useHeroSlider(() => props.items.length, props.autoplayInterval)
 
 const currentItem = computed(() => props.items[currentIndex.value] || props.items[0])
-const detailPath = computed(() => {
+
+const morphItems = computed<MorphItem[]>(() => props.items.map(item => ({
+  image: item.backdrop_url || item.poster_url || '',
+  caption: item.title,
+})))
+
+const morphDuration = computed(() => reducedMotion.value ? 0.4 : 1.1)
+
+const slideTitle = computed(() => {
   const item = currentItem.value
-  return item ? `/${item.type === 'movie' ? 'movies' : 'series'}/${item.slug}` : '/movies'
+  if (!item) return ''
+  return (item.title || item.secondary_title || item.original_title || '').trim()
 })
-const badge = computed(() => {
+
+const slideSubtitle = computed(() => {
   const item = currentItem.value
-  if (!item) return { label: 'ویژه', tone: 'copper' }
-  if (item.is_trending) return { label: 'ترند این هفته', tone: 'crimson' }
-  if (item.is_new) return { label: 'تازه منتشر شده', tone: 'copper' }
-  if (item.is_recommended) return { label: 'پیشنهاد ویژه', tone: 'copper' }
-  return { label: item.type === 'series' ? 'سریال منتخب' : 'فیلم منتخب', tone: 'crimson' }
+  if (!item) return ''
+  const secondary = (item.secondary_title || item.original_title || '').trim()
+  const primary = (item.title || '').trim()
+  return secondary && secondary !== primary ? secondary : ''
 })
-const genreLabel = computed(() => currentItem.value?.genres.slice(0, 2).map(genre => genre.title).join(' · ') || '')
 
-function watchPath(item: Movie, mode: 'full' | 'trailer', confirmed = false) {
-  return {
-    path: `/watch/${item.slug}`,
-    query: {
-      mode,
-      type: item.type,
-      ...(confirmed ? { confirmed: '1' } : {}),
-    },
-  }
-}
+const slideTitleDirection = computed(() => isMostlyLatin(slideTitle.value) ? 'ltr' : 'rtl')
 
-function requestPlay(mode: 'full' | 'trailer') {
+const slideYear = computed(() => {
+  const year = Number(currentItem.value?.year)
+  if (!Number.isFinite(year) || year < 1888 || year > 2100) return null
+  return Math.trunc(year)
+})
+
+const imdbRating = computed(() => {
   const item = currentItem.value
-  if (!item) return
-  requestedItem.value = item
-  requestedMode.value = mode
-  if (item.age_rating === '18+') {
-    pause('adult-modal')
-    modalOpen.value = true
-    return
-  }
-  void navigateTo(watchPath(item, mode))
-}
+  if (!item) return ''
+  const ratings = item.ratings || []
+  const imdb = ratings.find(entry => entry.source === 'imdb')
+  if (imdb?.displayValue) return String(imdb.displayValue)
+  const legacy = Number(item.imdb_rating)
+  if (Number.isFinite(legacy) && legacy > 0) return legacy.toFixed(1)
+  return ''
+})
 
-function closeAdultModal() {
-  modalOpen.value = false
-  requestedItem.value = null
-  resume('adult-modal')
-}
+const detailHref = computed(() => {
+  const item = currentItem.value
+  if (!item) return '/movies'
+  return item.type === 'series' ? `/series/${item.slug}` : `/movies/${item.slug}`
+})
 
-function confirmPlay() {
-  const item = requestedItem.value
-  if (!item) return closeAdultModal()
-  modalOpen.value = false
-  resume('adult-modal')
-  void navigateTo(watchPath(item, requestedMode.value, true))
-}
+const router = useRouter()
 
 function announceSelection() {
   const item = currentItem.value
-  if (item) manualAnnouncement.value = `اسلاید ${currentIndex.value + 1} از ${props.items.length}: ${item.title}`
+  if (!item) return
+  manualAnnouncement.value = `اسلاید ${currentIndex.value + 1} از ${props.items.length}: ${slideTitle.value || item.title}`
 }
 
 function selectSlide(index: number) {
@@ -100,14 +114,86 @@ function showPrevious() {
   announceSelection()
 }
 
+function onMorphIndex(index: number) {
+  if (index === currentIndex.value) return
+  goTo(index)
+  announceSelection()
+}
+
+function handlePointerDown(event: PointerEvent) {
+  if (!morphReady.value || props.items.length < 2 || !morphSlider.value) return
+  const target = event.target as HTMLElement | null
+  if (target?.closest('a, button, [role="tab"], [data-morph-ignore], input, textarea, select')) return
+
+  const el = media.value
+  if (!el) return
+  const rect = el.getBoundingClientRect()
+  dragWidth = rect.width || 1
+  dragStartX = event.clientX
+  dragMoved = false
+  morphSlider.value.setPointer(
+    (event.clientX - rect.left) / rect.width,
+    1 - (event.clientY - rect.top) / rect.height,
+  )
+  dragActive = morphSlider.value.beginDrag()
+  if (!dragActive) return
+  onMorphDragStart()
+  try {
+    el.setPointerCapture(event.pointerId)
+  }
+  catch {
+    // Pointer capture can fail on some browsers / detached nodes.
+  }
+}
+
+function handlePointerMove(event: PointerEvent) {
+  if (!dragActive || !morphSlider.value) return
+  const ndx = (event.clientX - dragStartX) / dragWidth
+  if (Math.abs(ndx) > 0.02) dragMoved = true
+  // RTL hero: finger moving right advances (same as ArrowLeft → next).
+  morphSlider.value.drag(-ndx)
+}
+
+function handlePointerUp() {
+  if (!dragActive) return
+  dragActive = false
+  morphSlider.value?.endDrag()
+  onMorphDragEnd()
+  if (dragMoved) suppressHitClick = true
+}
+
+function onMorphDragStart() {
+  pause('touch')
+}
+
+function onMorphDragEnd() {
+  resume('touch')
+  if (suppressHitClickTimer) clearTimeout(suppressHitClickTimer)
+  suppressHitClickTimer = setTimeout(() => {
+    suppressHitClick = false
+    suppressHitClickTimer = null
+  }, 320)
+}
+
 function handleKeydown(event: KeyboardEvent) {
+  // RTL carousel: left advances forward, right goes back.
   if (event.key === 'ArrowLeft') {
-    event.preventDefault()
-    showPrevious()
-  } else if (event.key === 'ArrowRight') {
     event.preventDefault()
     showNext()
   }
+  else if (event.key === 'ArrowRight') {
+    event.preventDefault()
+    showPrevious()
+  }
+}
+
+function handleHitClick(event: MouseEvent) {
+  if (suppressHitClick) {
+    event.preventDefault()
+    event.stopPropagation()
+    return
+  }
+  void router.push(detailHref.value)
 }
 
 function handleFocusOut(event: FocusEvent) {
@@ -119,10 +205,14 @@ watch(currentIndex, async (index) => {
   const rail = thumbnailRail.value
   const thumb = rail?.querySelector<HTMLElement>(`[data-hero-thumb="${index}"]`)
   if (!rail || !thumb) return
+  // Scroll only the thumbnail rail — never the page (scrollIntoView was
+  // jumping mid-home on refresh / route enter).
   const railRect = rail.getBoundingClientRect()
   const thumbRect = thumb.getBoundingClientRect()
-  rail.scrollTo({
-    left: Math.max(0, rail.scrollLeft + thumbRect.left - railRect.left - (railRect.width - thumbRect.width) / 2),
+  const delta = (thumbRect.left + thumbRect.width / 2) - (railRect.left + railRect.width / 2)
+  if (Math.abs(delta) < 2) return
+  rail.scrollBy({
+    left: delta,
     behavior: reducedMotion.value ? 'auto' : 'smooth',
   })
 })
@@ -140,15 +230,19 @@ onMounted(() => {
   visibilityObserver.observe(root.value)
 })
 
-onBeforeUnmount(() => visibilityObserver?.disconnect())
+onBeforeUnmount(() => {
+  visibilityObserver?.disconnect()
+  if (suppressHitClickTimer) clearTimeout(suppressHitClickTimer)
+})
 </script>
 
 <template>
   <section
     v-if="currentItem"
     ref="root"
-    class="hero-movie-slider"
+    class="hero-movie-slider theme-media-dark"
     :class="isPaused && 'hero-movie-slider--paused'"
+    :style="{ '--hero-autoplay-duration': `${Math.max(4000, autoplayInterval)}ms` }"
     tabindex="0"
     role="region"
     aria-roledescription="carousel"
@@ -161,381 +255,729 @@ onBeforeUnmount(() => visibilityObserver?.disconnect())
   >
     <p class="sr-only" aria-live="polite">{{ manualAnnouncement }}</p>
 
-    <Transition name="hero-backdrop">
+    <div
+      ref="media"
+      class="hero-movie-slider__media"
+      :class="morphReady && 'hero-movie-slider__media--morph'"
+      @pointerdown="handlePointerDown"
+      @pointermove="handlePointerMove"
+      @pointerup="handlePointerUp"
+      @pointercancel="handlePointerUp"
+    >
       <CinematicImage
-        :key="currentItem.id"
         :src="currentItem.backdrop_url"
         :alt="`نمایی از ${currentItem.title}`"
         ratio="backdrop"
+        sizes="100vw"
         :priority="currentIndex === 0"
         class="hero-movie-slider__backdrop"
+        :class="morphReady && 'hero-movie-slider__backdrop--under-morph'"
         image-class="hero-movie-slider__backdrop-image"
         :fallback-label="`تصویر پس‌زمینه ${currentItem.title} در دسترس نیست`"
       />
-    </Transition>
-    <div class="hero-movie-slider__overlay" aria-hidden="true" />
+      <ClientOnly>
+        <MorphSlider
+          ref="morphSlider"
+          class="hero-movie-slider__morph"
+          :items="morphItems"
+          :index="currentIndex"
+          transition="melt"
+          :intensity="0.55"
+          :aberration="0.35"
+          :drift="0.4"
+          :duration="morphDuration"
+          ease="power2.inOut"
+          :scale="2.4"
+          overlay-color="#05060a"
+          :loop="true"
+          :radius="0"
+          :autoplay="false"
+          :show-captions="false"
+          :show-controls="false"
+          :show-indicators="false"
+          @update:index="onMorphIndex"
+          @ready="morphReady = true"
+          @error="morphReady = false"
+        />
+      </ClientOnly>
+      <button
+        v-if="items.length > 1"
+        type="button"
+        class="hero-movie-slider__nav hero-movie-slider__nav--next"
+        aria-label="اسلاید بعدی"
+        @click="showNext"
+      ><CinematicIcon name="chevron-left" /></button>
+      <button
+        v-if="items.length > 1"
+        type="button"
+        class="hero-movie-slider__nav hero-movie-slider__nav--previous"
+        aria-label="اسلاید قبلی"
+        @click="showPrevious"
+      ><CinematicIcon name="chevron-right" /></button>
 
-    <button
-      v-if="items.length > 1"
-      type="button"
-      class="hero-movie-slider__nav hero-movie-slider__nav--previous"
-      aria-label="اسلاید قبلی"
-      @click="showPrevious"
-    ><CinematicIcon name="chevron-left" class="size-5" /></button>
-    <button
-      v-if="items.length > 1"
-      type="button"
-      class="hero-movie-slider__nav hero-movie-slider__nav--next"
-      aria-label="اسلاید بعدی"
-      @click="showNext"
-    ><CinematicIcon name="chevron-right" class="size-5" /></button>
+      <NuxtLink
+        :to="detailHref"
+        class="hero-movie-slider__play"
+        :aria-label="`پخش یا مشاهده ${slideTitle}`"
+        @click.stop
+      >
+        <CinematicIcon name="play" filled />
+      </NuxtLink>
 
-    <div class="page-shell hero-movie-slider__inner">
-      <Transition name="hero-content" mode="out-in">
-        <div :key="currentItem.id" class="hero-movie-slider__content" dir="rtl">
-          <div class="flex flex-wrap items-center gap-2">
-            <span class="hero-movie-slider__badge" :class="badge.tone === 'crimson' ? 'hero-movie-slider__badge--crimson' : 'hero-movie-slider__badge--copper'">
-              <span class="size-1.5 rounded-full bg-current" />{{ badge.label }}
+      <div class="page-shell hero-movie-slider__stage">
+        <Transition name="hero-content" mode="out-in">
+          <article
+            :key="currentItem.id"
+            class="hero-movie-slider__content"
+            dir="rtl"
+            role="group"
+            aria-roledescription="اسلاید"
+            :aria-label="`${currentIndex + 1} از ${items.length}: ${slideTitle}${slideYear ? `، ${slideYear}` : ''}`"
+          >
+            <span
+              v-if="slideYear"
+              class="hero-movie-slider__year"
+            >
+              <CinematicIcon name="calendar" class="hero-movie-slider__year-icon" />
+              <time :datetime="String(slideYear)" dir="ltr">{{ slideYear }}</time>
             </span>
-            <span class="rounded-full border border-white/10 bg-canvas-soft/78 px-2.5 py-1 text-[10px] font-black text-secondary">{{ currentItem.type === 'movie' ? 'فیلم سینمایی' : 'سریال' }}</span>
-            <AgeRatingBadge :rating="currentItem.age_rating" />
+
+            <h1
+              class="hero-movie-slider__title"
+              :class="slideTitleDirection === 'rtl' && 'hero-movie-slider__title--rtl'"
+              :dir="slideTitleDirection"
+            >
+              <NuxtLink
+                :to="detailHref"
+                class="hero-movie-slider__title-link"
+                :aria-label="`رفتن به صفحه ${slideTitle}`"
+                @click.stop
+              >
+                {{ slideTitle }}
+              </NuxtLink>
+            </h1>
+            <p
+              v-if="slideSubtitle"
+              class="hero-movie-slider__subtitle ltr-value"
+              dir="ltr"
+            >
+              {{ slideSubtitle }}
+            </p>
+
+            <div v-if="imdbRating" class="hero-movie-slider__imdb" dir="ltr" aria-label="امتیاز IMDb">
+              <span class="hero-movie-slider__imdb-mark" aria-hidden="true">IMDb</span>
+              <span class="hero-movie-slider__imdb-score">
+                <strong>{{ imdbRating }}</strong><span>/10</span>
+              </span>
+            </div>
+          </article>
+        </Transition>
+
+        <div
+          class="hero-movie-slider__hit"
+          role="link"
+          tabindex="-1"
+          :aria-label="`رفتن به صفحه ${slideTitle}`"
+          @click="handleHitClick"
+        />
+      </div>
+
+      <div class="hero-movie-slider__dock" data-morph-ignore>
+        <div class="page-shell hero-movie-slider__dock-inner">
+          <div ref="thumbnailRail" class="hero-movie-slider__thumbnails hide-scrollbar" role="group" aria-label="انتخاب فیلم اسلایدر" dir="rtl">
+            <HeroMovieThumb v-for="(item, index) in items" :key="item.id" :item="item" :index="index" :active="index === currentIndex" @select="selectSlide" />
           </div>
-
-          <p v-if="currentItem.original_title" class="mt-4 truncate text-[10px] font-bold tracking-[.18em] text-primary-300 sm:mt-5 sm:text-xs" dir="ltr">{{ currentItem.original_title }}</p>
-          <h1 class="mt-1 line-clamp-2 text-4xl font-black leading-[1.15] tracking-tight text-ink sm:text-5xl lg:text-6xl xl:text-7xl">{{ currentItem.title }}</h1>
-
-          <div class="mt-3 flex flex-wrap items-center gap-x-3 gap-y-1.5 text-[11px] font-bold text-secondary sm:mt-4 sm:text-sm">
-            <span class="inline-flex items-center gap-1.5 text-ink" dir="ltr"><CinematicIcon name="star" class="size-4 text-primary-400 sm:size-4.5" filled />IMDb {{ currentItem.rating.toFixed(1) }}</span>
-            <span class="hero-movie-slider__meta-dot" />
-            <span class="tabular-nums">{{ currentItem.year }}</span>
-            <span class="hero-movie-slider__meta-dot" />
-            <span>{{ currentItem.type === 'series' ? `${currentItem.seasons_count || 1} فصل` : `${currentItem.duration_minutes} دقیقه` }}</span>
-            <span v-if="genreLabel" class="hero-movie-slider__meta-dot hidden sm:block" />
-            <span v-if="genreLabel" class="hidden sm:inline">{{ genreLabel }}</span>
-          </div>
-
-          <p class="mt-3 line-clamp-2 max-w-2xl text-xs leading-6 text-secondary sm:mt-4 sm:line-clamp-3 sm:text-sm sm:leading-7 lg:text-base lg:leading-8">{{ currentItem.description }}</p>
-
-          <div class="hero-movie-slider__actions mt-5 gap-2.5 sm:mt-6">
-            <button type="button" class="hero-movie-slider__primary" :aria-label="`تماشای ${currentItem.title}`" @click="requestPlay('full')">
-              <CinematicIcon name="play" class="size-5" filled />تماشا کن
-            </button>
-            <button type="button" class="hero-movie-slider__secondary" :aria-label="`تماشای تریلر ${currentItem.title}`" @click="requestPlay('trailer')">
-              <CinematicIcon name="trailer" class="size-5 text-primary-300" />تریلر
-            </button>
-            <NuxtLink :to="detailPath" class="hero-movie-slider__detail" :aria-label="`جزئیات ${currentItem.title}`">
-              <CinematicIcon name="info" class="size-4.5" />جزئیات
-            </NuxtLink>
-            <WatchlistButton :id="currentItem.id" :slug="currentItem.slug" :content-type="currentItem.type" dark compact-on-mobile />
-          </div>
-        </div>
-      </Transition>
-    </div>
-
-    <div class="hero-movie-slider__dock">
-      <div class="page-shell">
-        <div class="mb-2.5 flex items-center justify-between gap-3">
-          <div class="flex items-center gap-2">
-            <span class="text-[10px] font-black text-primary-300">انتخاب‌های ویژه</span>
-            <span class="font-latin text-[9px] font-bold tabular-nums text-muted" dir="ltr">{{ String(currentIndex + 1).padStart(2, '0') }} / {{ String(items.length).padStart(2, '0') }}</span>
-          </div>
-          <div v-if="items.length > 1" class="flex items-center gap-1 lg:hidden" dir="ltr">
-            <button type="button" class="hero-movie-slider__dock-nav" aria-label="اسلاید قبلی" @click="showPrevious"><CinematicIcon name="chevron-left" class="size-4" /></button>
-            <button type="button" class="hero-movie-slider__dock-nav" aria-label="اسلاید بعدی" @click="showNext"><CinematicIcon name="chevron-right" class="size-4" /></button>
-          </div>
-        </div>
-
-        <div class="mb-2 flex gap-1" aria-hidden="true">
-          <span v-for="(_, index) in items" :key="index" class="h-0.5 flex-1 rounded-full transition-colors" :class="index === currentIndex ? 'bg-primary-500' : 'bg-line/80'" />
-        </div>
-
-        <div ref="thumbnailRail" class="hero-movie-slider__thumbnails hide-scrollbar" role="group" aria-label="انتخاب فیلم اسلایدر" dir="ltr">
-          <HeroMovieThumb v-for="(item, index) in items" :key="item.id" :item="item" :index="index" :active="index === currentIndex" @select="selectSlide" />
         </div>
       </div>
     </div>
+  </section>
 
-    <ConfirmAdultContentModal :open="modalOpen" :title="requestedItem?.title" @close="closeAdultModal" @confirm="confirmPlay" />
+  <section
+    v-else-if="loading"
+    class="hero-movie-slider hero-movie-slider--loading theme-media-dark"
+    aria-label="در حال آماده‌سازی پیشنهادهای ویژه"
+    aria-busy="true"
+    role="status"
+  >
+    <span class="sr-only">در حال بارگذاری پیشنهادهای ویژه</span>
+    <div class="hero-movie-slider__media">
+      <div class="hero-movie-slider__loading-art" aria-hidden="true" />
+      <div class="page-shell hero-movie-slider__stage">
+        <div class="hero-movie-slider__loading-content" aria-hidden="true">
+          <span class="hero-movie-slider__loading-line hero-movie-slider__loading-meta" />
+          <span class="hero-movie-slider__loading-line hero-movie-slider__loading-title" />
+          <span class="hero-movie-slider__loading-line hero-movie-slider__loading-meta" />
+        </div>
+      </div>
+      <div class="hero-movie-slider__loading-dock" aria-hidden="true">
+        <div class="page-shell hero-movie-slider__loading-posters">
+          <span v-for="index in 6" :key="index" class="hero-movie-slider__loading-line" />
+        </div>
+      </div>
+    </div>
   </section>
 </template>
 
 <style scoped>
 .hero-movie-slider {
+  --hero-poster-width: clamp(3.5rem, 18vw, 4.5rem);
+  --hero-dock-height: calc(var(--hero-poster-width) * 1.5 + 1.25rem);
   position: relative;
   isolation: isolate;
-  height: clamp(620px, 92svh, 680px);
-  max-width: 100%;
-  margin-top: -132px;
-  overflow: hidden;
-  background: var(--theme-bg-main);
-  color: var(--theme-text-primary);
+  display: flex;
+  width: 100%;
+  flex-direction: column;
+  margin-top: calc((var(--header-height) + env(safe-area-inset-top, 0px)) * -1);
+  background: #020303;
+  color: #fff;
   outline: none;
 }
 
 .hero-movie-slider:focus-visible {
-  box-shadow: inset 0 0 0 2px rgb(196 106 45 / 62%);
+  outline: 2px solid rgb(255 255 255 / 70%);
+  outline-offset: -2px;
+}
+
+.hero-movie-slider__media {
+  position: relative;
+  isolation: isolate;
+  display: flex;
+  width: 100%;
+  min-height: clamp(24rem, 68svh, 36rem);
+  height: clamp(24rem, 68svh, 36rem);
+  flex-direction: column;
+  overflow: hidden;
+  cursor: grab;
+  touch-action: pan-y pinch-zoom;
+}
+
+.hero-movie-slider__media:active {
+  cursor: grabbing;
 }
 
 .hero-movie-slider__backdrop {
   position: absolute;
   inset: 0;
-  z-index: -30;
-  width: 100%;
-  height: 100%;
+  z-index: 0;
+  width: 100% !important;
+  height: 100% !important;
+  max-width: none;
+  max-height: none;
+  aspect-ratio: unset !important;
 }
 
-.hero-movie-slider :deep(.hero-movie-slider__backdrop-image) {
-  object-position: center;
-}
-
-.hero-movie-slider__overlay {
+.hero-movie-slider__morph {
   position: absolute;
   inset: 0;
-  z-index: -20;
-  background:
-    linear-gradient(90deg, rgb(6 6 7 / 97%) 0%, rgb(6 6 7 / 82%) 34%, rgb(6 6 7 / 30%) 68%, rgb(6 6 7 / 14%) 100%),
-    linear-gradient(180deg, rgb(6 6 7 / 46%) 0%, rgb(6 6 7 / 16%) 42%, var(--theme-bg-main) 100%),
-    radial-gradient(circle at 22% 32%, rgb(196 106 45 / 14%), transparent 32%),
-    radial-gradient(circle at 80% 20%, rgb(143 29 44 / 12%), transparent 35%);
+  z-index: 1;
+  width: 100%;
+  height: 100%;
+  border-radius: inherit;
+  background: transparent;
+  pointer-events: none;
 }
 
-.hero-movie-slider__inner {
-  display: flex;
-  min-width: 0;
-  max-width: 100%;
+.hero-movie-slider__backdrop--under-morph {
+  opacity: 0;
+  transition: opacity 280ms ease;
+}
+
+.hero-movie-slider__backdrop :deep(.cinematic-image-skeleton),
+.hero-movie-slider :deep(.hero-movie-slider__backdrop-image) {
+  position: absolute;
+  inset: 0;
+  width: 100%;
   height: 100%;
-  align-items: center;
-  padding-top: calc(132px + 1rem);
-  padding-bottom: 10.5rem;
+  max-width: none;
+  max-height: none;
+  object-fit: cover;
+  object-position: center center;
+  transform: none;
+  filter: none;
+}
+
+.hero-movie-slider__play {
+  position: absolute;
+  left: 50%;
+  top: 42%;
+  z-index: 16;
+  display: grid;
+  width: clamp(3.25rem, 8vw, 4rem);
+  aspect-ratio: 1;
+  place-items: center;
+  border: 2px solid #fff;
+  border-radius: 50%;
+  background: rgb(0 0 0 / 28%);
+  color: #fff;
+  transform: translate(-50%, -50%);
+  transition: transform 180ms ease, background-color 180ms ease;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.hero-movie-slider__play :deep(svg) {
+  width: 1.35rem;
+  height: 1.35rem;
+  margin-inline-start: .12rem;
+}
+
+.hero-movie-slider__play:focus-visible {
+  outline: 2px solid #fff;
+  outline-offset: 3px;
+  background: rgb(0 0 0 / 45%);
+}
+
+.hero-movie-slider__stage {
+  position: relative;
+  z-index: 10;
+  display: grid;
+  min-height: 0;
+  flex: 1 1 auto;
+  grid-template-columns: minmax(0, 1fr);
+  align-items: end;
+  padding-top: calc(var(--header-height) + env(safe-area-inset-top, 0px) + clamp(.5rem, 2vw, 1.25rem));
+  padding-bottom: calc(var(--hero-dock-height) + clamp(.75rem, 2vw, 1.25rem));
   overflow: hidden;
+  pointer-events: none;
+}
+
+.hero-movie-slider__dock,
+.hero-movie-slider__nav,
+.hero-movie-slider__play,
+.hero-movie-slider__content,
+.hero-movie-slider__content :is(a, button) {
+  cursor: auto;
+}
+
+.hero-movie-slider__hit {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  display: block;
+  width: 100%;
+  height: 100%;
+  cursor: inherit;
+  text-decoration: none;
+  pointer-events: auto;
+  -webkit-tap-highlight-color: transparent;
+  border: 0;
+  background: transparent;
+  padding: 0;
 }
 
 .hero-movie-slider__content {
-  flex: 0 1 43rem;
+  position: relative;
+  z-index: 2;
+  display: flex;
+  width: min(92%, 36rem);
+  max-width: 36rem;
   min-width: 0;
-  width: 100%;
-  max-width: min(43rem, 100%);
-  margin-inline: 0;
-  overflow-wrap: anywhere;
-  text-align: right;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: .65rem;
+  justify-self: start;
+  color: #fff;
+  text-align: start;
+  pointer-events: none;
 }
 
-.hero-movie-slider__actions {
-  display: grid;
-  min-width: 0;
-  width: 100%;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+.hero-movie-slider__content :is(a, button) {
+  pointer-events: auto;
 }
 
-.hero-movie-slider__actions > * {
-  min-width: 0;
-  max-width: 100%;
-}
-
-.hero-movie-slider__badge {
+.hero-movie-slider__year {
   display: inline-flex;
-  min-height: 1.75rem;
   align-items: center;
-  gap: .45rem;
-  border-radius: 999px;
-  padding: .3rem .65rem;
-  font-size: .625rem;
+  gap: .4rem;
+  color: #fff;
+  font-family: var(--font-latin-ui);
+  font-size: clamp(.85rem, 2.2vw, 1rem);
+  font-weight: 600;
+  letter-spacing: .02em;
+  line-height: 1;
+}
+
+.hero-movie-slider__year time {
+  color: #fff;
+  font-variant-numeric: tabular-nums;
+}
+
+.hero-movie-slider__year-icon {
+  width: 1.15rem;
+  height: 1.15rem;
+  color: #fff;
+}
+
+.hero-movie-slider__title {
+  display: -webkit-box;
+  margin: 0;
+  min-width: 0;
+  overflow: hidden;
+  color: #fff;
+  font-family: var(--font-latin-ui);
+  font-size: clamp(1.85rem, 6.5vw, 2.75rem);
   font-weight: 900;
-  box-shadow: inset 0 1px 0 rgb(244 241 236 / 4%);
+  line-height: 1.1;
+  letter-spacing: -.02em;
+  text-wrap: balance;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
 }
 
-.hero-movie-slider__badge--copper {
-  border: 1px solid rgb(196 106 45 / 34%);
-  background: rgb(196 106 45 / 14%);
-  color: var(--theme-accent-primary-hover);
+.hero-movie-slider__title--rtl {
+  font-family: var(--font-ui);
+  letter-spacing: 0;
 }
 
-.hero-movie-slider__badge--crimson {
-  border: 1px solid rgb(143 29 44 / 42%);
-  background: rgb(42 11 18 / 82%);
-  color: var(--theme-accent-crimson-hover);
+.hero-movie-slider__title-link {
+  color: #fff;
+  font: inherit;
+  letter-spacing: inherit;
+  text-decoration: none;
+  cursor: pointer;
 }
 
-.hero-movie-slider__meta-dot {
-  width: .25rem;
-  height: .25rem;
-  flex: none;
-  border-radius: 999px;
-  background: var(--theme-text-disabled);
+.hero-movie-slider__title-link:focus-visible {
+  outline: 2px solid #fff;
+  outline-offset: 4px;
+  border-radius: .25rem;
 }
 
-.hero-movie-slider__primary,
-.hero-movie-slider__secondary,
-.hero-movie-slider__detail {
+.hero-movie-slider__imdb {
   display: inline-flex;
-  min-height: 3rem;
+  align-items: center;
+  gap: .55rem;
+  color: #fff;
+  font-family: var(--font-latin-ui);
+  font-size: clamp(.9rem, 2.2vw, 1.05rem);
+  line-height: 1;
+}
+
+.hero-movie-slider__imdb-mark {
+  display: inline-flex;
   align-items: center;
   justify-content: center;
-  gap: .5rem;
-  border-radius: .875rem;
-  padding: .7rem 1rem;
-  font-size: .8125rem;
+  min-height: 1.35rem;
+  border-radius: .2rem;
+  padding: .15rem .4rem;
+  background: #f5c518;
+  color: #000;
+  font-size: .72rem;
   font-weight: 900;
-  transition: background-color 160ms ease, border-color 160ms ease, color 160ms ease, transform 160ms ease, box-shadow 160ms ease;
+  letter-spacing: .04em;
 }
 
-.hero-movie-slider__primary {
-  background: var(--theme-accent-primary);
-  color: var(--theme-bg-main);
-  box-shadow: 0 12px 30px rgb(196 106 45 / 24%);
+.hero-movie-slider__imdb-score {
+  color: #fff;
+  font-weight: 500;
 }
 
-.hero-movie-slider__primary:hover {
-  background: var(--theme-accent-primary-hover);
-  box-shadow: 0 14px 34px rgb(196 106 45 / 30%);
+.hero-movie-slider__imdb-score strong {
+  color: #fff;
+  font-weight: 800;
+  font-variant-numeric: tabular-nums;
 }
-
-.hero-movie-slider__primary:active { background: var(--theme-accent-primary-active); transform: scale(.98); }
-
-.hero-movie-slider__secondary {
-  border: 1px solid rgb(244 241 236 / 16%);
-  background: rgb(20 20 23 / 72%);
-  color: var(--theme-text-primary);
-}
-
-.hero-movie-slider__secondary:hover {
-  border-color: var(--theme-accent-primary);
-  background: var(--theme-accent-primary-soft);
-}
-
-.hero-movie-slider__detail {
-  padding-inline: .75rem;
-  color: var(--theme-text-secondary);
-}
-
-.hero-movie-slider__detail:hover { background: rgb(244 241 236 / 6%); color: var(--theme-text-primary); }
 
 .hero-movie-slider__nav {
   position: absolute;
-  top: 47%;
-  z-index: 30;
+  top: 42%;
+  z-index: 15;
   display: none;
-  width: 3rem;
-  height: 3rem;
+  width: clamp(2.75rem, 3.5vw, 3.5rem);
+  aspect-ratio: 1;
   place-items: center;
-  border: 1px solid rgb(244 241 236 / 13%);
-  border-radius: 1rem;
-  background: rgb(11 11 13 / 84%);
-  color: var(--theme-text-secondary);
-  box-shadow: 0 12px 28px rgb(0 0 0 / 30%);
-  transition: color 160ms ease, border-color 160ms ease, background-color 160ms ease, transform 160ms ease;
+  border: 1px solid rgb(255 255 255 / 35%);
+  border-radius: 50%;
+  background: rgb(0 0 0 / 28%);
+  color: #fff;
+  transform: translateY(-50%);
+  transition: transform 180ms ease, background-color 180ms ease, border-color 180ms ease;
 }
 
-.hero-movie-slider__nav:hover,
+.hero-movie-slider__nav :deep(svg) {
+  width: 1.15rem;
+  height: 1.15rem;
+}
+
 .hero-movie-slider__nav:focus-visible {
-  border-color: rgb(196 106 45 / 60%);
-  background: rgb(196 106 45 / 16%);
-  color: var(--theme-accent-primary-hover);
+  border-color: #fff;
+  background: rgb(0 0 0 / 45%);
+  outline: none;
+  transform: translateY(-50%) scale(1.06);
 }
 
-.hero-movie-slider__nav:active { transform: scale(.94); }
-.hero-movie-slider__nav--previous { left: 1.25rem; }
-.hero-movie-slider__nav--next { right: 1.25rem; }
+.hero-movie-slider__nav--next { left: max(1rem, calc((100vw - var(--layout-max)) / 2 + 1rem)); }
+.hero-movie-slider__nav--previous { right: max(1rem, calc((100vw - var(--layout-max)) / 2 + 1rem)); }
 
 .hero-movie-slider__dock {
   position: absolute;
-  inset: auto 0 0;
+  inset-inline: 0;
+  bottom: 0;
   z-index: 20;
-  padding: 2.5rem 0 .7rem;
-  background: linear-gradient(to top, var(--theme-bg-main) 0%, rgb(6 6 7 / 94%) 58%, transparent 100%);
+  width: 100%;
+  min-height: var(--hero-dock-height);
+  background: transparent;
+  pointer-events: auto;
+}
+
+.hero-movie-slider__dock-inner {
+  display: flex;
+  min-width: 0;
+  justify-content: flex-end;
+  padding-block: .55rem .75rem;
 }
 
 .hero-movie-slider__thumbnails {
   display: flex;
-  gap: .7rem;
+  width: 100%;
+  min-width: 0;
+  align-items: flex-end;
+  gap: .75rem;
   overflow-x: auto;
+  overflow-y: hidden;
   overscroll-behavior-inline: contain;
+  scroll-padding-inline: 50%;
   scroll-snap-type: x proximity;
-  scroll-padding-inline: 1rem;
-  padding: .35rem .25rem .1rem;
+  padding-block: .25rem .1rem;
   -webkit-overflow-scrolling: touch;
+  touch-action: pan-x pinch-zoom;
 }
-
-.hero-movie-slider__dock-nav {
-  display: grid;
-  width: 2.75rem;
-  height: 2.75rem;
-  place-items: center;
-  border: 1px solid var(--theme-border);
-  border-radius: .7rem;
-  background: var(--theme-bg-elevated);
-  color: var(--theme-text-secondary);
-}
-
-.hero-movie-slider__dock-nav:hover { border-color: rgb(196 106 45 / 48%); color: var(--theme-accent-primary-hover); }
 
 .hero-backdrop-enter-active,
 .hero-backdrop-leave-active {
-  transition: opacity 650ms ease, transform 1.1s ease;
+  transition: opacity 600ms ease, transform 900ms cubic-bezier(.2, .75, .2, 1);
+  will-change: opacity, transform;
 }
 
 .hero-backdrop-leave-active { position: absolute; }
-.hero-backdrop-enter-from { opacity: 0; transform: scale(1.025); }
-.hero-backdrop-leave-to { opacity: 0; transform: scale(1.012); }
+.hero-backdrop-enter-from { opacity: 0; transform: translate3d(1%, 0, 0) scale(1.02); }
+.hero-backdrop-leave-to { opacity: 0; transform: translate3d(-1%, 0, 0) scale(1.01); }
 
 .hero-content-enter-active,
-.hero-content-leave-active { transition: opacity 260ms ease, transform 320ms ease; }
-.hero-content-enter-from { opacity: 0; transform: translateY(.75rem); }
-.hero-content-leave-to { opacity: 0; transform: translateY(-.35rem); }
+.hero-content-leave-active {
+  transition: opacity 420ms ease, transform 420ms cubic-bezier(.2, .75, .2, 1);
+  will-change: opacity, transform;
+}
 
-@media (max-width: 639px) {
-  .hero-movie-slider__content {
-    flex-basis: 100%;
+.hero-content-enter-from { opacity: 0; transform: translate3d(0, .5rem, 0); }
+.hero-content-leave-to { opacity: 0; transform: translate3d(0, -.35rem, 0); }
+
+.hero-movie-slider--loading { pointer-events: none; }
+
+.hero-movie-slider__loading-art {
+  position: absolute;
+  inset: 0;
+  background:
+    radial-gradient(circle at 72% 34%, rgb(var(--palette-sand-rgb) / 11%), transparent 28rem),
+    linear-gradient(135deg, #111715, #030504 68%);
+}
+
+.hero-movie-slider__loading-content {
+  width: min(90%, 28rem);
+  display: flex;
+  flex-direction: column;
+  gap: .65rem;
+  justify-self: start;
+}
+
+.hero-movie-slider__loading-line {
+  display: block;
+  border-radius: .65rem;
+  background: rgb(255 255 255 / 14%);
+  animation: hero-loading-pulse 1.6s ease-in-out infinite;
+}
+
+.hero-movie-slider__loading-title { width: min(90%, 22rem); height: clamp(2rem, 5vw, 2.75rem); }
+.hero-movie-slider__loading-meta { width: 7rem; height: 1.15rem; }
+
+.hero-movie-slider__loading-dock {
+  position: absolute;
+  inset-inline: 0;
+  bottom: 0;
+  z-index: 20;
+  min-height: var(--hero-dock-height);
+}
+
+.hero-movie-slider__loading-posters {
+  display: flex;
+  height: 100%;
+  align-items: flex-end;
+  justify-content: flex-end;
+  gap: .55rem;
+  overflow: hidden;
+  padding-block: .55rem .75rem;
+}
+
+.hero-movie-slider__loading-posters span {
+  width: var(--hero-poster-width);
+  aspect-ratio: 2 / 3;
+  flex: none;
+}
+
+@keyframes hero-loading-pulse {
+  0%, 100% { opacity: .38; }
+  50% { opacity: .82; }
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .hero-movie-slider__play:hover {
+    background: rgb(0 0 0 / 48%);
+    transform: translate(-50%, -50%) scale(1.06);
   }
 
-  .hero-movie-slider__primary,
-  .hero-movie-slider__secondary {
-    min-width: 0;
-    width: 100%;
-    padding-inline: .65rem;
-  }
-
-  .hero-movie-slider__detail {
-    border: 1px solid rgb(244 241 236 / 10%);
-    background: rgb(20 20 23 / 52%);
+  .hero-movie-slider__nav:hover {
+    border-color: #fff;
+    background: rgb(0 0 0 / 45%);
+    transform: translateY(-50%) scale(1.06);
   }
 }
 
-@media (min-width: 640px) {
-  .hero-movie-slider__inner { padding-top: calc(132px + 1.5rem); padding-bottom: 11.5rem; }
-  .hero-movie-slider__actions { display: flex; width: auto; flex-wrap: wrap; align-items: center; }
-  .hero-movie-slider__primary,
-  .hero-movie-slider__secondary,
-  .hero-movie-slider__detail { padding-inline: 1.2rem; font-size: .875rem; }
-  .hero-movie-slider__thumbnails { gap: .9rem; }
+@media (max-width: 767px) {
+  .hero-movie-slider {
+    --hero-poster-width: clamp(3.65rem, min(18vw, 9.5svh), 4.5rem);
+  }
+
+  /* Full first-screen canvas: image paints the entire slider frame. */
+  .hero-movie-slider__media {
+    width: 100%;
+    height: 100svh;
+    height: 100dvh;
+    min-height: 100svh;
+    min-height: 100dvh;
+    max-height: none;
+  }
+
+  .hero-movie-slider__backdrop {
+    inset: 0;
+    width: 100% !important;
+    height: 100% !important;
+    aspect-ratio: unset !important;
+  }
+
+  .hero-movie-slider__backdrop :deep(img),
+  .hero-movie-slider :deep(.hero-movie-slider__backdrop-image) {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    object-position: center 30%;
+  }
+
+  .hero-movie-slider__play {
+    top: 38%;
+  }
+
+  .hero-movie-slider__stage {
+    padding-inline: max(5vw, var(--layout-gutter));
+  }
+
+  .hero-movie-slider__content {
+    width: 100%;
+    max-width: min(92vw, 30rem);
+  }
+
+  .hero-movie-slider__title {
+    font-size: clamp(1.65rem, 7.5vw, 2.35rem);
+  }
+
+  .hero-movie-slider__thumbnails {
+    gap: .55rem;
+    scroll-snap-type: x mandatory;
+  }
+}
+
+@media (max-width: 767px) and (max-height: 560px) {
+  .hero-movie-slider__media {
+    height: max(22rem, 100svh);
+    min-height: max(22rem, 100svh);
+  }
 }
 
 @media (min-width: 768px) {
-  .hero-movie-slider { margin-top: -68px; }
-  .hero-movie-slider__inner { padding-top: calc(68px + 1.5rem); }
-  .hero-movie-slider__content { margin-right: auto; margin-left: 0; }
-}
+  .hero-movie-slider {
+    --hero-poster-width: clamp(5rem, 6.8vw, 6.25rem);
+  }
 
-@media (min-width: 768px) and (max-width: 1023px) {
-  .hero-movie-slider { height: clamp(680px, 86svh, 740px); }
+  .hero-movie-slider__media {
+    height: clamp(30rem, 62svh, 44rem);
+    min-height: clamp(30rem, 62svh, 44rem);
+    max-height: min(70svh, 48rem);
+  }
+
+  .hero-movie-slider__title {
+    font-size: clamp(2.1rem, 4.2vw, 2.85rem);
+  }
+
+  .hero-movie-slider__dock-inner {
+    justify-content: flex-end;
+  }
+
+  .hero-movie-slider__thumbnails {
+    width: min(100%, 34rem);
+    justify-content: flex-start;
+    scroll-padding-inline: 0;
+    gap: 1rem;
+  }
 }
 
 @media (min-width: 1024px) {
-  .hero-movie-slider { height: clamp(720px, 88svh, 820px); border-radius: 0 0 2.5rem 2.5rem; }
-  .hero-movie-slider__inner { padding-bottom: 12.5rem; }
-  .hero-movie-slider__nav { display: grid; }
-  .hero-movie-slider__dock { padding-bottom: 1rem; }
-  .hero-movie-slider__thumbnails { justify-content: center; }
+  .hero-movie-slider {
+    --hero-poster-width: clamp(5.75rem, 6.2vw, 7rem);
+  }
+
+  .hero-movie-slider__media {
+    border-radius: 0 0 1.25rem 1.25rem;
+    height: clamp(32rem, 66svh, 48rem);
+    min-height: clamp(32rem, 66svh, 48rem);
+  }
+
+  .hero-movie-slider__nav {
+    display: grid;
+    width: 2.75rem;
+  }
+
+  .hero-movie-slider__nav--next {
+    left: max(.75rem, env(safe-area-inset-left, 0px));
+  }
+
+  .hero-movie-slider__nav--previous {
+    right: max(.75rem, env(safe-area-inset-right, 0px));
+  }
+
+  .hero-movie-slider__stage,
+  .hero-movie-slider__dock-inner {
+    padding-inline: max(var(--layout-gutter), 3.25rem);
+  }
+
+  .hero-movie-slider__content {
+    max-width: 40rem;
+  }
+
+  .hero-movie-slider__thumbnails {
+    width: min(48%, 38rem);
+  }
+}
+
+@media (min-width: 1280px) {
+  .hero-movie-slider {
+    --hero-poster-width: clamp(6.25rem, 5.8vw, 7.5rem);
+  }
+
+  .hero-movie-slider__media {
+    height: clamp(34rem, 68svh, 52rem);
+    min-height: clamp(34rem, 68svh, 52rem);
+  }
+
+  .hero-movie-slider__title {
+    font-size: clamp(2.35rem, 3.4vw, 3.15rem);
+  }
 }
 
 @media (prefers-reduced-motion: reduce) {
+  .hero-movie-slider__loading-line { animation: none; }
   .hero-backdrop-enter-active,
   .hero-backdrop-leave-active,
   .hero-content-enter-active,
   .hero-content-leave-active,
-  .hero-movie-slider__primary,
-  .hero-movie-slider__secondary,
-  .hero-movie-slider__detail,
+  .hero-movie-slider__play,
   .hero-movie-slider__nav { transition: none; }
 }
 </style>

@@ -24,6 +24,11 @@ export const useAuthStore = defineStore('auth', () => {
     const { api } = useApi()
     try {
       user.value = await api<Me>('/accounts/me/')
+      if (import.meta.client) {
+        try {
+          usePersonalizationState().ensureAccountPersonalization()
+        } catch { /* optional during early boot */ }
+      }
       return user.value
     } catch (error) {
       if (errorStatus(error) === 401 || errorStatus(error) === 403) {
@@ -55,15 +60,20 @@ export const useAuthStore = defineStore('auth', () => {
     refreshToken.value = session.refresh
     user.value = session.user
     initialized.value = true
+    if (import.meta.client) {
+      try {
+        usePersonalizationState().ensureAccountPersonalization()
+      } catch { /* optional during early boot */ }
+    }
   }
 
-  async function login(email: string, password: string) {
+  async function login(login: string, password: string) {
     pending.value = true
     try {
       const { api } = useApi()
       const session = await api<AuthSession>('/auth/token/', {
         method: 'POST',
-        body: { email: email.trim().toLowerCase(), password },
+        body: { login: login.trim(), password },
       })
       applySession(session)
       return session.user
@@ -104,6 +114,21 @@ export const useAuthStore = defineStore('auth', () => {
     }
   }
 
+  async function updateProfile(payload: FormData | { bio?: string; preferred_language?: string; avatar?: null }) {
+    pending.value = true
+    try {
+      const { api } = useApi()
+      const updated = await api<Me>('/accounts/me/', {
+        method: 'PATCH',
+        body: payload,
+      })
+      user.value = updated
+      return updated
+    } finally {
+      pending.value = false
+    }
+  }
+
   return {
     accessToken,
     refreshToken,
@@ -113,6 +138,7 @@ export const useAuthStore = defineStore('auth', () => {
     isAuthenticated,
     login,
     register,
+    updateProfile,
     logout,
     fetchMe,
     initialize,

@@ -1,93 +1,382 @@
 <script setup lang="ts">
-import type { CinematicIconName } from '~/types'
-
 const route = useRoute()
-const { watchlistIds } = useLibrary()
 const authStore = useAuthStore()
-const { y } = useWindowScroll()
-const profilePath = computed(() => authStore.isAuthenticated ? '/profile' : `/auth/login?redirect=${encodeURIComponent(route.fullPath)}`)
+const isDesktop = useMediaQuery('(min-width: 768px)')
 
-interface HeaderNavItem {
-  label: string
-  to: string
-  icon: CinematicIconName
-  match: (path: string) => boolean
-  desktopOnly?: boolean
+const sidebarOpen = ref(false)
+const searchOpen = ref(false)
+const searchRoot = useTemplateRef<HTMLElement>('searchRoot')
+
+const profilePath = computed(() => authStore.isAuthenticated
+  ? '/profile'
+  : `/auth/login?redirect=${encodeURIComponent(route.fullPath)}`)
+
+const activeBottomItem = computed<'home' | 'movies' | 'series' | 'menu'>(() => {
+  if (sidebarOpen.value) return 'menu'
+  if (route.path === '/' || route.path === '/welcome') return 'home'
+  if (route.path.startsWith('/movies')) return 'movies'
+  if (route.path.startsWith('/series')) return 'series'
+  return 'menu'
+})
+
+watch(isDesktop, (desktop) => {
+  if (desktop) sidebarOpen.value = false
+})
+
+watch(() => route.fullPath, () => {
+  sidebarOpen.value = false
+  searchOpen.value = false
+})
+
+onClickOutside(searchRoot, () => {
+  searchOpen.value = false
+})
+
+onKeyStroke('Escape', () => {
+  if (searchOpen.value) {
+    searchOpen.value = false
+    return
+  }
+  if (sidebarOpen.value) sidebarOpen.value = false
+})
+
+onKeyStroke('/', (event) => {
+  const target = event.target as HTMLElement | null
+  if (target?.matches('input, textarea, select, [contenteditable="true"]')) return
+  event.preventDefault()
+  sidebarOpen.value = false
+  searchOpen.value = true
+})
+
+function toggleSearch() {
+  searchOpen.value = !searchOpen.value
+  if (searchOpen.value) sidebarOpen.value = false
 }
 
-const navItems: HeaderNavItem[] = [
-  { label: 'خانه', to: '/', icon: 'home', match: path => path === '/' },
-  { label: 'فیلم‌ها', to: '/movies', icon: 'movie', match: path => path.startsWith('/movies') },
-  { label: 'سریال‌ها', to: '/series', icon: 'series', match: path => path.startsWith('/series') },
-  { label: 'تماشای گروهی', to: '/watch-party', icon: 'users', match: path => path.startsWith('/watch-party'), desktopOnly: true },
-]
-
-const isHomeAtTop = computed(() => route.path === '/' && y.value < 24)
+function toggleSidebar() {
+  sidebarOpen.value = !sidebarOpen.value
+  if (sidebarOpen.value) searchOpen.value = false
+}
 </script>
 
 <template>
-  <header
-    class="cinematic-glass sticky top-0 z-50 border-b border-line text-ink backdrop-blur-xl transition-[background-color,border-color,box-shadow] duration-300"
-    :class="[
-      route.path === '/' && 'cinematic-header--overlay',
-      isHomeAtTop && 'cinematic-header--at-top',
-    ]"
-  >
-    <span class="pointer-events-none absolute inset-x-0 bottom-0 h-px bg-gradient-to-l from-transparent via-primary-500/45 to-transparent" aria-hidden="true" />
-    <a href="#main-content" class="absolute right-4 top-2 z-10 -translate-y-20 rounded-xl bg-primary-500 px-4 py-2 text-sm font-black text-night-950 transition-transform focus:translate-y-0">پرش به محتوای اصلی</a>
+  <div class="site-header-root" dir="rtl">
+    <header ref="searchRoot" class="site-header sticky top-0 z-[60] md:hidden" :class="searchOpen && 'site-header--search-open'">
+      <a href="#main-content" class="site-header__skip-link">پرش به محتوای اصلی</a>
 
-    <nav class="mx-auto flex h-[68px] max-w-[1600px] items-center gap-1.5 px-3 sm:gap-2.5 sm:px-6 lg:px-8" aria-label="منوی اصلی">
-      <AppLogo />
+      <div class="site-header__bar">
+        <AppLogo class="site-header__logo" :compact-on-mobile="false" />
 
-      <div class="hidden h-full items-center gap-0.5 lg:flex">
-        <NuxtLink
-          v-for="item in navItems"
-          :key="item.to"
-          :to="item.to"
-          class="group relative inline-flex h-10 items-center gap-1.5 rounded-xl px-2.5 text-sm font-bold transition-colors 2xl:px-3"
-          :class="[
-            item.match(route.path) ? 'bg-primary-500/13 text-primary-300' : 'text-slate-400 hover:bg-white/[.055] hover:text-white',
-            item.desktopOnly && 'hidden xl:inline-flex',
-          ]"
-          :aria-current="item.match(route.path) ? 'page' : undefined"
-        >
-          <CinematicIcon :name="item.icon" class="size-4.5" :stroke-width="item.match(route.path) ? 2.2 : 1.8" />
-          <span>{{ item.label }}</span>
-          <span v-if="item.match(route.path)" class="absolute inset-x-4 -bottom-3.5 h-0.5 rounded-full bg-primary-500" aria-hidden="true" />
-        </NuxtLink>
+        <div class="site-header__actions">
+          <button
+            type="button"
+            class="site-header__search-button"
+            :class="searchOpen && 'site-header__search-button--active'"
+            aria-label="جستجو"
+            :aria-expanded="searchOpen"
+            aria-controls="header-search-panel"
+            @click="toggleSearch"
+          >
+            <CinematicIcon :name="searchOpen ? 'x' : 'search'" class="size-6" />
+          </button>
+
+          <NuxtLink
+            :to="profilePath"
+            class="site-header__login"
+            :aria-label="authStore.isAuthenticated ? 'رفتن به حساب کاربری' : 'ورود به حساب'"
+            :title="authStore.isAuthenticated ? 'حساب کاربری' : 'ورود و ثبت‌نام'"
+            :aria-current="route.path.startsWith('/profile') ? 'page' : undefined"
+          >
+            <CinematicIcon :name="authStore.isAuthenticated ? 'user' : 'login'" class="size-6" aria-hidden="true" />
+          </NuxtLink>
+        </div>
       </div>
 
-      <HeaderCategories />
-
-      <HeaderSearch class="mr-auto hidden min-w-[15rem] max-w-[30rem] flex-1 md:flex lg:max-w-[21rem] xl:max-w-[25rem] 2xl:max-w-[30rem]" :active="route.path === '/search'" />
-
-      <div class="mr-auto flex shrink-0 items-center gap-1 sm:gap-1.5 md:mr-0 md:border-r md:border-white/[.08] md:pr-2.5">
-        <NotificationCenter />
-        <NuxtLink
-          to="/watchlist"
-          class="relative hidden h-11 items-center justify-center gap-2 rounded-xl px-2.5 text-slate-400 ring-1 ring-transparent transition-colors hover:bg-white/[.055] hover:text-white lg:inline-flex"
-          :class="route.path === '/watchlist' ? 'bg-primary-500/13 text-primary-300 ring-primary-400/20' : ''"
-          aria-label="لیست من"
-          :aria-current="route.path === '/watchlist' ? 'page' : undefined"
+      <Transition name="search-drop">
+        <div
+          v-if="searchOpen"
+          id="header-search-panel"
+          class="site-header__search-panel"
+          role="dialog"
+          aria-label="جستجوی فیلم یا سریال"
         >
-          <CinematicIcon name="bookmark" class="size-5" :filled="route.path === '/watchlist'" />
-          <span class="hidden 2xl:inline">لیست من</span>
-          <span v-if="watchlistIds.length" class="absolute -left-1 -top-1 grid min-h-4 min-w-4 place-items-center rounded-full bg-primary-500 px-1 text-[8px] font-black leading-none text-night-950 ring-2 ring-night-950 tabular-nums">{{ watchlistIds.length }}</span>
-        </NuxtLink>
-        <NuxtLink
-          :to="profilePath"
-          class="inline-flex h-11 items-center justify-center gap-2 rounded-xl px-2.5 text-slate-300 ring-1 transition-colors 2xl:px-3"
-          :class="route.path.startsWith('/profile') ? 'bg-primary-500 text-night-950 ring-primary-400' : 'bg-white/[.055] ring-white/[.09] hover:bg-white/[.09] hover:text-white'"
-          :aria-label="authStore.isAuthenticated ? 'پروفایل' : 'ورود به حساب'"
-          :aria-current="route.path.startsWith('/profile') ? 'page' : undefined"
-        >
-          <CinematicIcon :name="authStore.isAuthenticated ? 'user' : 'login'" class="size-5" :stroke-width="route.path.startsWith('/profile') ? 2.2 : 1.8" />
-          <span class="hidden 2xl:inline">{{ authStore.isAuthenticated ? 'پروفایل' : 'ورود' }}</span>
-        </NuxtLink>
-      </div>
+          <HeaderSearch
+            input-id="header-search-input"
+            :active="route.path === '/search'"
+            autofocus
+            compact-placeholder
+            @submitted="searchOpen = false"
+          />
+        </div>
+      </Transition>
+    </header>
+
+    <DesktopHeader class="hidden md:block" />
+
+    <nav class="mobile-bottom-nav" aria-label="ناوبری اصلی موبایل">
+      <NuxtLink
+        to="/"
+        class="mobile-bottom-nav__item"
+        :class="activeBottomItem === 'home' && 'mobile-bottom-nav__item--active'"
+        :aria-current="activeBottomItem === 'home' ? 'page' : undefined"
+      >
+        <CinematicIcon name="home" class="mobile-bottom-nav__icon" :stroke-width="activeBottomItem === 'home' ? 2.25 : 1.8" />
+        <span>خانه</span>
+      </NuxtLink>
+
+      <NuxtLink
+        to="/movies"
+        class="mobile-bottom-nav__item"
+        :class="activeBottomItem === 'movies' && 'mobile-bottom-nav__item--active'"
+        :aria-current="activeBottomItem === 'movies' ? 'page' : undefined"
+      >
+        <CinematicIcon name="movie" class="mobile-bottom-nav__icon" :stroke-width="activeBottomItem === 'movies' ? 2.25 : 1.8" />
+        <span>فیلم‌ها</span>
+      </NuxtLink>
+
+      <NuxtLink
+        to="/series"
+        class="mobile-bottom-nav__item"
+        :class="activeBottomItem === 'series' && 'mobile-bottom-nav__item--active'"
+        :aria-current="activeBottomItem === 'series' ? 'page' : undefined"
+      >
+        <CinematicIcon name="series" class="mobile-bottom-nav__icon" :stroke-width="activeBottomItem === 'series' ? 2.25 : 1.8" />
+        <span>سریال‌ها</span>
+      </NuxtLink>
+
+      <button
+        type="button"
+        class="mobile-bottom-nav__item"
+        :class="activeBottomItem === 'menu' && 'mobile-bottom-nav__item--active'"
+        aria-label="باز کردن منو"
+        aria-controls="mobile-sidebar"
+        :aria-expanded="sidebarOpen"
+        @click="toggleSidebar"
+      >
+        <CinematicIcon :name="sidebarOpen ? 'x' : 'menu'" class="mobile-bottom-nav__icon" :stroke-width="activeBottomItem === 'menu' ? 2.25 : 1.8" />
+        <span>منو</span>
+      </button>
     </nav>
-    <div class="border-t border-white/[.055] px-3 pb-3 pt-2 md:hidden">
-      <HeaderSearch mobile class="mx-auto w-full max-w-xl" :active="route.path === '/search'" />
-    </div>
-  </header>
+
+    <ClientOnly>
+      <MobileSidebar
+        v-if="!isDesktop"
+        v-model:open="sidebarOpen"
+      />
+    </ClientOnly>
+  </div>
 </template>
+
+<style scoped>
+.site-header-root {
+  --stream-chrome: #0b0d12;
+  --stream-chrome-elevated: #12151c;
+  --stream-border: rgb(255 255 255 / 8%);
+  --stream-text: #f7f7f8;
+  --stream-muted: #a5a8b0;
+  --stream-active: #e4ad49;
+  display: contents;
+}
+
+.site-header {
+  position: sticky;
+  min-height: calc(var(--header-height) + env(safe-area-inset-top, 0px));
+  padding-top: env(safe-area-inset-top, 0px);
+  border-bottom: 0;
+  background: none;
+  color: var(--stream-text);
+  box-shadow: none;
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+}
+
+.site-header__bar {
+  display: flex;
+  width: 100%;
+  max-width: var(--layout-max);
+  height: var(--header-height);
+  margin-inline: auto;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  padding-inline: var(--layout-gutter);
+}
+
+.site-header__logo {
+  color: var(--stream-text);
+}
+
+.site-header__actions {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: .25rem;
+}
+
+.site-header__search-button {
+  display: grid;
+  width: var(--touch-target);
+  height: var(--touch-target);
+  flex: none;
+  place-items: center;
+  border: 1px solid rgb(255 255 255 / 6%);
+  border-radius: .7rem;
+  background: rgb(255 255 255 / 3%);
+  color: #fff;
+  box-shadow: inset 0 1px 0 rgb(255 255 255 / 5%);
+  transition: color 140ms ease, background-color 140ms ease;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.site-header__search-button:hover,
+.site-header__search-button:focus-visible,
+.site-header__search-button--active {
+  background: rgb(255 255 255 / 6%);
+  color: #fff;
+}
+
+.site-header__login {
+  display: grid;
+  width: var(--touch-target);
+  height: var(--touch-target);
+  flex: none;
+  place-items: center;
+  border: 1px solid rgb(255 255 255 / 6%);
+  border-radius: .7rem;
+  background: rgb(255 255 255 / 3%);
+  color: #fff;
+  box-shadow: inset 0 1px 0 rgb(255 255 255 / 5%);
+  transition: color 140ms ease, background-color 140ms ease;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.site-header__login:hover,
+.site-header__login:focus-visible,
+.site-header__login[aria-current='page'] {
+  background: rgb(255 255 255 / 6%);
+  color: #fff;
+}
+
+.site-header__skip-link {
+  position: absolute;
+  inset-inline-start: 1rem;
+  top: .35rem;
+  z-index: 90;
+  transform: translateY(-5rem);
+  border-radius: .5rem;
+  background: var(--stream-active);
+  padding: .45rem .75rem;
+  color: #181006;
+  font-size: .75rem;
+  font-weight: 800;
+  transition: transform 140ms ease;
+}
+
+.site-header__skip-link:focus {
+  transform: translateY(0);
+}
+
+.site-header__search-panel {
+  position: absolute;
+  inset-inline: var(--layout-gutter);
+  top: calc(100% + .5rem);
+  z-index: 75;
+  width: auto;
+  max-width: 30rem;
+  margin-inline: auto;
+  border: 1px solid var(--stream-border);
+  border-radius: 1rem;
+  padding: .65rem;
+  background: color-mix(in srgb, var(--stream-chrome-elevated) 97%, transparent);
+  box-shadow: 0 20px 48px rgb(0 0 0 / 42%);
+}
+
+.site-header__search-panel :deep(.header-search) {
+  height: 2.75rem;
+  border-radius: .8rem;
+  background: rgb(255 255 255 / 5%);
+}
+
+.site-header__search-panel :deep(.header-search--open) {
+  border-radius: .8rem .8rem .25rem .25rem;
+}
+
+.site-header__search-panel :deep(.header-search__kbd) {
+  display: none;
+}
+
+.mobile-bottom-nav {
+  position: fixed;
+  inset-inline: 0;
+  bottom: 0;
+  z-index: 70;
+  display: grid;
+  min-height: calc(var(--mobile-bottom-nav-height) + env(safe-area-inset-bottom, 0px));
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  padding: .15rem max(.35rem, env(safe-area-inset-right, 0px)) env(safe-area-inset-bottom, 0px) max(.35rem, env(safe-area-inset-left, 0px));
+  border-top: 1px solid var(--stream-border);
+  background: var(--stream-chrome);
+  box-shadow: 0 -10px 28px rgb(0 0 0 / 24%);
+  -webkit-backdrop-filter: blur(14px) saturate(110%);
+  backdrop-filter: blur(14px) saturate(110%);
+}
+
+.mobile-bottom-nav__item {
+  display: flex;
+  min-width: 0;
+  min-height: 3rem;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: .18rem;
+  border-radius: .65rem;
+  color: var(--stream-muted);
+  font-size: .65rem;
+  font-weight: 650;
+  line-height: 1.15;
+  transition: color 140ms ease;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.mobile-bottom-nav__icon {
+  width: 1.25rem;
+  height: 1.25rem;
+}
+
+.mobile-bottom-nav__item--active {
+  color: var(--stream-active);
+}
+
+.mobile-bottom-nav__item:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--stream-active) 72%, transparent);
+  outline-offset: -2px;
+}
+
+.search-drop-enter-active,
+.search-drop-leave-active {
+  transition: opacity 150ms ease, transform 170ms cubic-bezier(.22, 1, .36, 1);
+}
+
+.search-drop-enter-from,
+.search-drop-leave-to {
+  opacity: 0;
+  transform: translateY(-.35rem) scale(.985);
+}
+
+@media (min-width: 768px) {
+  .mobile-bottom-nav {
+    display: none;
+  }
+
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .site-header__search-button,
+  .site-header__login,
+  .mobile-bottom-nav__item,
+  .search-drop-enter-active,
+  .search-drop-leave-active {
+    transition: none;
+  }
+}
+</style>

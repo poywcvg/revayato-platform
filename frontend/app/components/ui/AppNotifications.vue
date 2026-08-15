@@ -4,7 +4,22 @@ import { Toaster } from 'vue-sonner'
 
 <template>
   <ClientOnly>
-    <Toaster theme="dark" position="top-center" dir="rtl" close-button :rich-colors="false" :visible-toasts="4" :duration="4500" :gap="10" container-aria-label="اعلان‌های سایت" class="cinema-toaster">
+    <Toaster
+      theme="dark"
+      position="top-center"
+      dir="rtl"
+      close-button
+      :rich-colors="false"
+      :visible-toasts="4"
+      :duration="4500"
+      :gap="10"
+      container-aria-label="اعلان‌های سایت"
+      class="cinema-toaster"
+      :toast-options="{
+        class: 'cinema-toast',
+        descriptionClass: 'cinema-toast__description',
+      }"
+    >
       <template #success-icon><CinematicIcon name="check-circle" class="size-5 text-success" /></template>
       <template #error-icon><CinematicIcon name="alert-triangle" class="size-5 text-error" /></template>
       <template #warning-icon><CinematicIcon name="alert-triangle" class="size-5 text-warning" /></template>

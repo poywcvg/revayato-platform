@@ -1,6 +1,6 @@
 import type { MaybeRefOrGetter } from 'vue'
 
-export function useHeroSlider(itemCount: MaybeRefOrGetter<number>, intervalMs = 7000) {
+export function useHeroSlider(itemCount: MaybeRefOrGetter<number>, intervalMs = 6000) {
   const currentIndex = ref(0)
   const isPaused = ref(false)
   const reducedMotionPreference = usePreferredReducedMotion()

@@ -1,4 +1,6 @@
-export type PlaybackQuality = 'auto' | '1080p' | '720p' | '480p'
+export type PlaybackQuality = 'auto' | `${number}p`
+
+export type PlaybackVersionKind = 'dub' | 'softsub' | 'hardsub' | 'original'
 
 export interface PlaybackTextTrack {
   id: string
@@ -6,12 +8,45 @@ export interface PlaybackTextTrack {
   language: string
   src: string
   default?: boolean
+  /** Absolute URL of the video this VTT was extracted from (for sync). */
+  source_url?: string
+  /** Present on series-level SoftSub mirrors for episode matching. */
+  season_number?: number
+  episode_number?: number
+  /** e.g. subtitlestar — IMDb-matched sidecar safe to show on Soft/Hard. */
+  provider?: string
+  /** 1=embedded exact source, 2=SubtitleStar, 3=next provider fallback. */
+  source_priority?: number
+  /** exact-source, release-match, or title-fallback. */
+  sync_confidence?: string
 }
 
 export interface PlaybackAudioTrack {
   id: string
   label: string
   language: string
+}
+
+export interface PlaybackVersion {
+  id: string
+  kind: PlaybackVersionKind
+  label: string
+  url: string
+  quality?: string
+  /** Only tracks extracted from / synced to this stream. */
+  subtitleTracks: PlaybackTextTrack[]
+  /** Hardsub has Persian text burned into the video. */
+  burnedInSubtitles?: boolean
+}
+
+/** Minimal season/episode metadata rendered inside the online player. */
+export interface PlaybackEpisodeOption {
+  id: number
+  title: string
+  season_number: number
+  episode_number: number
+  duration_minutes?: number
+  thumbnail_url?: string
 }
 
 /**

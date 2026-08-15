@@ -1,3 +1,4 @@
+import os
 from datetime import timedelta
 
 from django.conf import settings
@@ -13,8 +14,9 @@ from rest_framework import status
 from rest_framework.decorators import api_view, permission_classes, throttle_classes
 from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
-from rest_framework.throttling import AnonRateThrottle
+from rest_framework.throttling import SimpleRateThrottle
 from rest_framework_simplejwt.exceptions import TokenError
+from rest_framework_simplejwt.token_blacklist.models import BlacklistedToken, OutstandingToken
 from rest_framework_simplejwt.tokens import RefreshToken
 
 from .models import Profile
@@ -31,21 +33,63 @@ User = get_user_model()
 MAX_FAILED_LOGIN_ATTEMPTS = 5
 LOGIN_LOCK_MINUTES = 15
 
+# Per-endpoint auth throttles. ScopedRateThrottle lets us key the bucket on the
+# trusted client IP (config.client_ip.client_ip) instead of REMOTE_ADDR, which
+# Uvicorn rewrites from X-Forwarded-For. All real users behind one shared CDN
+# egress still get their own bucket, so VPN off/on no longer exhausts a single
+# global rate limit. Rates are tuned here and read from settings below.
+AUTH_LOGIN_RATE = os.environ.get('AUTH_LOGIN_RATE', '10/minute')
+AUTH_REGISTER_RATE = os.environ.get('AUTH_REGISTER_RATE', '5/hour')
+AUTH_PASSWORD_RESET_RATE = os.environ.get('AUTH_PASSWORD_RESET_RATE', '5/hour')
 
-class LoginRateThrottle(AnonRateThrottle):
-    rate = '10/minute'
+
+class AuthClientRateThrottle(SimpleRateThrottle):
+    """Auth-throttle base that buckets on the trusted client IP.
+
+    SimpleRateThrottle requires subclasses to implement ``get_cache_key``; this
+    implementation keys on ``self.scope`` + ``get_ident`` so a view-level
+    ``throttle_scope`` attribute is not needed. DRF's default get_ident() uses
+    HTTP_X_FORWARDED_FOR / REMOTE_ADDR, which here equals the Cloudflare edge
+    address (Uvicorn trusts proxies). Real users would then share one bucket and
+    exhaust the limit together. We override it with the resolved public client
+    IP from config.client_ip so each user behind the CDN gets their own bucket —
+    and a spoofed forwarded header cannot disable it.
+    """
+
+    def get_cache_key(self, request, view):
+        if self.scope is None:
+            return None
+        return self.cache_format % {
+            'scope': self.scope,
+            'ident': self.get_ident(request),
+        }
+
+    def get_ident(self, request):
+        return _client_ip(request) or super().get_ident(request)
 
 
-class RegisterRateThrottle(AnonRateThrottle):
-    rate = '5/hour'
+class LoginRateThrottle(AuthClientRateThrottle):
+    scope = 'login'
+    rate = AUTH_LOGIN_RATE
 
 
-class PasswordResetRateThrottle(AnonRateThrottle):
-    rate = '5/hour'
+class RegisterRateThrottle(AuthClientRateThrottle):
+    scope = 'register'
+    rate = AUTH_REGISTER_RATE
+
+
+class PasswordResetRateThrottle(AuthClientRateThrottle):
+    scope = 'password_reset'
+    rate = AUTH_PASSWORD_RESET_RATE
 
 
 def _client_ip(request):
-    return request.META.get('REMOTE_ADDR') or None
+    """Trusted client IP; falls back to REMOTE_ADDR only when unknown."""
+    try:
+        from config.client_ip import client_ip as resolve_client_ip
+    except ImportError:  # pragma: no cover - defensive
+        return request.META.get('REMOTE_ADDR') or None
+    return resolve_client_ip(request) or request.META.get('REMOTE_ADDR') or None
 
 
 def _token_payload(user):
@@ -58,17 +102,42 @@ def _token_payload(user):
     }
 
 
+def _revoke_user_refresh_tokens(user):
+    outstanding_tokens = list(
+        OutstandingToken.objects.select_for_update()
+        .filter(user=user)
+    )
+    BlacklistedToken.objects.bulk_create(
+        [BlacklistedToken(token=token) for token in outstanding_tokens],
+        ignore_conflicts=True,
+    )
+
+
 @api_view(['POST'])
 @permission_classes([AllowAny])
 @throttle_classes([LoginRateThrottle])
 def login_user(request):
     serializer = LoginSerializer(data=request.data)
     serializer.is_valid(raise_exception=True)
-    email = serializer.validated_data['email']
+    identifier = serializer.validated_data['login']
     password = serializer.validated_data['password']
-    account = User.all_objects.filter(email__iexact=email).first()
 
-    if account and account.locked_until and account.locked_until > timezone.now():
+    if '@' in identifier:
+        account = User.all_objects.filter(email__iexact=identifier.lower()).first()
+    else:
+        account = User.all_objects.filter(username__iexact=identifier).first()
+
+    if not account:
+        return Response(
+            {
+                'code': 'user_not_found',
+                'detail': 'حسابی با این ایمیل یا نام کاربری پیدا نشد.',
+                'hint': 'می‌توانی همین حالا یک حساب تازه بسازی.',
+            },
+            status=status.HTTP_404_NOT_FOUND,
+        )
+
+    if account.locked_until and account.locked_until > timezone.now():
         remaining_minutes = max(1, int((account.locked_until - timezone.now()).total_seconds() // 60) + 1)
         return Response(
             {
@@ -79,15 +148,15 @@ def login_user(request):
             status=status.HTTP_423_LOCKED,
         )
 
-    if account and (not account.is_active or account.is_deleted):
+    if not account.is_active or account.is_deleted:
         return Response(
             {'code': 'account_disabled', 'detail': 'این حساب در حال حاضر فعال نیست.', 'hint': 'با پشتیبانی تماس بگیر.'},
             status=status.HTTP_403_FORBIDDEN,
         )
 
-    user = authenticate(request=request, email=email, password=password)
+    user = authenticate(request=request, email=account.email, password=password)
     if not user:
-        if account and account.is_active and not account.is_deleted:
+        if account.is_active and not account.is_deleted:
             with transaction.atomic():
                 locked_account = User.all_objects.select_for_update().get(pk=account.pk)
                 locked_account.failed_login_attempts += 1
@@ -99,8 +168,8 @@ def login_user(request):
         return Response(
             {
                 'code': 'invalid_credentials',
-                'detail': 'ایمیل یا رمز عبور درست نیست.',
-                'hint': 'اطلاعات را دوباره بررسی کن یا از بازیابی رمز عبور استفاده کن.',
+                'detail': 'رمز عبور درست نیست.',
+                'hint': 'رمز را دوباره بررسی کن یا از بازیابی رمز عبور استفاده کن.',
             },
             status=status.HTTP_401_UNAUTHORIZED,
         )
@@ -179,10 +248,14 @@ def confirm_password_reset(request):
             status=status.HTTP_400_BAD_REQUEST,
         )
 
-    user.set_password(serializer.validated_data['password'])
-    user.failed_login_attempts = 0
-    user.locked_until = None
-    user.save(update_fields=['password', 'failed_login_attempts', 'locked_until'])
+    with transaction.atomic():
+        user.set_password(serializer.validated_data['password'])
+        user.failed_login_attempts = 0
+        user.locked_until = None
+        user.save(update_fields=['password', 'failed_login_attempts', 'locked_until'])
+        # Password recovery is the user's emergency session-revocation path.
+        # Long-lived refresh tokens must not survive a credential reset.
+        _revoke_user_refresh_tokens(user)
     return Response({'detail': 'رمز عبور با موفقیت تغییر کرد.'})
 
 

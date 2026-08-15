@@ -1,3 +1,7 @@
+// Chromium-based browsers cap persistent cookies at 400 days. Refresh-token
+// rotation renews this window whenever an active user returns to the app.
+export const AUTH_SESSION_MAX_AGE_SECONDS = 60 * 60 * 24 * 400
+
 export function useAuthCookies() {
   const shared = {
     path: '/',
@@ -10,7 +14,7 @@ export function useAuthCookies() {
   })
   const refreshToken = useCookie<string | null>('refresh_token', {
     ...shared,
-    maxAge: 60 * 60 * 24 * 30,
+    maxAge: AUTH_SESSION_MAX_AGE_SECONDS,
   })
 
   function clearAuthCookies() {

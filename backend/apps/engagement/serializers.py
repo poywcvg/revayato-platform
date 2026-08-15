@@ -1,7 +1,7 @@
 ﻿from rest_framework import serializers
 
 from . import selectors
-from .models import Like, Rating, UserActivityEvent, WatchlistItem
+from .models import Like, Rating, SupportMessage, SupportTicket, UserActivityEvent, WatchlistItem
 
 
 PRIVACY_SAFE_EVENT_TYPES = [
@@ -180,17 +180,22 @@ class RatingSerializer(serializers.ModelSerializer):
         model = Rating
         fields = [
             'id', 'username', 'content_type', 'object_id',
-            'score', 'review', 'is_spoiler', 'created_at', 'updated_at',
+            'score', 'review', 'is_spoiler', 'is_hidden', 'created_at', 'updated_at',
         ]
-        read_only_fields = ['id', 'username', 'created_at', 'updated_at']
+        read_only_fields = ['id', 'username', 'is_hidden', 'created_at', 'updated_at']
 
 
 class RateContentInputSerializer(serializers.Serializer):
     content_type = serializers.ChoiceField(choices=Rating._meta.get_field('content_type').choices)
     object_id = serializers.IntegerField(min_value=1)
     score = serializers.DecimalField(max_digits=3, decimal_places=1, min_value=0, max_value=10)
-    review = serializers.CharField(required=False, allow_blank=True, default='')
-    is_spoiler = serializers.BooleanField(required=False, default=False)
+    review = serializers.CharField(required=False, allow_blank=True, allow_null=True, max_length=4000)
+    is_spoiler = serializers.BooleanField(required=False, allow_null=True)
+
+    def validate_review(self, value):
+        if value is None:
+            return None
+        return value.strip()
 
 
 class WatchlistItemSerializer(serializers.ModelSerializer):
@@ -214,3 +219,92 @@ class WatchlistToggleInputSerializer(serializers.Serializer):
 class LikeToggleInputSerializer(serializers.Serializer):
     content_type = serializers.ChoiceField(choices=Like._meta.get_field('content_type').choices)
     object_id = serializers.IntegerField(min_value=1)
+
+
+class SupportMessageSerializer(serializers.ModelSerializer):
+    author_username = serializers.SerializerMethodField()
+
+    class Meta:
+        model = SupportMessage
+        fields = [
+            'id', 'body', 'is_staff_reply', 'author_username', 'created_at',
+        ]
+        read_only_fields = fields
+
+    def get_author_username(self, obj):
+        if obj.is_staff_reply:
+            return 'پشتیبانی روایتو'
+        if obj.author_id and obj.author:
+            return obj.author.username
+        return 'کاربر'
+
+
+class SupportTicketSerializer(serializers.ModelSerializer):
+    messages = SupportMessageSerializer(many=True, read_only=True)
+    username = serializers.CharField(source='user.username', read_only=True)
+    category_label = serializers.CharField(source='get_category_display', read_only=True)
+    status_label = serializers.CharField(source='get_status_display', read_only=True)
+
+    class Meta:
+        model = SupportTicket
+        fields = [
+            'id', 'tracking_code', 'category', 'category_label', 'subject', 'body',
+            'related_title', 'related_year', 'related_url',
+            'status', 'status_label', 'unread_by_staff', 'unread_by_user',
+            'username', 'messages', 'last_message_at', 'created_at', 'updated_at',
+        ]
+        read_only_fields = fields
+
+
+class SupportTicketListSerializer(serializers.ModelSerializer):
+    username = serializers.CharField(source='user.username', read_only=True)
+    category_label = serializers.CharField(source='get_category_display', read_only=True)
+    status_label = serializers.CharField(source='get_status_display', read_only=True)
+    message_count = serializers.SerializerMethodField()
+
+    class Meta:
+        model = SupportTicket
+        fields = [
+            'id', 'tracking_code', 'category', 'category_label', 'subject',
+            'related_title', 'status', 'status_label',
+            'unread_by_staff', 'unread_by_user', 'username', 'message_count',
+            'last_message_at', 'created_at',
+        ]
+        read_only_fields = fields
+
+    def get_message_count(self, obj):
+        if hasattr(obj, '_prefetched_objects_cache') and 'messages' in obj._prefetched_objects_cache:
+            return len(obj.messages.all())
+        return obj.messages.count()
+
+
+class SupportTicketCreateSerializer(serializers.Serializer):
+    category = serializers.ChoiceField(choices=SupportTicket.Category.choices)
+    subject = serializers.CharField(max_length=200)
+    body = serializers.CharField(min_length=10, max_length=5000)
+    related_title = serializers.CharField(required=False, allow_blank=True, max_length=255, default='')
+    related_year = serializers.IntegerField(required=False, allow_null=True, min_value=1900, max_value=2100)
+    related_url = serializers.URLField(required=False, allow_blank=True, max_length=500, default='')
+
+    def validate_subject(self, value):
+        return value.strip()
+
+    def validate_body(self, value):
+        return value.strip()
+
+
+class SupportReplySerializer(serializers.Serializer):
+    body = serializers.CharField(min_length=1, max_length=5000)
+
+    def validate_body(self, value):
+        return value.strip()
+
+
+class AdminSupportTicketUpdateSerializer(serializers.Serializer):
+    status = serializers.ChoiceField(choices=SupportTicket.Status.choices, required=False)
+    staff_note = serializers.CharField(required=False, allow_blank=True, max_length=5000)
+    body = serializers.CharField(required=False, allow_blank=True, min_length=1, max_length=5000)
+
+
+class AdminRatingHideSerializer(serializers.Serializer):
+    is_hidden = serializers.BooleanField()

@@ -5,6 +5,7 @@ import AlertTriangle from '~icons/lucide/triangle-alert'
 import ArrowLeft from '~icons/lucide/arrow-left'
 import ArrowRight from '~icons/lucide/arrow-right'
 import ArrowUp from '~icons/lucide/arrow-up'
+import ArrowUpRight from '~icons/lucide/arrow-up-right'
 import Audio from '~icons/lucide/audio-lines'
 import Badge from '~icons/lucide/badge'
 import Bookmark from '~icons/lucide/bookmark'
@@ -27,12 +28,19 @@ import Clock from '~icons/lucide/clock-3'
 import Comment from '~icons/lucide/message-circle-more'
 import Comments from '~icons/lucide/messages-square'
 import Document from '~icons/lucide/file-text'
+import Download from '~icons/lucide/download'
 import Edit from '~icons/lucide/pencil-line'
 import Eye from '~icons/lucide/eye'
 import EyeOff from '~icons/lucide/eye-off'
 import FastForward from '~icons/lucide/fast-forward'
 import Feather from '~icons/lucide/feather'
 import Film from '~icons/lucide/film'
+import Gauge from '~icons/lucide/gauge'
+import Maximize from '~icons/lucide/maximize'
+import Minimize from '~icons/lucide/minimize'
+import Pause from '~icons/lucide/pause'
+import PictureInPicture from '~icons/lucide/picture-in-picture-2'
+import Rewind from '~icons/lucide/rewind'
 import Ghost from '~icons/lucide/ghost'
 import Globe from '~icons/lucide/globe'
 import Grid from '~icons/lucide/grid-2x2'
@@ -50,7 +58,9 @@ import Login from '~icons/lucide/log-in'
 import Logout from '~icons/lucide/log-out'
 import Map from '~icons/lucide/map'
 import Masks from '~icons/lucide/drama'
+import Menu from '~icons/lucide/menu'
 import Moon from '~icons/lucide/moon'
+import Sun from '~icons/lucide/sun'
 import Palette from '~icons/lucide/palette'
 import Play from '~icons/lucide/play'
 import Puzzle from '~icons/lucide/puzzle'
@@ -59,6 +69,7 @@ import Rocket from '~icons/lucide/rocket'
 import Search from '~icons/lucide/search'
 import Investigate from '~icons/lucide/scan-search'
 import Settings from '~icons/lucide/settings-2'
+import Share from '~icons/lucide/share-2'
 import ShieldAlert from '~icons/lucide/shield-alert'
 import ShieldCheck from '~icons/lucide/shield-check'
 import SignalOff from '~icons/lucide/signal-zero'
@@ -72,6 +83,9 @@ import Trash from '~icons/lucide/trash-2'
 import User from '~icons/lucide/user-round'
 import UserPlus from '~icons/lucide/user-round-plus'
 import Users from '~icons/lucide/users-round'
+import Volume1 from '~icons/lucide/volume-1'
+import Volume2 from '~icons/lucide/volume-2'
+import VolumeX from '~icons/lucide/volume-x'
 import Wand from '~icons/lucide/wand-sparkles'
 import X from '~icons/lucide/x'
 
@@ -93,6 +107,7 @@ const iconComponents: Record<CinematicIconName, Component> = {
   'arrow-left': ArrowLeft,
   'arrow-right': ArrowRight,
   'arrow-up': ArrowUp,
+  'arrow-up-right': ArrowUpRight,
   'audio': Audio,
   'badge': Badge,
   'bookmark': Bookmark,
@@ -114,6 +129,7 @@ const iconComponents: Record<CinematicIconName, Component> = {
   'comment': Comment,
   'comments': Comments,
   'document': Document,
+  'download': Download,
   'edit': Edit,
   'exciting': Bolt,
   'eye': Eye,
@@ -121,6 +137,7 @@ const iconComponents: Record<CinematicIconName, Component> = {
   'family': Users,
   'fast-forward': FastForward,
   'film': Film,
+  'gauge': Gauge,
   'globe': Globe,
   'grid': Grid,
   'heart': Heart,
@@ -138,11 +155,18 @@ const iconComponents: Record<CinematicIconName, Component> = {
   'logout': Logout,
   'map': Map,
   'masks': Masks,
+  'maximize': Maximize,
+  'menu': Menu,
+  'minimize': Minimize,
   'mood': Moon,
+  'moon': Moon,
   'movie': Film,
   'palette': Palette,
+  'pause': Pause,
+  'picture-in-picture': PictureInPicture,
   'play': Play,
   'profile': User,
+  'rewind': Rewind,
   'puzzle': Puzzle,
   'quality': Badge,
   'refresh': Refresh,
@@ -152,6 +176,7 @@ const iconComponents: Record<CinematicIconName, Component> = {
   'search': Search,
   'series': ListVideo,
   'settings': Settings,
+  'share': Share,
   'shield-alert': ShieldAlert,
   'shield-check': ShieldCheck,
   'signal-off': SignalOff,
@@ -160,6 +185,7 @@ const iconComponents: Record<CinematicIconName, Component> = {
   'sparkles': Sparkles,
   'star': Star,
   'subtitle': Captions,
+  'sun': Sun,
   'tag': Tag,
   'thoughtful': Brain,
   'trailer': Clapperboard,
@@ -168,6 +194,9 @@ const iconComponents: Record<CinematicIconName, Component> = {
   'user': User,
   'user-plus': UserPlus,
   'users': Users,
+  'volume': Volume2,
+  'volume-1': Volume1,
+  'volume-x': VolumeX,
   'wand': Wand,
   'x': X,
 }

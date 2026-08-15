@@ -42,9 +42,15 @@ export const useApi = () => {
       accessToken.value = result.access
       if (result.refresh) refreshToken.value = result.refresh
       return result.access
-    } catch {
-      clearAuthCookies()
-      return null
+    } catch (error) {
+      const status = responseStatus(error)
+      if (status === 400 || status === 401 || status === 403) {
+        clearAuthCookies()
+        return null
+      }
+      // Network outages, rate limits and server errors do not invalidate an
+      // otherwise valid persistent session. Let the caller retry later.
+      throw error
     }
   }
 
@@ -62,9 +68,15 @@ export const useApi = () => {
     const requestToken = request.startsWith('/auth/') ? null : token
     return $fetch<T>(request, {
       ...options,
-      baseURL: config.public.apiBase,
+      // Server-side catalog rendering should use Docker's private network instead
+      // of making a public round-trip through Caddy. The browser keeps using the
+      // public same-origin endpoint.
+      baseURL: import.meta.server ? config.apiInternalBase : config.public.apiBase,
       headers: requestHeaders(options, requestToken),
       retry: 0,
+      // Catalog list endpoints can exceed 12s under crawler DB load; keep SSR
+      // slightly higher so home does not paint an empty shell on every timeout.
+      timeout: options.timeout ?? (import.meta.server ? 20_000 : 10_000),
     })
   }
 

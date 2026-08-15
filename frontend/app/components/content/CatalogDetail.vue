@@ -1,172 +1,533 @@
 <script setup lang="ts">
 import type { Movie } from '~/types'
+import type { DownloadPlayRequest } from '~/components/content/DownloadBox.vue'
+import '~/assets/css/media-detail.css'
 
 const props = defineProps<{ item: Movie }>()
 const modalOpen = ref(false)
+const accessModal = ref<'play' | 'download' | null>(null)
 const requestedMode = ref<'full' | 'trailer'>('full')
-const activeSection = ref('story')
+const pendingSource = ref('')
+const pendingVersion = ref('')
+const pendingEpisodeId = ref(0)
 const { catalog } = useCatalog()
-const related = useRelatedMovies(() => props.item, 8)
+const authStore = useAuthStore()
+const related = useRelatedMovies(() => props.item, 7)
 const { isLiked, toggleLike } = useLibrary()
-const { trackGenreClick, trackLikeAction, trackTitleView, trackPersonClick } = useAnalyticsEvent()
-const liked = computed(() => isLiked(props.item.id))
+const { trackGenreClick, trackLikeAction, trackTitleView, trackPersonClick, trackTrailerPlay } = useAnalyticsEvent()
+const notifications = useNotifications()
+const liked = computed(() => isLiked(props.item.id, props.item.type))
 const restricted = computed(() => props.item.age_rating === '18+')
 const episodeCount = computed(() => props.item.episodes?.length || 0)
+const progressPercent = computed(() => Math.min(100, Math.max(0, props.item.progress_percent || 0)))
 const primaryGenre = computed(() => props.item.genres[0])
 const sameGenreTitles = computed(() => {
   if (!primaryGenre.value) return []
   return catalog.value
     .filter(candidate => candidate.id !== props.item.id && candidate.genres.some(genre => genre.slug === primaryGenre.value?.slug))
     .sort((a, b) => b.rating - a.rating || b.popularity - a.popularity)
-    .slice(0, 8)
+    .slice(0, 7)
 })
-const playLabel = computed(() => props.item.progress_percent > 0 ? 'ادامه تماشا' : props.item.type === 'series' ? 'پخش قسمت اول' : 'تماشا')
+const playLabel = computed(() => props.item.progress_percent > 0 ? 'ادامه تماشا' : props.item.type === 'series' ? 'پخش قسمت اول' : 'تماشا آنلاین')
+const downloadLinks = computed(() => props.item.download_links || [])
+const primaryStreamUrl = computed(() => (
+  downloadLinks.value[0]?.url
+  || props.item.hls_url
+  || props.item.playback?.hls_url
+  || props.item.playback?.signed_playback_url
+  || ''
+))
+const canWatchOnline = computed(() => Boolean(primaryStreamUrl.value))
+const trailerUrl = computed(() => {
+  const url = props.item.trailer_url?.trim() || ''
+  return /^https?:\/\//i.test(url) || url.startsWith('/') ? url : ''
+})
+const hasTrailer = computed(() => Boolean(trailerUrl.value))
+const hasDirector = computed(() => Boolean(props.item.crew.length || props.item.director?.trim()))
+const qualityBadge = computed(() => props.item.quality || props.item.download_qualities?.[0] || '')
+const colorSource = computed(() => props.item.poster_url || props.item.backdrop_url)
+const { styleVars } = useDominantColor(colorSource)
+
+const metaBits = computed(() => {
+  const bits: Array<{ key: string; label: string; to?: string; onClick?: () => void }> = []
+  if (props.item.imdb_rank) {
+    bits.push({
+      key: 'imdb-top',
+      label: `IMDb Top #${props.item.imdb_rank}`,
+      to: props.item.type === 'movie' ? '/movies?sort=imdb_top' : '/series?sort=imdb_top',
+    })
+  }
+  if (props.item.year) bits.push({ key: 'year', label: String(props.item.year) })
+  if (props.item.type === 'movie' && props.item.duration_minutes) {
+    bits.push({ key: 'duration', label: `${props.item.duration_minutes.toLocaleString('fa-IR')} دقیقه` })
+  }
+  if (props.item.type === 'series') {
+    bits.push({
+      key: 'seasons',
+      label: `${(props.item.seasons_count || 1).toLocaleString('fa-IR')} فصل · ${episodeCount.value.toLocaleString('fa-IR')} قسمت`,
+    })
+  }
+  if (props.item.country) bits.push({ key: 'country', label: props.item.country })
+  props.item.genres.slice(0, 4).forEach((genre) => {
+    bits.push({
+      key: `genre-${genre.id}`,
+      label: genre.title,
+      to: `${props.item.type === 'movie' ? '/movies' : '/series'}?genre=${genre.slug}`,
+      onClick: () => trackGenreClick(genre.slug),
+    })
+  })
+  return bits
+})
+
+const activeSection = ref('story')
 const detailTabs = computed(() => [
   { id: 'story', label: 'داستان' },
+  { id: 'info', label: 'اطلاعات' },
   { id: 'cast', label: 'بازیگران' },
-  { id: 'director', label: 'کارگردان' },
-  ...(props.item.type === 'series' ? [{ id: 'episodes', label: 'فصل‌ها و قسمت‌ها' }] : []),
-  { id: 'comments', label: 'نظرات کاربران' },
-  { id: 'similar', label: 'مشابه‌ها' },
-  { id: 'why-recommended', label: 'چرا پیشنهاد شده؟' },
+  { id: 'comments', label: 'دیدگاه‌ها' },
+  ...(related.value.length ? [{ id: 'similar', label: 'آثار مشابه' }] : []),
+  ...(authStore.isAuthenticated ? [{ id: 'why-recommended', label: 'چرا پیشنهاد شده؟' }] : []),
 ])
-const mockComments = [
-  { name: 'سارا', score: 9, text: 'فضاسازی و ریتم داستان خیلی خوب بود؛ مخصوصاً نیمه دوم که جزئیات به هم وصل می‌شوند.' },
-  { name: 'مانی', score: 8, text: 'انتخاب بازیگران و موسیقی حس منسجمی ساخته؛ ارزش یک‌بار تماشا را دارد.' },
-]
+
+let sectionObserver: IntersectionObserver | undefined
+
+const { api } = useApi()
+const reviews = ref<Array<{ id?: number; name: string; score: number; text: string; isSpoiler?: boolean; createdAt?: string }>>([])
+const myRating = ref<import('~/types').Rating | null>(null)
+
+async function loadReviews() {
+  try {
+    const summary = await api<{
+      reviews?: Array<{ id: number; username: string; score: string; review: string; is_spoiler?: boolean; created_at?: string }>
+      my_rating?: import('~/types').Rating | null
+    }>('/engagement/ratings/summary/', {
+      query: { content_type: props.item.type, object_id: props.item.id },
+    })
+    myRating.value = summary.my_rating || null
+    reviews.value = (summary.reviews || [])
+      .filter(item => item.review?.trim())
+      .map(item => ({
+        id: item.id,
+        name: item.username,
+        score: Number(item.score),
+        text: item.review,
+        isSpoiler: Boolean(item.is_spoiler),
+        createdAt: item.created_at,
+      }))
+  } catch {
+    reviews.value = []
+    myRating.value = null
+  }
+}
 
 function watchPath(confirmed = false) {
-  const query = new URLSearchParams({ mode: requestedMode.value, type: props.item.type })
+  const query = new URLSearchParams({ mode: requestedMode.value, type: props.item.type, player: '1' })
   if (confirmed) query.set('confirmed', '1')
+  if (pendingSource.value) query.set('source', pendingSource.value)
+  if (pendingVersion.value) query.set('version', pendingVersion.value)
+  if (pendingEpisodeId.value) query.set('episode', String(pendingEpisodeId.value))
   return `/watch/${props.item.slug}?${query.toString()}`
 }
 
-function requestPlay(mode: 'full' | 'trailer') {
+function episodeIdFor(seasonNumber: number | null, episodeNumber: number | null) {
+  if (!episodeNumber) return 0
+  const season = seasonNumber ?? 1
+  const match = (props.item.episodes || []).find(episode => (
+    (episode.season_number || 1) === season && episode.episode_number === episodeNumber
+  ))
+  return match?.id || 0
+}
+
+function requestPlay(mode: 'full' | 'trailer', request: DownloadPlayRequest | string = '') {
   requestedMode.value = mode
+  const normalized: DownloadPlayRequest | null = typeof request === 'string'
+    ? (request ? { url: request, kind: 'original', seasonNumber: null, episodeNumber: null } : null)
+    : request
+  pendingSource.value = normalized?.url || ''
+  pendingVersion.value = normalized && normalized.url ? normalized.kind : ''
+  pendingEpisodeId.value = normalized ? episodeIdFor(normalized.seasonNumber, normalized.episodeNumber) : 0
   if (restricted.value) modalOpen.value = true
-  else void navigateTo(watchPath())
+  else if (mode === 'trailer') openTrailer()
+  else void navigateTo(watchPath(false))
+}
+
+function openPlayOptions() {
+  if (downloadLinks.value.length) {
+    accessModal.value = 'play'
+    return
+  }
+  requestPlay('full', primaryStreamUrl.value)
+}
+
+function openDownloadOptions() {
+  if (downloadLinks.value.length) accessModal.value = 'download'
+}
+
+function playSelectedVersion(request: DownloadPlayRequest) {
+  accessModal.value = null
+  requestPlay('full', request)
 }
 
 function confirmPlay() {
   modalOpen.value = false
-  void navigateTo(watchPath(true))
+  if (requestedMode.value === 'trailer') openTrailer()
+  else void navigateTo(watchPath(true))
+  pendingSource.value = ''
+  pendingVersion.value = ''
+  pendingEpisodeId.value = 0
 }
 
-function toggleLiked() {
-  const nextLiked = !liked.value
-  toggleLike(props.item.id)
-  trackLikeAction(props.item, nextLiked)
+function openTrailer() {
+  const url = trailerUrl.value
+  if (!url || !import.meta.client) return
+  trackTrailerPlay(props.item)
+  window.open(url, '_blank', 'noopener,noreferrer')
+}
+
+async function toggleLiked() {
+  const previous = liked.value
+  try {
+    const nextLiked = await toggleLike(props.item.id, props.item.type)
+    if (nextLiked !== previous) trackLikeAction(props.item, nextLiked)
+  } catch {
+    // Notification handled by ActionButtons-style callers; keep silent here for hero control.
+  }
 }
 
 function activateSection(id: string) {
   activeSection.value = id
 }
 
-onMounted(() => trackTitleView(props.item))
+async function shareTitle() {
+  if (!import.meta.client) return
+  const url = window.location.href
+  const title = props.item.title
+  try {
+    if (navigator.share) {
+      await navigator.share({ title, url, text: props.item.description?.slice(0, 120) || title })
+      return
+    }
+    await navigator.clipboard.writeText(url)
+    notifications.success('لینک کپی شد', 'می‌توانی لینک این عنوان را برای دیگران بفرستی.')
+  } catch {
+    // User cancelled share sheet — ignore.
+  }
+}
+
+function startWatchParty() {
+  void navigateTo({
+    path: '/watch-party',
+    query: {
+      type: props.item.type,
+      id: String(props.item.id),
+      slug: props.item.slug,
+      title: props.item.title,
+    },
+  })
+}
+
+async function observeDetailSections() {
+  if (!import.meta.client) return
+  await nextTick()
+  sectionObserver?.disconnect()
+  const sections = detailTabs.value
+    .map(tab => document.getElementById(tab.id))
+    .filter((section): section is HTMLElement => Boolean(section))
+  if (!sections.length) return
+
+  const hash = window.location.hash.slice(1)
+  if (sections.some(section => section.id === hash)) activeSection.value = hash
+
+  sectionObserver = new IntersectionObserver((entries) => {
+    const visible = entries
+      .filter(entry => entry.isIntersecting)
+      .sort((a, b) => Math.abs(a.boundingClientRect.top) - Math.abs(b.boundingClientRect.top))
+    const current = visible[0]?.target as HTMLElement | undefined
+    if (current) activeSection.value = current.id
+  }, { rootMargin: '-96px 0px -62% 0px', threshold: [0, 0.05] })
+  sections.forEach(section => sectionObserver?.observe(section))
+}
+
+onMounted(() => {
+  trackTitleView(props.item)
+  void loadReviews()
+  void observeDetailSections()
+})
+watch(() => props.item.id, () => {
+  accessModal.value = null
+  void loadReviews()
+})
+watch(() => detailTabs.value.map(tab => tab.id).join('|'), () => { void observeDetailSections() })
+onBeforeUnmount(() => sectionObserver?.disconnect())
 </script>
 
 <template>
-  <article class="overflow-clip bg-night-950 text-white">
-    <section class="relative isolate min-h-[680px] overflow-hidden bg-night-950 text-white sm:min-h-[680px]">
-      <NuxtImg :src="item.backdrop_url" alt="" class="absolute inset-0 -z-30 h-full w-full object-cover object-center" preload sizes="100vw" />
-      <div class="absolute inset-0 -z-20 bg-gradient-to-l from-night-950 via-night-950/88 to-night-900/30" />
-      <div class="absolute inset-0 -z-10 bg-gradient-to-t from-night-950 via-night-950/20 to-black/25" />
-      <div class="ambient-orb pointer-events-none absolute -right-36 top-20 -z-10 h-80 w-80 rounded-full" />
+  <article class="media-detail" :style="styleVars">
+    <MediaHero
+      :backdrop-src="item.backdrop_url || item.poster_url"
+      :backdrop-alt="`تصویر زمینه ${item.title}`"
+    >
+      <nav class="media-hero__crumb" aria-label="مسیر صفحه">
+        <NuxtLink to="/">خانه</NuxtLink>
+        <CinematicIcon name="chevron-left" class="size-3.5 opacity-50" />
+        <NuxtLink :to="item.type === 'movie' ? '/movies' : '/series'">
+          {{ item.type === 'movie' ? 'فیلم‌ها' : 'سریال‌ها' }}
+        </NuxtLink>
+        <CinematicIcon name="chevron-left" class="size-3.5 opacity-50" />
+        <span class="max-w-40 truncate text-[color:var(--text-secondary)]">{{ item.title }}</span>
+      </nav>
 
-      <div class="page-shell flex min-h-[680px] flex-col justify-end py-7 sm:min-h-[680px] sm:py-12">
-        <nav class="mb-auto flex items-center gap-2 pt-3 text-[11px] font-bold text-slate-400" aria-label="مسیر صفحه">
-          <NuxtLink to="/" class="inline-flex min-h-10 items-center rounded-lg px-1 transition hover:bg-white/5 hover:text-primary-300">خانه</NuxtLink><CinematicIcon name="chevron-left" class="size-3.5" /><NuxtLink :to="item.type === 'movie' ? '/movies' : '/series'" class="inline-flex min-h-10 items-center rounded-lg px-1 transition hover:bg-white/5 hover:text-primary-300">{{ item.type === 'movie' ? 'فیلم‌ها' : 'سریال‌ها' }}</NuxtLink><CinematicIcon name="chevron-left" class="size-3.5" /><span class="max-w-36 truncate text-slate-200">{{ item.title }}</span>
-        </nav>
+      <div class="media-hero__layout">
+        <MediaPoster
+          :src="item.poster_url"
+          :alt="`پوستر ${item.title}`"
+          :progress-percent="progressPercent"
+          :quality-label="qualityBadge"
+          :show-trailer="hasTrailer && !progressPercent"
+          @trailer="requestPlay('trailer')"
+        />
 
-        <div class="grid items-end gap-6 sm:grid-cols-[180px_minmax(0,1fr)] lg:grid-cols-[220px_minmax(0,1fr)] lg:gap-9">
-          <div class="relative mx-auto w-40 overflow-hidden rounded-2xl shadow-2xl ring-1 ring-white/15 sm:mx-0 sm:w-full">
-            <NuxtImg :src="item.poster_url" :alt="`پوستر ${item.title}`" class="aspect-[2/3] w-full object-cover" preload sizes="(max-width: 639px) 144px, (max-width: 1023px) 180px, 220px" />
-            <div v-if="item.progress_percent" class="absolute inset-x-0 bottom-0 bg-night-950/95 px-3 py-2">
-              <div class="flex items-center justify-between text-[9px] font-black text-slate-300"><span>پیشرفت تماشا</span><span class="text-primary-300">{{ item.progress_percent }}٪</span></div>
-              <div class="mt-1.5 h-1 overflow-hidden rounded-full bg-white/15"><div class="h-full rounded-full bg-primary-500" :style="{ width: `${item.progress_percent}%` }" /></div>
-            </div>
+        <div class="media-summary">
+          <MediaStatusBadges :item="item" />
+
+          <h1 class="media-summary__title" dir="auto">{{ item.title }}</h1>
+
+          <p
+            v-if="item.secondary_title || (item.original_title && item.original_title !== item.title)"
+            class="media-summary__original ltr-value"
+            dir="ltr"
+          >
+            {{ item.secondary_title || item.original_title }}
+          </p>
+
+          <div v-if="metaBits.length" class="media-summary__meta" aria-label="اطلاعات کوتاه">
+            <template v-for="(bit, index) in metaBits" :key="bit.key">
+              <span v-if="index" class="media-summary__meta-sep" aria-hidden="true" />
+              <NuxtLink
+                v-if="bit.to"
+                :to="bit.to"
+                @click="bit.onClick?.()"
+              >
+                {{ bit.label }}
+              </NuxtLink>
+              <span v-else :class="/^\d/.test(bit.label) && 'ltr-value'">{{ bit.label }}</span>
+            </template>
           </div>
 
-          <div class="flex min-w-0 max-w-4xl flex-col pb-1">
-            <div class="order-1 flex flex-wrap items-center gap-2"><span class="rounded-lg bg-primary-500 px-2.5 py-1 text-[10px] font-black text-night-950">{{ item.type === 'movie' ? 'فیلم سینمایی' : 'سریال' }}</span><AgeRatingBadge :rating="item.age_rating" show-label /><DubSubtitleBadge :is-dubbed="item.is_dubbed" :has-subtitle="item.has_subtitle" dark /></div>
-            <p class="order-2 mt-4 w-full truncate text-right text-xs font-bold tracking-[.16em] text-energy-300" dir="ltr">{{ item.original_title }}</p>
-            <h1 class="order-3 mt-1 text-4xl font-black leading-tight tracking-tight text-balance sm:text-5xl lg:text-6xl">{{ item.title }}</h1>
-            <p class="order-5 mt-3 line-clamp-3 max-w-3xl text-sm leading-7 text-slate-300 sm:order-4 sm:text-base">{{ item.description }}</p>
+          <p v-if="item.description" class="media-summary__desc line-clamp-4 sm:line-clamp-5">
+            {{ item.description }}
+          </p>
 
-            <div class="order-6 mt-4 flex flex-wrap gap-2 sm:order-5">
-              <NuxtLink v-for="genre in item.genres" :key="genre.id" :to="{ path: item.type === 'movie' ? '/movies' : '/series', query: { genre: genre.slug } }" class="inline-flex min-h-10 items-center rounded-lg bg-white/[.07] px-3 py-1.5 text-xs font-bold text-slate-200 ring-1 ring-white/10 transition hover:bg-primary-500 hover:text-night-950 hover:ring-primary-400" @click="trackGenreClick(genre.slug)">{{ genre.title }}</NuxtLink>
-            </div>
-
-            <DetailMetadata :item="item" class="order-7 mt-5 sm:order-6" />
-
-            <div class="order-4 mt-5 grid grid-cols-[minmax(0,1fr)_auto_auto] gap-2.5 sm:order-7 sm:mt-6 sm:flex sm:flex-wrap">
-              <button type="button" class="action-primary col-span-3 w-full sm:w-auto" @click="requestPlay('full')"><CinematicIcon name="play" class="size-5" filled />{{ playLabel }}</button>
-              <button type="button" class="inline-flex min-h-12 items-center gap-2 rounded-[.875rem] bg-white/[.08] px-5 text-sm font-black text-white ring-1 ring-white/15 transition hover:bg-white/15 hover:ring-energy-300/30" @click="requestPlay('trailer')"><CinematicIcon name="trailer" class="size-5 text-energy-300" />پخش تریلر</button>
-              <WatchlistButton :id="item.id" :slug="item.slug" :content-type="item.type" dark compact-on-mobile />
-              <button type="button" class="inline-flex min-h-12 min-w-12 items-center justify-center gap-2 rounded-xl px-3 text-sm font-black transition sm:px-4" :class="liked ? 'bg-error text-ink' : 'bg-white/[.08] text-ink ring-1 ring-white/15 hover:bg-white/15'" :aria-label="liked ? 'حذف پسند' : 'پسندیدن'" :aria-pressed="liked" @click="toggleLiked"><CinematicIcon name="heart" class="size-5" :filled="liked" :stroke-width="liked ? 2.25 : 1.8" /><span class="hidden sm:inline">{{ liked ? 'پسندیده شد' : 'پسندیدن' }}</span></button>
-            </div>
-          </div>
+          <MediaActions
+            :play-label="playLabel"
+            :can-watch="canWatchOnline"
+            :has-trailer="hasTrailer"
+            :has-downloads="Boolean(downloadLinks.length)"
+            :liked="liked"
+            :content-id="item.id"
+            :slug="item.slug"
+            :content-type="item.type"
+            @play="openPlayOptions"
+            @trailer="requestPlay('trailer')"
+            @like="toggleLiked"
+            @share="shareTitle"
+            @downloads="openDownloadOptions"
+            @party="startWatchParty"
+          />
         </div>
-      </div>
-    </section>
 
-    <nav class="sticky top-[132px] z-30 border-y border-white/8 bg-night-950/98 md:top-[68px]" aria-label="بخش‌های صفحه عنوان">
-      <div class="page-shell hide-scrollbar flex gap-1 overflow-x-auto py-2">
-        <a v-for="tab in detailTabs" :key="tab.id" :href="`#${tab.id}`" class="inline-flex min-h-11 shrink-0 items-center rounded-xl px-3 py-2 text-xs font-bold transition" :class="activeSection === tab.id ? 'bg-primary-500 text-night-950' : 'text-slate-400 hover:bg-white/5 hover:text-white'" @click="activateSection(tab.id)">{{ tab.label }}</a>
+        <MediaRatingCards :item="item" class="media-hero__ratings" />
       </div>
-    </nav>
+    </MediaHero>
 
-    <div class="cinema-page">
-      <div class="page-shell grid gap-8 py-10 lg:grid-cols-[minmax(0,1fr)_310px] lg:py-14">
-        <div class="min-w-0 space-y-11">
-          <section id="story" class="scroll-mt-40 rounded-3xl bg-white/[.035] p-5 ring-1 ring-white/8 sm:p-7" aria-labelledby="story-title">
-            <p class="text-xs font-black text-primary-400">خلاصه داستان</p><h2 id="story-title" class="mt-1 text-2xl font-black text-white">درباره {{ item.title }}</h2><p class="mt-4 max-w-3xl text-sm leading-8 text-slate-300 sm:text-base">{{ item.description }}</p>
+    <MediaDetailTabs
+      :tabs="detailTabs"
+      :active-id="activeSection"
+      @select="activateSection"
+    />
+
+    <div class="media-body">
+      <div class="media-body__grid">
+        <div class="min-w-0 space-y-10">
+          <section id="story" class="media-section media-panel" aria-labelledby="story-title">
+            <p class="media-panel__eyebrow">خلاصه داستان</p>
+            <h2 id="story-title" class="media-panel__title">درباره {{ item.title }}</h2>
+            <p v-if="item.description" class="media-panel__text">{{ item.description }}</p>
+            <p v-else class="media-panel__text" style="color: var(--text-muted)">
+              هنوز خلاصه‌ای برای این عنوان ثبت نشده است.
+            </p>
           </section>
 
           <ContentWarnings :warnings="item.content_warnings" />
 
-          <section id="cast" class="scroll-mt-40" aria-labelledby="cast-title">
-            <SectionHeader id="cast-title" title="بازیگران و عوامل" eyebrow="پشت و جلوی دوربین" dark />
-            <div class="hide-scrollbar flex gap-3 overflow-x-auto pb-3">
-              <button v-for="person in item.cast" :key="person.id" type="button" class="w-32 shrink-0 rounded-2xl bg-white/[.035] p-3 text-center ring-1 ring-white/8 transition hover:-translate-y-0.5 hover:bg-white/[.07] hover:ring-energy-300/25" @click="trackPersonClick('cast', person.name, item)">
-                <NuxtImg v-if="person.photo_url" :src="person.photo_url" :alt="person.name" class="mx-auto h-20 w-20 rounded-full object-cover ring-2 ring-white/10" loading="lazy" />
-                <span v-else class="mx-auto grid h-20 w-20 place-items-center rounded-full bg-gradient-to-br from-energy-500 to-night-800 text-xl font-black text-night-950 ring-4 ring-night-900">{{ person.name.slice(0, 1) }}</span>
-                <h3 class="mt-3 truncate text-sm font-black text-white">{{ person.name }}</h3><p class="mt-0.5 truncate text-xs text-slate-500">{{ person.role }}</p>
-              </button>
-              <button v-for="person in item.crew" :key="`crew-${person.id}`" type="button" class="w-32 shrink-0 rounded-2xl bg-white/[.035] p-3 text-center ring-1 ring-white/8 transition hover:-translate-y-0.5 hover:bg-white/[.07] hover:ring-primary-400/30" @click="trackPersonClick('director', person.name, item)"><span class="mx-auto grid h-20 w-20 place-items-center rounded-full bg-gradient-to-br from-primary-400 to-primary-700 text-xl font-black text-night-950 ring-4 ring-night-900">{{ person.name.slice(0, 1) }}</span><h3 class="mt-3 truncate text-sm font-black text-white">{{ person.name }}</h3><p class="mt-0.5 truncate text-xs text-slate-500">{{ person.job }}</p></button>
+          <MediaInfoGrid :item="item" />
+
+          <MediaCastCarousel
+            :cast="item.cast"
+            :crew="item.crew"
+            :director-fallback="hasDirector ? item.director : ''"
+            @select="(kind, name) => trackPersonClick(kind, name, item)"
+          />
+
+          <MediaCommentsPanel
+            :content-type="item.type"
+            :object-id="item.id"
+            :slug="item.slug"
+            :title="item.title"
+            :reviews="reviews"
+            :my-rating="myRating"
+            @refreshed="loadReviews"
+          />
+
+          <section
+            v-if="authStore.isAuthenticated"
+            id="why-recommended"
+            class="media-section media-panel"
+            style="background: linear-gradient(135deg, rgb(var(--media-accent-rgb) / 10%), var(--surface-1));"
+          >
+            <div class="flex items-start gap-4">
+              <span
+                class="grid size-12 shrink-0 place-items-center rounded-2xl ring-1"
+                style="background: rgb(var(--media-accent-rgb) / 14%); color: var(--media-accent); box-shadow: inset 0 0 0 1px rgb(var(--media-accent-rgb) / 20%);"
+              >
+                <CinematicIcon name="ai" class="size-7" />
+              </span>
+              <div>
+                <p class="media-panel__eyebrow">چرا این عنوان؟</p>
+                <h2 class="media-panel__title">
+                  {{ item.recommendation_reason || 'چون با سلیقه تو جور است' }}
+                </h2>
+                <NuxtLink
+                  to="/profile#personalization"
+                  class="mt-3 inline-flex min-h-10 items-center text-xs font-black"
+                  style="color: var(--media-accent)"
+                >
+                  پیشنهادهای من
+                </NuxtLink>
+              </div>
             </div>
           </section>
-
-          <EpisodeList v-if="item.type === 'series'" :item="item" />
-
-          <section id="director" class="scroll-mt-40 rounded-3xl bg-white/[.04] p-5 ring-1 ring-white/10 sm:p-6">
-            <p class="text-xs font-black text-primary-400">نگاه خالق اثر</p><div class="mt-3 flex items-center gap-4"><span class="grid h-16 w-16 shrink-0 place-items-center rounded-2xl bg-gradient-to-br from-primary-400 to-primary-700 text-xl font-black text-night-950">{{ item.director.slice(0, 1) }}</span><div><h2 class="text-lg font-black text-white">{{ item.director }}</h2><p class="mt-1 text-sm leading-6 text-slate-400">کارگردان {{ item.type === 'movie' ? 'این فیلم' : 'و خالق این سریال' }}؛ آثار نزدیک به جهان این عنوان را کشف کن.</p><button type="button" class="mt-2 text-xs font-black text-primary-400 transition hover:text-primary-300" @click="trackPersonClick('director', item.director, item)">دنبال‌کردن آثار این کارگردان</button></div></div>
-          </section>
-
-          <section id="comments" class="scroll-mt-40" aria-labelledby="comments-title">
-            <SectionHeader id="comments-title" title="نظرات کاربران" eyebrow="گفت‌وگوی بدون اسپویل" dark />
-            <div class="grid gap-3 sm:grid-cols-2"><article v-for="comment in mockComments" :key="comment.name" class="rounded-2xl bg-white/[.035] p-4 ring-1 ring-white/8"><div class="flex items-center justify-between gap-3"><strong class="text-sm text-white">{{ comment.name }}</strong><span class="inline-flex items-center gap-1 text-xs font-black text-primary-400"><CinematicIcon name="star" class="size-4" filled />{{ comment.score }}/۱۰</span></div><p class="mt-3 text-xs leading-6 text-slate-400">{{ comment.text }}</p></article></div>
-            <button type="button" disabled class="mt-3 inline-flex min-h-11 items-center gap-2 rounded-xl bg-white/[.035] px-4 py-2.5 text-xs font-black text-muted ring-1 ring-white/8"><CinematicIcon name="comment" class="size-4" />نوشتن نظر<span class="rounded-md bg-elevated px-1.5 py-0.5 text-[9px]">به‌زودی</span></button>
-          </section>
-
-          <section id="why-recommended" class="scroll-mt-40 rounded-3xl bg-gradient-to-l from-energy-500/10 to-primary-500/8 p-5 ring-1 ring-energy-300/15 sm:p-6"><div class="flex items-start gap-4"><span class="grid size-12 shrink-0 place-items-center rounded-2xl bg-energy-500/14 text-energy-300 ring-1 ring-energy-400/20"><CinematicIcon name="ai" class="size-7" /></span><div><p class="text-xs font-black text-energy-300">چرا پیشنهاد شده؟</p><h2 class="mt-1 text-lg font-black text-white">{{ item.recommendation_reason || 'کاربرانی با انتخاب‌های نزدیک، این عنوان را دوست داشته‌اند' }}</h2><p class="mt-2 text-xs leading-6 text-slate-400">این پیشنهاد فقط از انتخاب‌های اختیاری تو در همین سایت ساخته می‌شود. کارهای تو در سایت‌های دیگر بررسی نمی‌شود.</p><NuxtLink to="/profile#personalization" class="mt-3 inline-flex min-h-10 items-center text-xs font-black text-energy-300 hover:text-energy-200">تنظیم پیشنهادها</NuxtLink></div></div></section>
         </div>
 
-        <aside class="h-fit space-y-5 lg:sticky lg:top-28">
-          <div class="rounded-2xl bg-white/[.04] p-5 ring-1 ring-white/10">
-            <div class="flex items-center justify-between gap-3"><h2 class="font-black text-ink">در یک نگاه</h2><span class="inline-flex items-center gap-1 text-[10px] font-black text-success"><span class="h-1.5 w-1.5 rounded-full bg-success" />منتشر شده</span></div>
-            <dl class="mt-4 divide-y divide-white/8 text-sm"><div class="flex items-start justify-between gap-4 py-3 first:pt-0"><dt class="text-slate-500">نوع محتوا</dt><dd class="font-bold text-slate-200">{{ item.type === 'movie' ? 'فیلم' : 'سریال' }}</dd></div><div class="flex items-start justify-between gap-4 py-3"><dt class="text-slate-500">کارگردان</dt><dd class="max-w-40 text-left"><button type="button" class="font-bold text-slate-200 transition hover:text-primary-400" @click="trackPersonClick('director', item.director, item)">{{ item.director }}</button></dd></div><div class="flex items-start justify-between gap-4 py-3"><dt class="text-slate-500">رده سنی</dt><dd><AgeRatingBadge :rating="item.age_rating" /></dd></div><div class="flex items-start justify-between gap-4 py-3"><dt class="text-slate-500">نسخه پخش</dt><dd class="text-left text-xs font-bold text-slate-300">{{ item.is_dubbed ? 'دوبله فارسی' : item.has_subtitle ? 'زیرنویس فارسی' : 'زبان اصلی' }}</dd></div><div v-if="item.type === 'series'" class="flex items-start justify-between gap-4 py-3"><dt class="text-slate-500">قسمت‌ها</dt><dd class="font-bold text-slate-200">{{ episodeCount || 'به‌زودی' }}</dd></div></dl>
+        <aside class="media-aside">
+          <div class="media-panel">
+            <div class="flex items-center justify-between gap-3">
+              <h2 class="text-sm font-black text-[color:var(--text-primary)]">در یک نگاه</h2>
+              <span class="inline-flex items-center gap-1 text-[10px] font-black text-[color:var(--accent-success)]">
+                <span class="h-1.5 w-1.5 rounded-full bg-[color:var(--accent-success)]" />
+                منتشر شده
+              </span>
+            </div>
+            <dl class="mt-3 divide-y divide-[color:var(--border-color)] text-sm">
+              <div class="flex items-start justify-between gap-4 py-3 first:pt-0">
+                <dt class="text-[color:var(--text-muted)]">نوع محتوا</dt>
+                <dd class="font-bold text-[color:var(--text-secondary)]">{{ item.type === 'movie' ? 'فیلم' : 'سریال' }}</dd>
+              </div>
+              <div
+                v-if="item.imdb_rank"
+                class="flex items-start justify-between gap-4 py-3"
+              >
+                <dt class="text-[color:var(--text-muted)]">IMDb Top 250</dt>
+                <dd>
+                  <NuxtLink
+                    :to="item.type === 'movie' ? '/movies?sort=imdb_top' : '/series?sort=imdb_top'"
+                    class="inline-flex items-center gap-1.5 rounded-lg bg-[#f5c518] px-2 py-1 text-xs font-black text-night-950 transition hover:brightness-105"
+                    dir="ltr"
+                  >
+                    #{{ item.imdb_rank }}
+                    <span class="opacity-70">/ 250</span>
+                  </NuxtLink>
+                </dd>
+              </div>
+              <div v-if="item.director" class="flex items-start justify-between gap-4 py-3">
+                <dt class="text-[color:var(--text-muted)]">کارگردان</dt>
+                <dd class="max-w-40 text-start">
+                  <button
+                    type="button"
+                    class="font-bold text-[color:var(--text-secondary)] transition hover:text-[color:var(--media-accent)]"
+                    @click="trackPersonClick('director', item.director, item)"
+                  >
+                    {{ item.director }}
+                  </button>
+                </dd>
+              </div>
+              <div class="flex items-start justify-between gap-4 py-3">
+                <dt class="text-[color:var(--text-muted)]">رده سنی</dt>
+                <dd><AgeRatingBadge :rating="item.age_rating" /></dd>
+              </div>
+              <div class="flex items-start justify-between gap-4 py-3">
+                <dt class="text-[color:var(--text-muted)]">نسخه پخش</dt>
+                <dd class="text-start">
+                  <DubSubtitleBadge
+                    :is-dubbed="item.is_dubbed"
+                    :has-subtitle="item.has_subtitle"
+                    compact
+                  />
+                  <span
+                    v-if="!item.is_dubbed && !item.has_subtitle"
+                    class="text-xs font-bold text-[color:var(--text-secondary)]"
+                  >زبان اصلی</span>
+                </dd>
+              </div>
+              <div v-if="item.type === 'series'" class="flex items-start justify-between gap-4 py-3">
+                <dt class="text-[color:var(--text-muted)]">قسمت‌ها</dt>
+                <dd class="font-bold text-[color:var(--text-secondary)]">{{ episodeCount || 'به‌زودی' }}</dd>
+              </div>
+            </dl>
           </div>
-          <div class="rounded-2xl bg-white/[.04] p-5 ring-1 ring-white/10"><RatingWidget :object-id="item.id" :slug="item.slug" :content-type="item.type" :initial-rating="item.rating" dark /></div>
-          <div class="hidden rounded-2xl bg-primary-500 p-5 text-night-950 lg:block"><CinematicIcon name="resume" class="size-8" /><h2 class="mt-3 font-black">آماده تماشا هستی؟</h2><p class="mt-1 text-xs leading-6 text-night-900/75">پخش از همان جایی که رها کردی ادامه پیدا می‌کند.</p><button type="button" class="mt-4 inline-flex min-h-10 w-full items-center justify-center gap-2 rounded-xl bg-night-950 px-4 text-xs font-black text-white transition hover:bg-night-900" @click="requestPlay('full')"><CinematicIcon name="play" class="size-4" filled />{{ playLabel }}</button></div>
+
+          <div class="media-panel">
+            <RatingWidget
+              :object-id="item.id"
+              :slug="item.slug"
+              :content-type="item.type"
+            />
+          </div>
+
+          <div v-if="canWatchOnline" class="media-aside__cta hidden lg:block">
+            <CinematicIcon name="resume" class="size-8" />
+            <h2>آماده تماشا هستی؟</h2>
+            <p>پخش از همان جایی که رها کردی ادامه پیدا می‌کند.</p>
+            <button type="button" @click="openPlayOptions">
+              <CinematicIcon name="play" class="size-4" filled />
+              {{ playLabel }}
+            </button>
+          </div>
         </aside>
       </div>
 
-      <LazyMovieRow v-if="sameGenreTitles.length" :hydrate-on-visible="{ rootMargin: '320px 0px' }" :title="`بیشتر از ژانر ${primaryGenre?.title}`" eyebrow="در همان حال‌وهوا" :items="sameGenreTitles" :href="`/${item.type === 'movie' ? 'movies' : 'series'}?genre=${primaryGenre?.slug}`" dark />
-      <LazyMovieRow v-if="related.length" id="similar" :hydrate-on-visible="{ rootMargin: '320px 0px' }" title="مشابه‌ها" eyebrow="انتخاب‌های نزدیک به این عنوان" :items="related" :href="item.type === 'movie' ? '/movies' : '/series'" dark />
-      <div class="h-12" />
+      <div class="mt-10 space-y-8">
+        <LazyMovieRow
+          v-if="sameGenreTitles.length"
+          :hydrate-on-visible="{ rootMargin: '320px 0px' }"
+          :title="`بیشتر از ژانر ${primaryGenre?.title}`"
+          eyebrow="در همان حال‌وهوا"
+          :items="sameGenreTitles"
+          :href="`/${item.type === 'movie' ? 'movies' : 'series'}?genre=${primaryGenre?.slug}`"
+        />
+        <LazyMovieRow
+          v-if="related.length"
+          id="similar"
+          :hydrate-on-visible="{ rootMargin: '320px 0px' }"
+          title="آثار مشابه"
+          eyebrow="انتخاب‌های نزدیک به این عنوان"
+          :items="related"
+          :href="item.type === 'movie' ? '/movies' : '/series'"
+        />
+      </div>
+      <div class="h-10" />
     </div>
   </article>
 
+  <MediaAccessModal
+    :open="Boolean(accessModal)"
+    :mode="accessModal || 'play'"
+    :links="downloadLinks"
+    :title="item.title"
+    :slug="item.slug"
+    :accent-style="styleVars"
+    @close="accessModal = null"
+    @play="playSelectedVersion"
+  />
   <ConfirmAdultContentModal :open="modalOpen" :title="item.title" @close="modalOpen = false" @confirm="confirmPlay" />
 </template>

@@ -34,6 +34,7 @@ export type CinematicIconName =
   | 'arrow-left'
   | 'arrow-right'
   | 'arrow-up'
+  | 'arrow-up-right'
   | 'audio'
   | 'badge'
   | 'bookmark'
@@ -55,6 +56,7 @@ export type CinematicIconName =
   | 'comment'
   | 'comments'
   | 'document'
+  | 'download'
   | 'edit'
   | 'exciting'
   | 'eye'
@@ -79,11 +81,18 @@ export type CinematicIconName =
   | 'logout'
   | 'map'
   | 'masks'
+  | 'menu'
   | 'mood'
+  | 'moon'
   | 'movie'
   | 'palette'
+  | 'pause'
+  | 'picture-in-picture'
   | 'play'
+  | 'maximize'
+  | 'minimize'
   | 'profile'
+  | 'rewind'
   | 'puzzle'
   | 'quality'
   | 'refresh'
@@ -93,6 +102,7 @@ export type CinematicIconName =
   | 'search'
   | 'series'
   | 'settings'
+  | 'share'
   | 'shield-alert'
   | 'shield-check'
   | 'signal-off'
@@ -101,6 +111,7 @@ export type CinematicIconName =
   | 'sparkles'
   | 'star'
   | 'subtitle'
+  | 'sun'
   | 'tag'
   | 'thoughtful'
   | 'trailer'
@@ -109,5 +120,17 @@ export type CinematicIconName =
   | 'user'
   | 'user-plus'
   | 'users'
+  | 'volume'
+  | 'volume-1'
+  | 'volume-x'
   | 'wand'
   | 'x'
+  | 'gauge'
+
+export interface LiquidNavItem {
+  label: string
+  to: string
+  icon: CinematicIconName
+  exact?: boolean
+  badge?: number
+}

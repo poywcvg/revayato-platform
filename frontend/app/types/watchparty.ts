@@ -1,4 +1,4 @@
-import type { PlaybackSnapshot } from './playback'
+import type { PlaybackSnapshot, PlaybackTextTrack } from './playback'
 
 export type WatchRoomStatus = 'active' | 'ended' | 'expired'
 export type WatchPartyConnectionStatus = 'idle' | 'connecting' | 'connected' | 'reconnecting' | 'disconnected' | 'error'
@@ -34,6 +34,17 @@ export interface WatchPartyMessage {
 export interface WatchPartyPlaybackState extends PlaybackSnapshot {
   updated_by: WatchPartyUser | null
   updated_at: string
+  server_time_ms?: number
+  stream_url?: string | null
+}
+
+export interface WatchPartyStreamLink {
+  label: string
+  quality?: string
+  size_label?: string
+  url: string
+  kind?: string
+  subtitle_type?: string
 }
 
 export interface WatchPartyContent {
@@ -41,9 +52,13 @@ export interface WatchPartyContent {
   id: number
   slug: string
   title: string
+  secondary_title?: string
   description: string
   duration_seconds: number
-  video_url: string
+  video_url: string | null
+  stream_links?: WatchPartyStreamLink[]
+  subtitle_tracks?: PlaybackTextTrack[]
+  download_url?: string | null
   poster_url: string | null
   backdrop_url: string | null
   age_rating: string

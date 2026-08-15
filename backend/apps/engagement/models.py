@@ -24,6 +24,7 @@ class Rating(models.Model):
     )
     review = models.TextField(blank=True)
     is_spoiler = models.BooleanField(default=False)
+    is_hidden = models.BooleanField(default=False, db_index=True)
 
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
@@ -174,3 +175,83 @@ class UserActivityEvent(models.Model):
 
     def __str__(self):
         return f'{self.action} - {self.content_type}#{self.object_id}'
+
+
+class SupportTicket(models.Model):
+    """In-app support / content-request inbox (no email required)."""
+
+    class Category(models.TextChoices):
+        CONTENT_REQUEST = 'content_request', 'درخواست عنوان'
+        BUG = 'bug', 'گزارش مشکل'
+        CONTENT_FIX = 'content_fix', 'اصلاح محتوا'
+        SUGGESTION = 'suggestion', 'پیشنهاد'
+        SUPPORT = 'support', 'پشتیبانی'
+        COOPERATION = 'cooperation', 'همکاری'
+
+    class Status(models.TextChoices):
+        OPEN = 'open', 'باز'
+        IN_PROGRESS = 'in_progress', 'در حال بررسی'
+        WAITING_USER = 'waiting_user', 'منتظر پاسخ شما'
+        RESOLVED = 'resolved', 'حل‌شده'
+        CLOSED = 'closed', 'بسته'
+
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name='support_tickets',
+    )
+    tracking_code = models.CharField(max_length=16, unique=True, db_index=True)
+    category = models.CharField(max_length=32, choices=Category.choices, default=Category.SUPPORT)
+    subject = models.CharField(max_length=200)
+    body = models.TextField()
+    related_title = models.CharField(max_length=255, blank=True)
+    related_year = models.PositiveSmallIntegerField(null=True, blank=True)
+    related_url = models.URLField(blank=True, max_length=500)
+    status = models.CharField(max_length=20, choices=Status.choices, default=Status.OPEN, db_index=True)
+    staff_note = models.TextField(blank=True)
+    unread_by_staff = models.BooleanField(default=True, db_index=True)
+    unread_by_user = models.BooleanField(default=False)
+    last_message_at = models.DateTimeField(auto_now_add=True, db_index=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ['-last_message_at', '-created_at']
+        indexes = [
+            models.Index(
+                fields=['status', '-last_message_at'],
+                name='engagement__status_7c0d2a_idx',
+            ),
+            models.Index(
+                fields=['user', '-created_at'],
+                name='engagement__user_id_8f1a4b_idx',
+            ),
+        ]
+
+    def __str__(self):
+        return f'{self.tracking_code} — {self.subject}'
+
+
+class SupportMessage(models.Model):
+    ticket = models.ForeignKey(
+        SupportTicket,
+        on_delete=models.CASCADE,
+        related_name='messages',
+    )
+    author = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='support_messages',
+    )
+    is_staff_reply = models.BooleanField(default=False)
+    body = models.TextField()
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ['created_at']
+
+    def __str__(self):
+        who = 'staff' if self.is_staff_reply else 'user'
+        return f'{self.ticket.tracking_code} [{who}]'

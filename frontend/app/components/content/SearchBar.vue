@@ -6,8 +6,18 @@ const emit = defineEmits<{ 'update:modelValue': [value: string] }>()
 <template>
   <label class="relative block">
     <span class="sr-only">جستجو</span>
-    <CinematicIcon name="search" class="pointer-events-none absolute right-4 top-1/2 size-5 -translate-y-1/2 text-primary-600" />
-    <input :value="modelValue" type="search" :placeholder="placeholder" class="ui-field pr-12 pl-11 placeholder:text-slate-400" :class="large ? 'rounded-2xl py-4 text-base shadow-sm' : 'py-3 text-sm'" @input="emit('update:modelValue', ($event.target as HTMLInputElement).value)">
-    <button v-if="modelValue" type="button" class="absolute left-1.5 top-1/2 grid size-10 -translate-y-1/2 place-items-center rounded-lg text-muted transition-colors hover:bg-primary-500/10 hover:text-primary-300" aria-label="پاک کردن جستجو" @click="emit('update:modelValue', '')"><CinematicIcon name="x" class="size-4" /></button>
+    <CinematicIcon name="search" class="pointer-events-none absolute right-4 top-1/2 size-5 -translate-y-1/2 text-brand" />
+    <input
+      :value="modelValue"
+      type="search"
+      :placeholder="placeholder"
+      class="ui-field pr-12 pl-11 placeholder:text-muted"
+      :class="large ? 'h-14 rounded-2xl text-base' : 'h-12 text-sm'"
+      enterkeyhint="search"
+      autocomplete="off"
+      spellcheck="false"
+      @input="emit('update:modelValue', ($event.target as HTMLInputElement).value)"
+    >
+    <button v-if="modelValue" type="button" class="absolute left-1 top-1/2 grid size-11 -translate-y-1/2 place-items-center rounded-lg text-muted transition-colors hover:bg-primary-500/10 hover:text-brand" aria-label="پاک کردن جستجو" @click="emit('update:modelValue', '')"><CinematicIcon name="x" class="size-4" /></button>
   </label>
 </template>

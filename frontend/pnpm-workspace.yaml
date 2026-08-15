@@ -1,2 +1,5 @@
 ﻿packages:
   - "."
+
+# Allow required native/build scripts inside the production image build.
+dangerouslyAllowAllBuilds: true

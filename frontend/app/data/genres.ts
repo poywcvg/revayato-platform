@@ -1,8 +1,8 @@
 import type { Genre } from '~/types'
 
 /**
- * Canonical Persian genre taxonomy shared by mock data and API adapters.
- * Stable local IDs keep SSR hydration deterministic when the API is disabled.
+ * Canonical Persian genre taxonomy shared by discovery UI and API adapters.
+ * Stable local IDs keep SSR hydration deterministic before API genres load.
  */
 export const catalogGenres: Genre[] = [
   { id: 1, title: 'درام', slug: 'drama', icon: 'masks' },
@@ -35,6 +35,7 @@ export const catalogGenres: Genre[] = [
   { id: 28, title: 'کودک', slug: 'kids', icon: 'family' },
   { id: 29, title: 'رئالیتی‌شو', slug: 'reality-tv', icon: 'users' },
   { id: 30, title: 'نوآر', slug: 'film-noir', icon: 'film' },
+  { id: 31, title: 'فیلم تلویزیونی', slug: 'tv-movie', icon: 'film' },
 ]
 
 const catalogGenreBySlug = new Map(catalogGenres.map(genre => [genre.slug, genre]))
@@ -48,8 +49,36 @@ export function mergeCatalogGenres(apiGenres: Genre[]) {
   const apiBySlug = new Map(apiGenres.map(genre => [genre.slug, genre]))
   const canonical = catalogGenres.map((genre) => {
     const apiGenre = apiBySlug.get(genre.slug)
-    return apiGenre ? { ...genre, id: apiGenre.id } : genre
+    if (!apiGenre) return genre
+    return {
+      ...genre,
+      id: apiGenre.id,
+      is_featured: Boolean(apiGenre.is_featured),
+      movie_count: apiGenre.movie_count,
+      series_count: apiGenre.series_count,
+      title_count: apiGenre.title_count,
+    }
   })
-  const custom = apiGenres.filter(genre => !catalogGenreBySlug.has(genre.slug))
-  return [...canonical, ...custom]
+  const custom = apiGenres
+    .filter(genre => !catalogGenreBySlug.has(genre.slug))
+    .map(genre => ({
+      ...genre,
+      icon: (genre.icon || 'film') as Genre['icon'],
+      is_featured: Boolean(genre.is_featured),
+      movie_count: genre.movie_count,
+      series_count: genre.series_count,
+      title_count: genre.title_count,
+    }))
+  const merged = [...canonical, ...custom]
+  merged.sort((a, b) => {
+    const featuredDelta = Number(Boolean(b.is_featured)) - Number(Boolean(a.is_featured))
+    if (featuredDelta) return featuredDelta
+    const countDelta = Number(b.title_count || 0) - Number(a.title_count || 0)
+    if (countDelta) return countDelta
+    const aCanon = catalogGenreBySlug.has(a.slug) ? 0 : 1
+    const bCanon = catalogGenreBySlug.has(b.slug) ? 0 : 1
+    if (aCanon !== bCanon) return aCanon - bCanon
+    return a.title.localeCompare(b.title, 'fa')
+  })
+  return merged
 }

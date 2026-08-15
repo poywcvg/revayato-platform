@@ -5,9 +5,19 @@ useSeoMeta({ title: String(route.params.username) })
 </script>
 
 <template>
-  <div class="mx-auto max-w-3xl px-4 py-16 text-center">
-    <CinematicIcon name="user" class="mx-auto mb-4 size-16 text-slate-300" />
-    <h1 class="mb-2 text-xl font-bold text-ink">پروفایل {{ route.params.username }}</h1>
-    <p class="text-slate-500">نمایش عمومی پروفایل کاربران به‌زودی راه‌اندازی می‌شود.</p>
+  <div class="cinema-page page-section">
+    <PageHero
+      :title="`پروفایل ${String(route.params.username)}`"
+      eyebrow="جامعه روایتو"
+      description="صفحه عمومی کاربران به‌زودی میزبان فهرست‌های منتخب و نظرهای سینمایی خواهد بود."
+      icon="user"
+    />
+    <EmptyState
+      title="این پرده هنوز آماده نمایش نیست"
+      description="نمایش عمومی پروفایل، فهرست‌های منتخب و فعالیت کاربران در نسخه بعدی فعال می‌شود."
+      icon="users"
+      action-label="بازگشت به خانه"
+      action-href="/"
+    />
   </div>
 </template>

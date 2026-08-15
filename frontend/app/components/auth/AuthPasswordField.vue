@@ -35,7 +35,7 @@ const strength = computed(() => [
     <label v-if="label" :for="id" class="mb-1.5 block text-sm font-bold text-secondary">{{ label }}</label>
     <div class="relative">
       <input :id="id" v-model="model" :type="visible ? 'text' : 'password'" :autocomplete="autocomplete" :required="required" minlength="8" class="ui-field px-4 pl-12 text-sm">
-      <button type="button" class="absolute inset-y-1 left-1 grid w-10 place-items-center rounded-lg text-muted hover:bg-white/6 hover:text-ink" :aria-label="visible ? 'پنهان کردن رمز عبور' : 'نمایش رمز عبور'" :aria-pressed="visible" @click="visible = !visible"><CinematicIcon :name="visible ? 'eye-off' : 'eye'" class="size-4.5" /></button>
+      <button type="button" class="absolute inset-y-1 left-1 grid w-10 place-items-center rounded-lg text-muted hover:bg-elevated hover:text-ink" :aria-label="visible ? 'پنهان کردن رمز عبور' : 'نمایش رمز عبور'" :aria-pressed="visible" @click="visible = !visible"><CinematicIcon :name="visible ? 'eye-off' : 'eye'" class="size-4.5" /></button>
     </div>
     <div v-if="showStrength && model" class="mt-2" aria-live="polite">
       <div class="grid grid-cols-4 gap-1" aria-hidden="true"><span v-for="index in 4" :key="index" class="h-1 rounded-full" :class="index <= score ? strength.color : 'bg-elevated'" /></div>

@@ -16,6 +16,10 @@ fi
 
 docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" config >/dev/null
 docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" pull postgres redis caddy
-docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" build --pull frontend backend
+# Workers run the exact same backend image with different commands. Building
+# that Dockerfile once avoids duplicate image exports and large disk spikes on
+# the small production host.
+docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" build --pull backend
+docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" build --pull frontend
 docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" up -d --remove-orphans
 docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" ps

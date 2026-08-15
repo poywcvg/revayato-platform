@@ -29,10 +29,11 @@ logger = logging.getLogger(__name__)
 def _room_or_404(invite_code, *, for_update=False):
     if not INVITE_CODE_PATTERN.fullmatch(invite_code):
         return get_object_or_404(WatchRoom, pk=-1)
-    queryset = room_queryset()
     if for_update:
-        queryset = queryset.select_for_update()
-    return get_object_or_404(queryset, invite_code=invite_code)
+        # Postgres rejects FOR UPDATE on the nullable side of an outer join.
+        # Keep the lock on WatchRoom alone; related movie/episode load lazily.
+        return get_object_or_404(WatchRoom.objects.select_for_update(), invite_code=invite_code)
+    return get_object_or_404(room_queryset(), invite_code=invite_code)
 
 
 def _room_response(room, request, response_status=status.HTTP_200_OK):

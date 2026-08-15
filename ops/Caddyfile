@@ -1,69 +1,140 @@
 {
-  email {$ACME_EMAIL}
-  admin off
+	email {$ACME_EMAIL}
+	admin off
+}
+
+# Prefer apex: www -> https://{$SITE_DOMAIN}
+www.{$SITE_DOMAIN} {
+	redir https://{$SITE_DOMAIN}{uri} permanent
 }
 
 {$SITE_DOMAIN} {
-  encode zstd gzip
+	encode zstd gzip
 
-  log {
-    output stdout
-    format console
-  }
+	log {
+		output stdout
+		format console
+	}
 
-  header {
-    -Server
-    X-Content-Type-Options "nosniff"
-    X-Frame-Options "DENY"
-    Referrer-Policy "strict-origin-when-cross-origin"
-    Permissions-Policy "camera=(), microphone=(), geolocation=()"
-    Strict-Transport-Security "max-age={$HSTS_MAX_AGE}"
-  }
+	header {
+		-Server
+		X-Content-Type-Options "nosniff"
+		X-Frame-Options "DENY"
+		Referrer-Policy "strict-origin-when-cross-origin"
+		Permissions-Policy "camera=(), microphone=(), geolocation=()"
+		Strict-Transport-Security "max-age={$HSTS_MAX_AGE}"
+		Content-Security-Policy "upgrade-insecure-requests"
+	}
 
-  handle {
-    reverse_proxy frontend:3000
-  }
-}
+	# /admin/* belongs to the Nuxt staff panel (dashboard at /admin).
+	# Keep Django's built-in admin on /django-admin so the two apps never shadow each other.
 
-{$API_DOMAIN} {
-  encode zstd gzip
+	handle_path /static/* {
+		root * /srv/static
+		header Cache-Control "public, max-age=31536000, immutable"
+		file_server {
+			precompressed gzip zstd
+		}
+	}
 
-  header {
-    -Server
-    X-Content-Type-Options "nosniff"
-    X-Frame-Options "DENY"
-    Referrer-Policy "strict-origin-when-cross-origin"
-    Strict-Transport-Security "max-age={$HSTS_MAX_AGE}"
-  }
+	# Media (posters + progressive video). Range support is required for seek.
+	handle_path /media/* {
+		root * /srv/media
+		header {
+			Accept-Ranges bytes
+			Cache-Control "public, max-age=2592000, stale-while-revalidate=604800"
+			# Allow WebGL / canvas textures (MorphSlider) to sample media images.
+			Access-Control-Allow-Origin "*"
+		}
+		@hls path *.m3u8
+		header @hls Cache-Control "public, max-age=30, stale-while-revalidate=300"
+		@segments path *.ts *.m4s *.mp4 *.webm *.mkv
+		header @segments Cache-Control "public, max-age=86400, stale-while-revalidate=604800"
+		# SoftSub WebVTT must be readable by <track> even when video is cross-origin.
+		@vtt path *.vtt *.webvtt
+		header @vtt {
+			Content-Type "text/vtt; charset=utf-8"
+			Access-Control-Allow-Origin "*"
+			Cache-Control "public, max-age=2592000, stale-while-revalidate=604800"
+		}
+		file_server
+	}
 
-  handle_path /static/* {
-    root * /srv/static
-    header Cache-Control "public, max-age=31536000, immutable"
-    file_server
-  }
+	handle_path /downloads/* {
+		root * /srv/downloads
+		header Cache-Control "private, max-age=0, no-store"
+		file_server
+	}
 
-  @backend path /api/* /admin/* /media/* /ws/*
-  handle @backend {
-    reverse_proxy backend:8000
-  }
+	handle /django-admin* {
+		uri replace /django-admin /admin
+		reverse_proxy backend:8000
+	}
 
-  handle {
-    reverse_proxy backend:8000
-  }
-}
+	@backend path /api/* /ws/*
+	handle @backend {
+		reverse_proxy backend:8000 {
+			# Keep websocket upgrades snappy; flush immediately for realtime.
+			flush_interval -1
+			transport http {
+				read_timeout 0
+				write_timeout 0
+				dial_timeout 5s
+			}
+		}
+	}
 
-# These hosts can point at this Caddy instance or be replaced by an external
-# CDN. Object keys are served directly at /<key> when self-hosted.
-{$MEDIA_DOMAIN} {
-  encode zstd gzip
-  root * /srv/media
-  header Cache-Control "public, max-age=2592000, stale-while-revalidate=604800"
-  file_server
-}
+	# Hashed Nuxt assets — immutable at the edge even if Nitro misses headers.
+	handle /_nuxt/* {
+		header Cache-Control "public, max-age=31536000, immutable"
+		reverse_proxy frontend:3000
+	}
 
-{$DOWNLOAD_DOMAIN} {
-  encode zstd gzip
-  root * /srv/downloads
-  header Cache-Control "private, max-age=0, no-store"
-  file_server
+	# Same-origin /media via IPX was drowning the 2-core Nuxt process (CPU resize +
+	# public HTTPS fetch loops). Serve the stored file directly; posters/backdrops
+	# are already webp. Works for absolute and same-origin relative media URLs.
+	@ipx_local_media {
+		path_regexp ipx_local ^/_ipx/.+?(/media/.+)$
+	}
+	handle @ipx_local_media {
+		rewrite {re.ipx_local.1}
+		root * /srv
+		header {
+			Accept-Ranges bytes
+			Cache-Control "public, max-age=2592000, stale-while-revalidate=86400"
+		}
+		file_server
+	}
+
+	handle /_ipx/* {
+		header Cache-Control "public, max-age=2592000, stale-while-revalidate=86400"
+		reverse_proxy frontend:3000
+	}
+
+	# Public HTML: short CDN TTL. Replace any upstream Cache-Control so CF sees one policy.
+	@html {
+		path /
+		path /*
+		not path /_nuxt/* /_ipx/* /favicon.ico /favicon.svg /favicon.png /favicon-32.png /apple-touch-icon.png /icon-192.png /icon-512.png /site.webmanifest /robots.txt /sitemap.xml
+		not path /assets/* /admin* /profile* /watch-party* /auth* /watchlist /feed
+	}
+
+	handle @html {
+		# max-age=0: browsers revalidate; s-maxage: CDN/shared caches may store.
+		header Cache-Control "public, max-age=0, s-maxage=120, stale-while-revalidate=600"
+		reverse_proxy frontend:3000
+	}
+
+	@private_html {
+		path /admin* /profile* /watch-party* /auth* /watchlist /feed
+	}
+
+	handle @private_html {
+		header Cache-Control "private, no-store"
+		reverse_proxy frontend:3000
+	}
+
+	handle {
+		reverse_proxy frontend:3000
+	}
 }

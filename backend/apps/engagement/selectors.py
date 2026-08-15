@@ -1,9 +1,9 @@
 from django.apps import apps
-from django.db.models import Avg, Count
+from django.db.models import Avg, Count, Q
 
 from config.public_urls import media_url
 
-from .models import Like, Rating, WatchlistItem
+from .models import Like, Rating, SupportTicket, WatchlistItem
 
 CONTENT_MODEL_MAP = {
     'movie': ('catalog', 'Movie'),
@@ -42,10 +42,13 @@ def get_rating_summary(content_type, object_id):
     }
 
 
-def get_reviews(content_type, object_id):
-    return Rating.objects.filter(
+def get_reviews(content_type, object_id, *, include_hidden=False):
+    qs = Rating.objects.filter(
         content_type=content_type, object_id=object_id,
-    ).exclude(review='').select_related('user').order_by('-created_at')
+    ).exclude(review='').select_related('user')
+    if not include_hidden:
+        qs = qs.filter(is_hidden=False)
+    return qs.order_by('-created_at')
 
 
 def get_user_watchlist(user, list_type=None):
@@ -53,6 +56,10 @@ def get_user_watchlist(user, list_type=None):
     if list_type:
         queryset = queryset.filter(list_type=list_type)
     return queryset.order_by('-created_at')
+
+
+def get_user_likes(user):
+    return Like.objects.filter(user=user).order_by('-created_at')
 
 
 def is_in_watchlist(user, content_type, object_id, list_type):
@@ -73,3 +80,50 @@ def has_liked(user, content_type, object_id):
 
 def get_like_count(content_type, object_id):
     return Like.objects.filter(content_type=content_type, object_id=object_id).count()
+
+
+def get_user_support_tickets(user):
+    return SupportTicket.objects.filter(user=user).prefetch_related('messages')
+
+
+def get_support_ticket_for_user(user, tracking_code):
+    return SupportTicket.objects.filter(
+        user=user, tracking_code=tracking_code,
+    ).prefetch_related('messages__author').first()
+
+
+def get_admin_support_tickets(*, status=None, category=None, unread_only=False, q=''):
+    qs = SupportTicket.objects.select_related('user').prefetch_related('messages')
+    if status:
+        qs = qs.filter(status=status)
+    if category:
+        qs = qs.filter(category=category)
+    if unread_only:
+        qs = qs.filter(unread_by_staff=True)
+    if q:
+        qs = qs.filter(
+            Q(tracking_code__icontains=q)
+            | Q(subject__icontains=q)
+            | Q(body__icontains=q)
+            | Q(related_title__icontains=q)
+            | Q(user__username__icontains=q)
+            | Q(user__email__icontains=q)
+        )
+    return qs.order_by('-unread_by_staff', '-last_message_at')
+
+
+def get_admin_reviews(*, content_type=None, q='', hidden=None):
+    qs = Rating.objects.exclude(review='').select_related('user')
+    if content_type:
+        qs = qs.filter(content_type=content_type)
+    if hidden is True:
+        qs = qs.filter(is_hidden=True)
+    elif hidden is False:
+        qs = qs.filter(is_hidden=False)
+    if q:
+        qs = qs.filter(
+            Q(review__icontains=q)
+            | Q(user__username__icontains=q)
+            | Q(user__email__icontains=q)
+        )
+    return qs.order_by('-created_at')

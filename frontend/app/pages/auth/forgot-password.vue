@@ -32,7 +32,7 @@ useSeoMeta({ title: 'بازیابی رمز عبور' })
     <div v-if="sent" class="text-center">
       <span class="mx-auto grid size-14 place-items-center rounded-2xl bg-success/10 text-success ring-1 ring-success/20"><CinematicIcon name="check-circle" class="size-7" /></span>
       <h2 class="mt-5 text-2xl font-black text-ink">ایمیلت را بررسی کن</h2>
-      <p class="mt-3 text-sm leading-7 text-secondary">اگر <span dir="ltr" class="font-latin text-ink">{{ email }}</span> در سایت ثبت شده باشد، لینک بازیابی برای آن فرستاده می‌شود. پوشه هرزنامه را هم ببین.</p>
+      <p class="mt-3 text-sm leading-7 text-secondary">اگر <span dir="ltr" class="break-all font-latin text-ink">{{ email }}</span> در سایت ثبت شده باشد، لینک بازیابی برای آن فرستاده می‌شود. پوشه هرزنامه را هم ببین.</p>
       <button type="button" class="ui-secondary-button mt-6 w-full" @click="sent = false">فرستادن دوباره</button>
       <NuxtLink to="/auth/login" class="ui-ghost-button mt-2 w-full">بازگشت به ورود</NuxtLink>
     </div>

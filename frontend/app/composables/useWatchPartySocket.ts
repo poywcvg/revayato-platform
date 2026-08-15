@@ -43,6 +43,7 @@ export function useWatchPartySocket(inviteCode: MaybeRef<string>) {
   const connectionStatus = ref<WatchPartyConnectionStatus>('idle')
   const socketError = ref<WatchPartySocketError | null>(null)
   const lastPlaybackEvent = shallowRef<WatchPartyPlaybackEvent | null>(null)
+  const lastChatMessage = shallowRef<WatchPartyMessage | null>(null)
 
   let socket: WebSocket | null = null
   let manualDisconnect = false
@@ -52,6 +53,8 @@ export function useWatchPartySocket(inviteCode: MaybeRef<string>) {
   let latencyTimer: ReturnType<typeof setInterval> | undefined
   let authRecoveryRequest: Promise<void> | null = null
   let sequence = 0
+  let lastPlaybackStampMs = 0
+  let wasConnected = false
 
   function websocketUrl() {
     let base = String(config.public.wsBase).replace(/\/$/, '')
@@ -100,7 +103,9 @@ export function useWatchPartySocket(inviteCode: MaybeRef<string>) {
       }
     } else if (payload.type === 'chat.message' && payload.message && typeof payload.message !== 'string') {
       if (!messages.value.some(message => message.id === (payload.message as WatchPartyMessage).id)) {
-        messages.value.push(payload.message as WatchPartyMessage)
+        const incomingMessage = payload.message as WatchPartyMessage
+        messages.value.push(incomingMessage)
+        lastChatMessage.value = incomingMessage
       }
     } else if (payload.type === 'error') {
       socketError.value = {
@@ -112,6 +117,13 @@ export function useWatchPartySocket(inviteCode: MaybeRef<string>) {
     }
 
     if (PLAYBACK_EVENTS.has(payload.type as WatchPartyPlaybackEventType) && payload.playback_state) {
+      const stamp = Number(payload.playback_state.server_time_ms)
+        || Date.parse(payload.playback_state.updated_at)
+        || 0
+      if (stamp && lastPlaybackStampMs && stamp + 350 < lastPlaybackStampMs) {
+        return
+      }
+      if (stamp) lastPlaybackStampMs = Math.max(lastPlaybackStampMs, stamp)
       playbackState.value = payload.playback_state
       lastPlaybackEvent.value = {
         sequence: ++sequence,
@@ -119,6 +131,10 @@ export function useWatchPartySocket(inviteCode: MaybeRef<string>) {
         state: payload.playback_state,
       }
     } else if (payload.type === 'room.state' && payload.playback_state) {
+      const stamp = Number(payload.playback_state.server_time_ms)
+        || Date.parse(payload.playback_state.updated_at)
+        || 0
+      if (stamp) lastPlaybackStampMs = Math.max(lastPlaybackStampMs, stamp)
       playbackState.value = payload.playback_state
       lastPlaybackEvent.value = {
         sequence: ++sequence,
@@ -196,12 +212,15 @@ export function useWatchPartySocket(inviteCode: MaybeRef<string>) {
     const protocol = `watchparty.jwt.${accessToken.value}`
     socket = new WebSocket(websocketUrl(), [protocol])
     socket.addEventListener('open', () => {
+      const reconnected = wasConnected
       connectionStatus.value = 'connected'
+      wasConnected = true
       reconnectAttempts = 0
       sendEvent({ type: 'room.join' })
       sendLatencyPing()
+      if (reconnected) sendEvent({ type: 'playback.sync.request' })
       heartbeatTimer = setInterval(() => sendEvent({ type: 'heartbeat' }), 25000)
-      latencyTimer = setInterval(sendLatencyPing, 10000)
+      latencyTimer = setInterval(sendLatencyPing, 6000)
     })
     socket.addEventListener('message', (event) => {
       try {
@@ -258,7 +277,13 @@ export function useWatchPartySocket(inviteCode: MaybeRef<string>) {
 
   function setInitialRoom(value: WatchRoom) {
     room.value = value
-    if (value.playback_state) playbackState.value = value.playback_state
+    if (value.playback_state) {
+      playbackState.value = value.playback_state
+      const stamp = Number(value.playback_state.server_time_ms)
+        || Date.parse(value.playback_state.updated_at)
+        || 0
+      if (stamp) lastPlaybackStampMs = Math.max(lastPlaybackStampMs, stamp)
+    }
   }
 
   onBeforeUnmount(() => disconnect())
@@ -272,6 +297,7 @@ export function useWatchPartySocket(inviteCode: MaybeRef<string>) {
     latencyMs: readonly(latencyMs),
     socketError: readonly(socketError),
     lastPlaybackEvent: readonly(lastPlaybackEvent),
+    lastChatMessage: readonly(lastChatMessage),
     connect,
     disconnect,
     sendEvent,

@@ -1,4 +1,6 @@
 interface CatalogResponse {
+  count?: number
+  next?: string | null
   results?: Array<{ slug?: string }>
 }
 
@@ -11,6 +13,23 @@ function escapeXml(value: string) {
     .replaceAll("'", '&apos;')
 }
 
+async function fetchAllSlugs(apiBase: string, path: string, limit = 100, maxPages = 20) {
+  const slugs: string[] = []
+  let offset = 0
+  for (let page = 0; page < maxPages; page += 1) {
+    const response = await $fetch<CatalogResponse>(`${apiBase}${path}`, {
+      query: { limit, offset },
+    })
+    for (const row of response.results || []) {
+      if (row.slug) slugs.push(row.slug)
+    }
+    const count = Number(response.count || 0)
+    offset += limit
+    if (!response.next || offset >= count || !(response.results || []).length) break
+  }
+  return slugs
+}
+
 export default defineEventHandler(async (event) => {
   const config = useRuntimeConfig(event)
   const siteUrl = String(config.public.siteUrl).replace(/\/$/, '')
@@ -19,6 +38,10 @@ export default defineEventHandler(async (event) => {
     '/',
     '/movies',
     '/series',
+    '/new',
+    '/actors',
+    '/countries',
+    '/search',
     '/about',
     '/contact',
     '/privacy',
@@ -26,16 +49,14 @@ export default defineEventHandler(async (event) => {
   ])
 
   try {
-    const [movies, series] = await Promise.all([
-      $fetch<CatalogResponse>(`${apiBase}/movies/`, { query: { limit: 100 } }),
-      $fetch<CatalogResponse>(`${apiBase}/series/`, { query: { limit: 100 } }),
+    const [movieSlugs, seriesSlugs, actorSlugs] = await Promise.all([
+      fetchAllSlugs(apiBase, '/movies/'),
+      fetchAllSlugs(apiBase, '/series/'),
+      fetchAllSlugs(apiBase, '/actors/', 100, 8),
     ])
-    for (const movie of movies.results || []) {
-      if (movie.slug) paths.add(`/movies/${encodeURIComponent(movie.slug)}`)
-    }
-    for (const show of series.results || []) {
-      if (show.slug) paths.add(`/series/${encodeURIComponent(show.slug)}`)
-    }
+    for (const slug of movieSlugs) paths.add(`/movies/${encodeURIComponent(slug)}`)
+    for (const slug of seriesSlugs) paths.add(`/series/${encodeURIComponent(slug)}`)
+    for (const slug of actorSlugs) paths.add(`/actors/${encodeURIComponent(slug)}`)
   } catch {
     // Static routes remain available if the catalog API is temporarily unavailable.
   }

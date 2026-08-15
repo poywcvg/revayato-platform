@@ -1,0 +1,5 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" role="img" aria-label="امتیاز کاربران سایت">
+  <rect width="32" height="32" rx="9" fill="#0E1614"/>
+  <rect x="1" y="1" width="30" height="30" rx="8" fill="none" stroke="#285A48" stroke-opacity=".7"/>
+  <path d="M16 7.2 18.4 13h6.2l-5 3.8 1.9 5.9L16 19.4l-5.5 3.3 1.9-5.9-5-3.8h6.2L16 7.2Z" fill="#B0E4CC"/>
+</svg>

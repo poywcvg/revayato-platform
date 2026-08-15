@@ -4,10 +4,12 @@ from django.db import connection
 from redis import Redis
 from redis.exceptions import RedisError
 from rest_framework import status
+from rest_framework.decorators import throttle_classes
 from rest_framework.response import Response
 
 
 @api_view(['GET'])
+@throttle_classes([])
 def health_check(request):
     services = {'database': False, 'redis': False}
 

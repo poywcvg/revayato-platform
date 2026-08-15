@@ -10,19 +10,22 @@ from django.utils import timezone
 from .models import WatchRoom, WatchRoomMember, WatchRoomMessage, WatchRoomPlaybackState
 from .serializers import ChatMessageInputSerializer, WatchRoomMessageSerializer
 from .services import (
+    allowed_stream_urls,
+    ephemeral_playback_payload,
     expire_room_if_needed,
     member_payload,
     playback_payload,
     room_payload,
     room_queryset,
-    update_playback_state,
     user_can_access_room_content,
 )
 
 
 class WatchPartyConsumer(AsyncJsonWebsocketConsumer):
     CHAT_LIMIT = (5, 10)
-    PLAYBACK_LIMIT = (20, 5)
+    PLAYBACK_LIMIT = (36, 6)
+    SYNC_PERSIST_SECONDS = 8
+    SYNC_PERSIST_POSITION_DELTA = 0.75
 
     async def connect(self):
         self.user = self.scope.get('user')
@@ -126,6 +129,7 @@ class WatchPartyConsumer(AsyncJsonWebsocketConsumer):
         await self.channel_layer.group_send(self.group_name, {
             'type': 'watchparty.event',
             'payload': {'type': event_type, 'playback_state': playback},
+            'sender_channel': self.channel_name,
         })
 
     async def _handle_latency_ping(self, content):
@@ -144,6 +148,8 @@ class WatchPartyConsumer(AsyncJsonWebsocketConsumer):
         })
 
     async def watchparty_event(self, event):
+        if event.get('sender_channel') == self.channel_name:
+            return
         await self.send_json(event['payload'])
         if event.get('close'):
             await self.close(code=4000)
@@ -291,6 +297,8 @@ class WatchPartyConsumer(AsyncJsonWebsocketConsumer):
         if duration > 0:
             position = min(position, duration)
 
+        requested_stream = str(content.get('stream_url') or '').strip()[:2000]
+
         with transaction.atomic():
             try:
                 room = WatchRoom.objects.select_for_update().get(invite_code=self.invite_code)
@@ -301,19 +309,51 @@ class WatchPartyConsumer(AsyncJsonWebsocketConsumer):
                 return None, ('room_inactive', 'This watch party is no longer active.')
             if room.host_user_id != self.user.pk:
                 return None, ('host_only', 'Only the host can control playback.')
+            current, _created = WatchRoomPlaybackState.objects.select_for_update().get_or_create(room=room)
             if event_type == 'playback.play':
                 is_playing = True
             elif event_type == 'playback.pause':
                 is_playing = False
             else:
-                current, _created = WatchRoomPlaybackState.objects.get_or_create(room=room)
                 is_playing = bool(content.get('is_playing', current.is_playing))
-            state = update_playback_state(
-                room.pk,
-                self.user,
+
+            allowed = allowed_stream_urls(room)
+            stream_url = None
+            if requested_stream:
+                if requested_stream not in allowed:
+                    return None, ('invalid_stream', 'Stream URL is not allowed for this room.')
+                stream_url = requested_stream
+            else:
+                primary = (room_payload(room).get('content') or {}).get('video_url') or ''
+                stream_url = primary if primary in allowed else None
+
+            age = (timezone.now() - current.updated_at).total_seconds() if current.updated_at else 999
+            significant = (
+                event_type != 'playback.sync'
+                or current.is_playing != is_playing
+                or abs(current.position_seconds - position) >= self.SYNC_PERSIST_POSITION_DELTA
+                or abs(current.playback_rate - rate) >= 0.01
+                or (duration > 0 and abs(current.duration_seconds - duration) >= 1)
+                or bool(requested_stream)
+                or age >= self.SYNC_PERSIST_SECONDS
+            )
+            if significant:
+                current.is_playing = is_playing
+                current.position_seconds = position
+                current.duration_seconds = duration
+                current.playback_rate = rate
+                current.updated_by = self.user
+                current.save(update_fields=[
+                    'is_playing', 'position_seconds', 'duration_seconds',
+                    'playback_rate', 'updated_by', 'updated_at',
+                ])
+                return playback_payload(current, stream_url=stream_url), None
+
+            return ephemeral_playback_payload(
+                user=self.user,
                 is_playing=is_playing,
                 position_seconds=position,
-                duration_seconds=duration,
+                duration_seconds=duration or current.duration_seconds,
                 playback_rate=rate,
-            )
-        return playback_payload(state), None
+                stream_url=stream_url,
+            ), None

@@ -9,7 +9,7 @@ from django.utils import timezone
 from rest_framework.test import APIClient
 from rest_framework_simplejwt.tokens import AccessToken
 
-from apps.catalog.models import Movie
+from apps.catalog.models import Episode, Movie, Season, Series
 from users.models import User
 
 from .auth import JwtAuthMiddleware, SUBPROTOCOL_PREFIX
@@ -42,6 +42,36 @@ def make_movie(**kwargs):
     return Movie.objects.create(**defaults)
 
 
+def make_episode(**kwargs):
+    series_kwargs = kwargs.pop('series_kwargs', {})
+    season_kwargs = kwargs.pop('season_kwargs', {})
+    series_defaults = {
+        'title': 'Watch Party Series',
+        'slug': 'watch-party-series',
+        'is_published': True,
+        'download_links': [],
+    }
+    series_defaults.update(series_kwargs)
+    series = Series.objects.create(**series_defaults)
+    season_defaults = {
+        'series': series,
+        'season_number': 1,
+        'title': 'فصل ۱',
+        'is_published': True,
+    }
+    season_defaults.update(season_kwargs)
+    season = Season.objects.create(**season_defaults)
+    episode_defaults = {
+        'season': season,
+        'episode_number': 1,
+        'title': 'قسمت ۱',
+        'is_published': True,
+        'video_url': '',
+    }
+    episode_defaults.update(kwargs)
+    return Episode.objects.create(**episode_defaults)
+
+
 class WatchRoomModelTests(TestCase):
     def setUp(self):
         self.host = make_user('host')
@@ -68,6 +98,71 @@ class WatchRoomModelTests(TestCase):
                     user=second_user,
                     role=WatchRoomMember.Role.HOST,
                 )
+
+    def test_content_payload_uses_download_links_when_video_url_missing(self):
+        movie = make_movie(
+            slug='watch-party-movie-download-links',
+            video_url='',
+            download_links=[{
+                'label': '1080p',
+                'quality': '1080p',
+                'url': 'https://cdn.example.com/movie-1080.mp4',
+            }],
+        )
+        room = WatchRoom.objects.create(host_user=self.host, movie=movie)
+        from .services import content_payload
+        payload = content_payload(room)
+        self.assertEqual(payload['video_url'], 'https://cdn.example.com/movie-1080.mp4')
+        self.assertEqual(len(payload['stream_links']), 1)
+
+    def test_content_payload_preserves_absolute_episode_cdn_urls(self):
+        absolute = (
+            'https://cdn.example.com/yA3f/Series/Demo/S01E01.1080p.Farsi.Dubbed.mkv'
+        )
+        episode = make_episode(
+            video_url=absolute,
+            series_kwargs={
+                'slug': 'watch-party-series-absolute-url',
+                'download_links': [{
+                    'label': '720p',
+                    'quality': '720p',
+                    'kind': 'dubbed',
+                    'season_number': 1,
+                    'episode_number': 1,
+                    'url': 'https://cdn.example.com/yA3f/Series/Demo/S01E01.720p.Farsi.Dubbed.mkv',
+                }, {
+                    'label': '1080p',
+                    'quality': '1080p',
+                    'kind': 'dubbed',
+                    'season_number': 1,
+                    'episode_number': 1,
+                    'url': absolute,
+                }, {
+                    'label': 'other-ep',
+                    'quality': '1080p',
+                    'kind': 'dubbed',
+                    'season_number': 1,
+                    'episode_number': 2,
+                    'url': 'https://cdn.example.com/yA3f/Series/Demo/S01E02.1080p.mkv',
+                }],
+            },
+        )
+        room = WatchRoom.objects.create(host_user=self.host, episode=episode)
+        from .services import content_payload
+        payload = content_payload(room)
+        urls = [link['url'] for link in payload['stream_links']]
+        self.assertEqual(payload['type'], 'episode')
+        self.assertIn(absolute, urls)
+        self.assertIn(
+            'https://cdn.example.com/yA3f/Series/Demo/S01E01.720p.Farsi.Dubbed.mkv',
+            urls,
+        )
+        self.assertNotIn(
+            'https://cdn.example.com/yA3f/Series/Demo/S01E02.1080p.mkv',
+            urls,
+        )
+        self.assertFalse(any('revayato.com/media/' in url for url in urls))
+        self.assertEqual(len(payload['stream_links']), 2)
 
 
 @override_settings(CHANNEL_LAYERS=IN_MEMORY_CHANNELS)
@@ -213,6 +308,7 @@ class WatchPartyWebSocketTests(TransactionTestCase):
         })
         playback_event = await self.receive_type(member_socket, 'playback.play')
         self.assertEqual(playback_event['playback_state']['position_seconds'], 42)
+        self.assertIn('server_time_ms', playback_event['playback_state'])
 
         await host_socket.send_json_to({
             'type': 'playback.sync',
@@ -223,6 +319,18 @@ class WatchPartyWebSocketTests(TransactionTestCase):
         })
         sync_event = await self.receive_type(member_socket, 'playback.sync')
         self.assertEqual(sync_event['playback_state']['position_seconds'], 47)
+        self.assertIn('server_time_ms', sync_event['playback_state'])
+
+        # Tiny heartbeat sync should still broadcast live position without lagging members.
+        await host_socket.send_json_to({
+            'type': 'playback.sync',
+            'is_playing': True,
+            'position_seconds': 47.2,
+            'duration_seconds': 7200,
+            'playback_rate': 1,
+        })
+        heartbeat = await self.receive_type(member_socket, 'playback.sync')
+        self.assertAlmostEqual(heartbeat['playback_state']['position_seconds'], 47.2, places=1)
 
         await host_socket.send_json_to({
             'type': 'latency.ping',

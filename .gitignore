@@ -57,3 +57,13 @@ logs/
 Thumbs.db
 .idea/
 .vscode/
+
+# Local runtime artifacts (never commit)
+tmp/
+.pnpm-store/
+**/.pnpm-store/
+nohup.out
+*.nohup
+*.pid
+/5eac5bd6-970e-4dcb-bb08-b4ab31da6ff4.png
+

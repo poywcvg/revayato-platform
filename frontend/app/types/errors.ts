@@ -7,6 +7,8 @@ export interface AppFieldError {
 export interface AppErrorDetails {
   title: string
   message: string
+  /** Human-readable cause shown to the user (fields + hint). */
+  reason?: string
   hint?: string
   code?: string
   status?: number
@@ -20,6 +22,8 @@ export interface AppNotification {
   type: AppNotificationType
   title: string
   message: string
+  /** Extra cause line for errors (field reasons, server hint, etc.). */
+  reason?: string
   createdAt: string
   read: boolean
   href?: string

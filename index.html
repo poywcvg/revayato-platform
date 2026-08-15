@@ -1,417 +1,353 @@
-<!DOCTYPE html>
-<html lang="en">
+<!doctype html>
+<html lang="fa" dir="rtl">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Revayato | روایتو</title>
-  <link rel="stylesheet" href="styles.css">
+  <meta name="theme-color" content="#07090f">
+  <meta name="description" content="ورود و ثبت‌نام در روایتو؛ دنیای فیلم و سریال">
+  <title>ورود | روایتو</title>
+  <link rel="icon" type="image/svg+xml" href="frontend/public/favicon.svg">
+
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&display=swap" rel="stylesheet">
+  <link
+    href="https://fonts.googleapis.com/css2?family=Vazirmatn:wght@400;500;600;700;800;900&display=swap"
+    rel="stylesheet"
+  >
+  <link rel="stylesheet" href="style.css">
 </head>
+
 <body>
-  <!-- Sidebar -->
-  <aside class="sidebar" id="sidebar">
-    <div class="sidebar-logo">
-      <div class="logo-icon">
-        <svg width="32" height="32" viewBox="0 0 32 32" fill="none">
-          <rect width="32" height="32" rx="8" fill="url(#logoGrad)"/>
-          <path d="M10 10L14 16L10 22H13L17 16L13 10H10Z" fill="white"/>
-          <path d="M18 10L22 16L18 22H21L25 16L21 10H18Z" fill="white" opacity="0.6"/>
-          <defs>
-            <linearGradient id="logoGrad" x1="0" y1="0" x2="32" y2="32">
-              <stop stop-color="#FF3B3B"/>
-              <stop offset="1" stop-color="#FF6B35"/>
-            </linearGradient>
-          </defs>
-        </svg>
-      </div>
-      <span class="logo-text">Revayato</span>
-    </div>
+  <div class="page-backdrop" aria-hidden="true"></div>
+  <div class="ambient-glow ambient-glow--one" aria-hidden="true"></div>
+  <div class="ambient-glow ambient-glow--two" aria-hidden="true"></div>
 
-    <nav class="sidebar-nav">
-      <a href="#" class="nav-item active" data-page="home">
-        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/></svg>
-        <span>Home</span>
-      </a>
-      <a href="#" class="nav-item" data-page="explore">
-        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
-        <span>Explore</span>
-      </a>
-      <a href="#" class="nav-item" data-page="trending">
-        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 6 13.5 15.5 8.5 10.5 1 18"/><polyline points="17 6 23 6 23 12"/></svg>
-        <span>Trending</span>
-      </a>
-      <a href="#" class="nav-item" data-page="following">
-        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
-        <span>Following</span>
-      </a>
-      <a href="#" class="nav-item" data-page="watchlist">
-        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 21l-7-5-7 5V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z"/></svg>
-        <span>Watchlist</span>
-      </a>
-      <a href="#" class="nav-item" data-page="collections">
-        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/></svg>
-        <span>Collections</span>
-      </a>
-    </nav>
-
-    <div class="sidebar-divider"></div>
-
-    <a href="#" class="nav-item" data-page="profile">
-      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
-      <span>Profile</span>
+  <header class="site-header">
+    <!-- نام و نشان وب‌سایت را می‌توانید از همین بخش تغییر دهید. -->
+    <a class="brand" href="#" aria-label="روایتو، صفحه اصلی">
+      <span class="brand__mark" aria-hidden="true">
+        <img src="frontend/public/assets/brand/logo.svg" alt="" width="44" height="44">
+      </span>
+      <span class="brand__copy">
+        <strong>روایتو</strong>
+        <small>هر قاب، یک روایت</small>
+      </span>
     </a>
-    <a href="#" class="nav-item" data-page="settings">
-      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
-      <span>Settings</span>
-    </a>
-  </aside>
+  </header>
 
-  <!-- Main Content Area -->
-  <div class="main-wrapper">
-    <!-- Header -->
-    <header class="header">
-      <div class="header-left">
-        <button class="mobile-menu-btn" id="mobileMenuBtn">
-          <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/></svg>
-        </button>
-        <div class="search-bar">
-          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
-          <input type="text" placeholder="Search movies, series, people..." id="globalSearch">
-          <kbd>⌘K</kbd>
-        </div>
-      </div>
-      <div class="header-right">
-        <button class="header-icon-btn" id="notifBtn">
-          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/></svg>
-          <span class="notif-badge">3</span>
-        </button>
-        <button class="header-icon-btn" id="messagesBtn">
-          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
-        </button>
-        <div class="user-avatar-header" id="userAvatarBtn">
-          <img src="https://i.pravatar.cc/40?img=12" alt="User">
-          <span class="online-dot"></span>
-        </div>
-      </div>
-    </header>
+  <main class="auth-page">
+    <section
+      class="auth-card"
+      id="authCard"
+      data-mode="login"
+      aria-label="ورود و ساخت حساب کاربری"
+    >
+      <!-- فرم ورود -->
+      <div class="form-pane form-pane--signin" id="signinPane" aria-hidden="false">
+        <div class="form-pane__inner">
+          <header class="form-heading">
+            <span class="form-heading__eyebrow">خوش برگشتی</span>
+            <h1 id="signinTitle">ورود به حساب</h1>
+            <p>برای ادامه تماشای فیلم‌ها و سریال‌ها وارد شوید</p>
+          </header>
 
-    <!-- Page Content -->
-    <main class="main-content" id="mainContent">
-      <!-- HOME PAGE -->
-      <div class="page active" id="page-home">
-        <!-- Hero Banner -->
-        <section class="hero-banner" id="heroBanner">
-          <div class="hero-bg" id="heroBg"></div>
-          <div class="hero-overlay"></div>
-          <div class="hero-content">
-            <div class="hero-tags">
-              <span class="tag tag-genre">Sci-Fi</span>
-              <span class="tag tag-genre">Drama</span>
-              <span class="tag tag-new">New Season</span>
-            </div>
-            <h1 class="hero-title" id="heroTitle">Dune: Part Two</h1>
-            <p class="hero-meta">
-              <span class="hero-rating"><svg width="14" height="14" viewBox="0 0 24 24" fill="#FFB800" stroke="#FFB800" stroke-width="1"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg> 8.8</span>
-              <span class="dot-sep">·</span>
-              <span>2024</span>
-              <span class="dot-sep">·</span>
-              <span>2h 46m</span>
-              <span class="dot-sep">·</span>
-              <span>English</span>
-              <span class="dot-sep">·</span>
-              <span>PG-13</span>
-            </p>
-            <p class="hero-desc">Paul Atreides unites with Chani and the Fremen while on a warpath of revenge against the conspirators who destroyed his family.</p>
-            <div class="hero-friends">
-              <div class="friend-avatars">
-                <img src="https://i.pravatar.cc/28?img=1" alt="" class="friend-avatar-stack">
-                <img src="https://i.pravatar.cc/28?img=5" alt="" class="friend-avatar-stack">
-                <img src="https://i.pravatar.cc/28?img=8" alt="" class="friend-avatar-stack">
-                <img src="https://i.pravatar.cc/28?img=3" alt="" class="friend-avatar-stack">
+          <form id="loginForm" novalidate>
+            <div class="fields-group">
+              <div class="field" data-field="loginIdentifier">
+                <label class="sr-only" for="loginIdentifier">ایمیل یا نام کاربری</label>
+                <span class="field__icon" aria-hidden="true">
+                  <svg viewBox="0 0 24 24">
+                    <path d="M20 21a8 8 0 0 0-16 0M12 13a5 5 0 1 0 0-10 5 5 0 0 0 0 10Z"/>
+                  </svg>
+                </span>
+                <input
+                  id="loginIdentifier"
+                  name="identifier"
+                  type="text"
+                  autocomplete="username"
+                  placeholder="ایمیل یا نام کاربری"
+                  aria-label="ایمیل یا نام کاربری"
+                >
               </div>
-              <span class="hero-friends-text">Ali, Sara and 4 friends watched this</span>
+
+              <div class="field" data-field="loginPassword">
+                <label class="sr-only" for="loginPassword">رمز عبور</label>
+                <span class="field__icon" aria-hidden="true">
+                  <svg viewBox="0 0 24 24">
+                    <rect x="4" y="10" width="16" height="11" rx="3"/>
+                    <path d="M8 10V7a4 4 0 0 1 8 0v3M12 14.5v2"/>
+                  </svg>
+                </span>
+                <input
+                  id="loginPassword"
+                  name="password"
+                  type="password"
+                  autocomplete="current-password"
+                  placeholder="رمز عبور"
+                  aria-label="رمز عبور"
+                >
+                <button
+                  class="password-toggle"
+                  type="button"
+                  data-password-toggle="loginPassword"
+                  aria-label="نمایش رمز عبور"
+                  title="نمایش رمز عبور"
+                >
+                  <svg class="eye-open" viewBox="0 0 24 24" aria-hidden="true">
+                    <path d="M2.5 12s3.5-6 9.5-6 9.5 6 9.5 6-3.5 6-9.5 6-9.5-6-9.5-6Z"/>
+                    <circle cx="12" cy="12" r="2.5"/>
+                  </svg>
+                  <svg class="eye-closed" viewBox="0 0 24 24" aria-hidden="true">
+                    <path d="m3 3 18 18M10.6 6.1A9.8 9.8 0 0 1 12 6c6 0 9.5 6 9.5 6a16.8 16.8 0 0 1-2 2.6M6.2 6.2C3.8 8 2.5 12 2.5 12s3.5 6 9.5 6a9.6 9.6 0 0 0 3.1-.5M9.9 9.9a3 3 0 0 0 4.2 4.2"/>
+                  </svg>
+                </button>
+              </div>
             </div>
-            <div class="hero-actions">
-              <button class="btn btn-primary btn-lg">
-                <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><polygon points="5 3 19 12 5 21 5 3"/></svg>
-                Watch Now
-              </button>
-              <button class="btn btn-glass btn-lg">
-                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/><line x1="8.59" y1="13.51" x2="15.42" y2="17.49"/><line x1="15.41" y1="6.51" x2="8.59" y2="10.49"/></svg>
-                Share
-              </button>
-              <button class="btn btn-outline btn-lg" id="heroWatchlistBtn">
-                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 21l-7-5-7 5V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z"/></svg>
-                Watchlist
-              </button>
+
+            <div class="form-options">
+              <label class="checkbox">
+                <input id="rememberMe" name="remember" type="checkbox">
+                <span class="checkbox__box" aria-hidden="true">
+                  <svg viewBox="0 0 12 10"><path d="m1 5 3 3 7-7"/></svg>
+                </span>
+                <span>مرا به خاطر بسپار</span>
+              </label>
+              <a class="text-link" id="forgotPassword" href="#">رمز عبور را فراموش کرده‌اید؟</a>
             </div>
-          </div>
-          <div class="hero-nav">
-            <button class="hero-nav-btn" id="heroPrev">
-              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="15 18 9 12 15 6"/></svg>
+
+            <button class="primary-button" type="submit">
+              <span class="button-label">ورود به روایتو</span>
+              <span class="button-loader" aria-hidden="true"></span>
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M5 12h13M14 8l4 4-4 4"/>
+              </svg>
             </button>
-            <div class="hero-dots" id="heroDots">
-              <span class="dot active"></span>
-              <span class="dot"></span>
-              <span class="dot"></span>
-              <span class="dot"></span>
-              <span class="dot"></span>
-            </div>
-            <button class="hero-nav-btn" id="heroNext">
-              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="9 18 15 12 9 6"/></svg>
+
+            <div class="divider" role="separator"><span>یا</span></div>
+
+            <button class="google-button" type="button" data-google="login">
+              <span class="google-mark" aria-hidden="true">
+                <i></i><i></i><i></i><i></i>
+              </span>
+              <span>ادامه با گوگل</span>
             </button>
-          </div>
-          <div class="hero-thumbnails" id="heroThumbnails"></div>
-        </section>
 
-        <!-- Content Sections -->
-        <section class="content-section">
-          <div class="section-header">
-            <h2>Continue Watching</h2>
-            <a href="#" class="see-all">See all</a>
-          </div>
-          <div class="card-row" id="continueWatching"></div>
-        </section>
+            <p class="mobile-switch">
+              حساب کاربری ندارید؟
+              <button type="button" data-switch="register">ثبت‌نام کنید</button>
+            </p>
 
-        <section class="content-section">
-          <div class="section-header">
-            <h2>Trending Now</h2>
-            <a href="#" class="see-all">See all</a>
-          </div>
-          <div class="card-row" id="trendingNow"></div>
-        </section>
-
-        <section class="content-section">
-          <div class="section-header">
-            <h2>Friends Activity</h2>
-            <a href="#" class="see-all">See all</a>
-          </div>
-          <div class="activity-feed" id="friendsActivity"></div>
-        </section>
-
-        <section class="content-section">
-          <div class="section-header">
-            <h2>Recommended for You</h2>
-            <a href="#" class="see-all">See all</a>
-          </div>
-          <div class="card-row" id="recommended"></div>
-        </section>
-
-        <section class="content-section">
-          <div class="section-header">
-            <h2>Recently Watched by Friends</h2>
-            <a href="#" class="see-all">See all</a>
-          </div>
-          <div class="card-row" id="friendsWatched"></div>
-        </section>
-
-        <section class="content-section">
-          <div class="section-header">
-            <h2>Popular This Week</h2>
-            <a href="#" class="see-all">See all</a>
-          </div>
-          <div class="card-row" id="popularWeek"></div>
-        </section>
-      </div>
-
-      <!-- EXPLORE PAGE -->
-      <div class="page" id="page-explore">
-        <div class="page-header">
-          <h1>Explore</h1>
-          <p>Discover something new to watch</p>
+            <p class="form-status" id="loginStatus" role="status" aria-live="polite"></p>
+          </form>
         </div>
-        <div class="filter-bar">
-          <button class="filter-chip active">All</button>
-          <button class="filter-chip">Movies</button>
-          <button class="filter-chip">Series</button>
-          <button class="filter-chip">Documentaries</button>
-          <button class="filter-chip">Animation</button>
-          <button class="filter-chip">Action</button>
-          <button class="filter-chip">Comedy</button>
-          <button class="filter-chip">Horror</button>
-          <button class="filter-chip">Sci-Fi</button>
-          <button class="filter-chip">Romance</button>
+      </div>
+
+      <!-- فرم ثبت‌نام -->
+      <div class="form-pane form-pane--signup" id="signupPane" aria-hidden="true" inert>
+        <div class="form-pane__inner form-pane__inner--signup">
+          <header class="form-heading form-heading--compact">
+            <span class="form-heading__eyebrow">شروع یک ماجرا</span>
+            <h2 id="signupTitle">ساخت حساب کاربری</h2>
+            <p>به دنیای فیلم و سریال بپیوندید</p>
+          </header>
+
+          <form id="registerForm" novalidate>
+            <div class="fields-group fields-group--compact">
+              <div class="field" data-field="fullName">
+                <label class="sr-only" for="fullName">نام و نام خانوادگی</label>
+                <span class="field__icon" aria-hidden="true">
+                  <svg viewBox="0 0 24 24">
+                    <path d="M20 21a8 8 0 0 0-16 0M12 13a5 5 0 1 0 0-10 5 5 0 0 0 0 10Z"/>
+                  </svg>
+                </span>
+                <input
+                  id="fullName"
+                  name="name"
+                  type="text"
+                  autocomplete="name"
+                  placeholder="نام و نام خانوادگی"
+                  aria-label="نام و نام خانوادگی"
+                >
+              </div>
+
+              <div class="field" data-field="registerEmail">
+                <label class="sr-only" for="registerEmail">ایمیل</label>
+                <span class="field__icon" aria-hidden="true">
+                  <svg viewBox="0 0 24 24">
+                    <rect x="3" y="5" width="18" height="14" rx="3"/>
+                    <path d="m4 7 8 6 8-6"/>
+                  </svg>
+                </span>
+                <input
+                  id="registerEmail"
+                  name="email"
+                  type="email"
+                  inputmode="email"
+                  autocomplete="email"
+                  placeholder="ایمیل"
+                  aria-label="ایمیل"
+                >
+              </div>
+
+              <div class="field" data-field="registerPassword">
+                <label class="sr-only" for="registerPassword">رمز عبور</label>
+                <span class="field__icon" aria-hidden="true">
+                  <svg viewBox="0 0 24 24">
+                    <rect x="4" y="10" width="16" height="11" rx="3"/>
+                    <path d="M8 10V7a4 4 0 0 1 8 0v3M12 14.5v2"/>
+                  </svg>
+                </span>
+                <input
+                  id="registerPassword"
+                  name="password"
+                  type="password"
+                  autocomplete="new-password"
+                  placeholder="رمز عبور؛ حداقل ۸ کاراکتر"
+                  aria-label="رمز عبور؛ حداقل ۸ کاراکتر"
+                >
+                <button
+                  class="password-toggle"
+                  type="button"
+                  data-password-toggle="registerPassword"
+                  aria-label="نمایش رمز عبور"
+                  title="نمایش رمز عبور"
+                >
+                  <svg class="eye-open" viewBox="0 0 24 24" aria-hidden="true">
+                    <path d="M2.5 12s3.5-6 9.5-6 9.5 6 9.5 6-3.5 6-9.5 6-9.5-6-9.5-6Z"/>
+                    <circle cx="12" cy="12" r="2.5"/>
+                  </svg>
+                  <svg class="eye-closed" viewBox="0 0 24 24" aria-hidden="true">
+                    <path d="m3 3 18 18M10.6 6.1A9.8 9.8 0 0 1 12 6c6 0 9.5 6 9.5 6a16.8 16.8 0 0 1-2 2.6M6.2 6.2C3.8 8 2.5 12 2.5 12s3.5 6 9.5 6a9.6 9.6 0 0 0 3.1-.5M9.9 9.9a3 3 0 0 0 4.2 4.2"/>
+                  </svg>
+                </button>
+              </div>
+
+              <div class="field" data-field="confirmPassword">
+                <label class="sr-only" for="confirmPassword">تکرار رمز عبور</label>
+                <span class="field__icon" aria-hidden="true">
+                  <svg viewBox="0 0 24 24">
+                    <rect x="4" y="10" width="16" height="11" rx="3"/>
+                    <path d="M8 10V7a4 4 0 0 1 8 0v3M12 14.5v2"/>
+                  </svg>
+                </span>
+                <input
+                  id="confirmPassword"
+                  name="password_confirmation"
+                  type="password"
+                  autocomplete="new-password"
+                  placeholder="تکرار رمز عبور"
+                  aria-label="تکرار رمز عبور"
+                >
+                <button
+                  class="password-toggle"
+                  type="button"
+                  data-password-toggle="confirmPassword"
+                  aria-label="نمایش رمز عبور"
+                  title="نمایش رمز عبور"
+                >
+                  <svg class="eye-open" viewBox="0 0 24 24" aria-hidden="true">
+                    <path d="M2.5 12s3.5-6 9.5-6 9.5 6 9.5 6-3.5 6-9.5 6-9.5-6-9.5-6Z"/>
+                    <circle cx="12" cy="12" r="2.5"/>
+                  </svg>
+                  <svg class="eye-closed" viewBox="0 0 24 24" aria-hidden="true">
+                    <path d="m3 3 18 18M10.6 6.1A9.8 9.8 0 0 1 12 6c6 0 9.5 6 9.5 6a16.8 16.8 0 0 1-2 2.6M6.2 6.2C3.8 8 2.5 12 2.5 12s3.5 6 9.5 6a9.6 9.6 0 0 0 3.1-.5M9.9 9.9a3 3 0 0 0 4.2 4.2"/>
+                  </svg>
+                </button>
+              </div>
+            </div>
+
+            <label class="checkbox terms-checkbox" data-field="terms">
+              <input id="terms" name="terms" type="checkbox">
+              <span class="checkbox__box" aria-hidden="true">
+                <svg viewBox="0 0 12 10"><path d="m1 5 3 3 7-7"/></svg>
+              </span>
+              <span>
+                <a href="#" data-policy="terms">قوانین استفاده</a>
+                و
+                <a href="#" data-policy="privacy">حریم خصوصی</a>
+                را می‌پذیرم
+              </span>
+            </label>
+
+            <button class="primary-button" type="submit">
+              <span class="button-label">ساخت حساب کاربری</span>
+              <span class="button-loader" aria-hidden="true"></span>
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M5 12h13M14 8l4 4-4 4"/>
+              </svg>
+            </button>
+
+            <div class="divider" role="separator"><span>یا</span></div>
+
+            <button class="google-button" type="button" data-google="register">
+              <span class="google-mark" aria-hidden="true">
+                <i></i><i></i><i></i><i></i>
+              </span>
+              <span>ثبت‌نام با گوگل</span>
+            </button>
+
+            <p class="mobile-switch">
+              قبلاً حساب ساخته‌اید؟
+              <button type="button" data-switch="login">وارد شوید</button>
+            </p>
+
+            <p class="form-status" id="registerStatus" role="status" aria-live="polite"></p>
+          </form>
         </div>
-        <div class="explore-grid" id="exploreGrid"></div>
       </div>
 
-      <!-- TRENDING PAGE -->
-      <div class="page" id="page-trending">
-        <div class="page-header">
-          <h1>Trending</h1>
-          <p>What everyone is watching right now</p>
+      <!-- این پنل در دسکتاپ بین دو نیمه کارت حرکت می‌کند. -->
+      <aside class="cinematic-panel" aria-label="تغییر حالت ورود و ثبت‌نام">
+        <div class="cinematic-panel__grain" aria-hidden="true"></div>
+        <div class="cinematic-panel__spotlight" aria-hidden="true"></div>
+        <div class="film-strip" aria-hidden="true">
+          <span></span><span></span><span></span><span></span><span></span><span></span>
         </div>
-        <div class="trending-tabs">
-          <button class="tab-btn active">Today</button>
-          <button class="tab-btn">This Week</button>
-          <button class="tab-btn">This Month</button>
+
+        <div class="panel-emblem" aria-hidden="true">
+          <span>
+            <svg viewBox="0 0 42 42">
+              <path d="m16 12 15 9-15 9V12Z" fill="currentColor"/>
+            </svg>
+          </span>
+          <i></i><i></i>
         </div>
-        <div class="trending-list" id="trendingList"></div>
-      </div>
 
-      <!-- FOLLOWING PAGE -->
-      <div class="page" id="page-following">
-        <div class="page-header">
-          <h1>Following</h1>
-          <p>See what your friends are watching</p>
-        </div>
-        <div class="following-tabs">
-          <button class="tab-btn active">Feed</button>
-          <button class="tab-btn">Friends</button>
-          <button class="tab-btn">Suggestions</button>
-        </div>
-        <div class="social-feed-full" id="followingFeed"></div>
-      </div>
-
-      <!-- WATCHLIST PAGE -->
-      <div class="page" id="page-watchlist">
-        <div class="page-header">
-          <h1>My Watchlist</h1>
-          <p>Movies and series you want to watch</p>
-        </div>
-        <div class="watchlist-grid" id="watchlistGrid"></div>
-      </div>
-
-      <!-- COLLECTIONS PAGE -->
-      <div class="page" id="page-collections">
-        <div class="page-header">
-          <h1>Collections</h1>
-          <p>Organize your favorite content</p>
-        </div>
-        <div class="collections-grid" id="collectionsGrid"></div>
-      </div>
-
-      <!-- PROFILE PAGE -->
-      <div class="page" id="page-profile">
-        <div class="profile-page" id="profilePage"></div>
-      </div>
-
-      <!-- SETTINGS PAGE -->
-      <div class="page" id="page-settings">
-        <div class="page-header">
-          <h1>Settings</h1>
-          <p>Manage your account and preferences</p>
-        </div>
-        <div class="settings-content" id="settingsContent"></div>
-      </div>
-    </main>
-  </div>
-
-  <!-- Notification Panel -->
-  <div class="notification-panel" id="notifPanel">
-    <div class="notif-header">
-      <h3>Notifications</h3>
-      <button class="btn-text">Mark all read</button>
-    </div>
-    <div class="notif-list" id="notifList"></div>
-  </div>
-
-  <!-- User Menu Dropdown -->
-  <div class="user-menu" id="userMenu">
-    <div class="user-menu-header">
-      <img src="https://i.pravatar.cc/48?img=12" alt="" class="user-menu-avatar">
-      <div>
-        <div class="user-menu-name">Alex Morgan</div>
-        <div class="user-menu-email">@alexmorgan</div>
-      </div>
-    </div>
-    <div class="user-menu-divider"></div>
-    <a href="#" class="user-menu-item" data-page="profile">
-      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
-      My Profile
-    </a>
-    <a href="#" class="user-menu-item" data-page="watchlist">
-      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M19 21l-7-5-7 5V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z"/></svg>
-      My Watchlist
-    </a>
-    <a href="#" class="user-menu-item" data-page="settings">
-      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9c.26.604.852.997 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
-      Settings
-    </a>
-    <div class="user-menu-divider"></div>
-    <a href="#" class="user-menu-item user-menu-logout">
-      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>
-      Sign Out
-    </a>
-  </div>
-
-  <!-- Share Modal -->
-  <div class="modal-overlay" id="shareModal">
-    <div class="modal">
-      <div class="modal-header">
-        <h3>Share</h3>
-        <button class="modal-close" id="closeShareModal">
-          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
-        </button>
-      </div>
-      <div class="modal-body" id="shareModalBody"></div>
-    </div>
-  </div>
-
-  <!-- Video Player Modal -->
-  <div class="modal-overlay player-overlay" id="playerModal">
-    <div class="player-modal">
-      <div class="player-header">
-        <button class="player-close" id="closePlayer">
-          <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
-        </button>
-        <div class="player-title" id="playerTitle">Now Playing</div>
-        <div class="player-actions-top">
-          <button class="player-action-btn" title="Share">
-            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/><line x1="8.59" y1="13.51" x2="15.42" y2="17.49"/><line x1="15.41" y1="6.51" x2="8.59" y2="10.49"/></svg>
-          </button>
-          <button class="player-action-btn" title="Watchlist">
-            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M19 21l-7-5-7 5V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z"/></svg>
+        <div class="panel-copy panel-copy--register" id="registerInvite" aria-hidden="false">
+          <span class="panel-copy__kicker">عضویت در روایتو</span>
+          <h2>اولین باره اینجایی؟</h2>
+          <p>همین حالا حساب بساز و لیست تماشای شخصی خودت را ایجاد کن</p>
+          <button class="outline-button" type="button" data-switch="register">
+            <span>ثبت نام</span>
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h13M14 8l4 4-4 4"/></svg>
           </button>
         </div>
-      </div>
-      <div class="player-screen">
-        <div class="player-placeholder">
-          <div class="play-button-large">
-            <svg width="64" height="64" viewBox="0 0 24 24" fill="white"><polygon points="5 3 19 12 5 21 5 3"/></svg>
-          </div>
-          <p>Click to play</p>
-        </div>
-      </div>
-      <div class="player-controls">
-        <div class="player-progress">
-          <div class="progress-bar">
-            <div class="progress-filled" style="width: 35%"></div>
-          </div>
-          <div class="progress-times">
-            <span>52:14</span>
-            <span>2:32:46</span>
-          </div>
-        </div>
-        <div class="player-buttons">
-          <button class="player-ctrl-btn">
-            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="19 20 9 12 19 4 19 20"/><line x1="5" y1="19" x2="5" y2="5"/></svg>
-          </button>
-          <button class="player-ctrl-btn play-btn">
-            <svg width="24" height="24" viewBox="0 0 24 24" fill="currentColor"><polygon points="5 3 19 12 5 21 5 3"/></svg>
-          </button>
-          <button class="player-ctrl-btn">
-            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="5 4 15 12 5 20 5 4"/><line x1="19" y1="5" x2="19" y2="19"/></svg>
-          </button>
-          <button class="player-ctrl-btn">
-            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14M15.54 8.46a5 5 0 0 1 0 7.07"/></svg>
-          </button>
-          <button class="player-ctrl-btn">
-            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M15 3h6v6M9 21H3v-6M21 3l-7 7M3 21l7-7"/></svg>
-          </button>
-          <button class="player-ctrl-btn">
-            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="7" width="20" height="15" rx="2" ry="2"/><polyline points="17 2 12 7 7 2"/></svg>
-          </button>
-        </div>
-      </div>
-    </div>
-  </div>
 
-  <!-- Toast Container -->
-  <div class="toast-container" id="toastContainer"></div>
+        <div class="panel-copy panel-copy--login" id="loginInvite" aria-hidden="true">
+          <span class="panel-copy__kicker">ادامهٔ تماشا</span>
+          <h2>دوباره خوش اومدی</h2>
+          <p>وارد حسابت شو و تماشای فیلم‌ها و سریال‌های مورد علاقه‌ات را ادامه بده</p>
+          <button class="outline-button" type="button" data-switch="login">
+            <span>ورود</span>
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h13M14 8l4 4-4 4"/></svg>
+          </button>
+        </div>
+      </aside>
+    </section>
 
-  <script src="app.js"></script>
+    <p class="security-note">
+      <svg viewBox="0 0 24 24" aria-hidden="true">
+        <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10Z"/>
+        <path d="m9 12 2 2 4-4"/>
+      </svg>
+      اطلاعات شما با استانداردهای امنیتی محافظت می‌شود
+    </p>
+  </main>
+
+  <noscript>
+    <p class="noscript-message">برای استفاده از فرم ورود و ثبت‌نام، جاوااسکریپت مرورگر را فعال کنید.</p>
+  </noscript>
+
+  <script src="script.js"></script>
 </body>
 </html>

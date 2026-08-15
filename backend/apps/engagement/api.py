@@ -6,8 +6,9 @@ from rest_framework.response import Response
 from . import selectors, services
 from .serializers import (
     LikeToggleInputSerializer, RateContentInputSerializer, RatingSerializer,
-    PrivacySafeEventInputSerializer, UserActivityEventSerializer, WatchlistItemSerializer,
-    WatchlistToggleInputSerializer,
+    PrivacySafeEventInputSerializer, SupportReplySerializer, SupportTicketCreateSerializer,
+    SupportTicketListSerializer, SupportTicketSerializer, UserActivityEventSerializer,
+    WatchlistItemSerializer, WatchlistToggleInputSerializer,
 )
 
 
@@ -58,6 +59,10 @@ def rating_summary(request):
     summary = selectors.get_rating_summary(content_type, object_id)
     my_rating = selectors.get_user_rating(request.user, content_type, object_id)
     summary['my_rating'] = RatingSerializer(my_rating).data if my_rating else None
+    summary['reviews'] = RatingSerializer(
+        selectors.get_reviews(content_type, object_id)[:40],
+        many=True,
+    ).data
     return Response(summary)
 
 
@@ -79,8 +84,8 @@ def rate_content(request):
         content_type=data['content_type'],
         object_id=data['object_id'],
         score=data['score'],
-        review=data.get('review', ''),
-        is_spoiler=data.get('is_spoiler', False),
+        review=data['review'] if 'review' in data else None,
+        is_spoiler=data['is_spoiler'] if 'is_spoiler' in data else None,
     )
     return Response(RatingSerializer(rating).data, status=status.HTTP_200_OK)
 
@@ -108,6 +113,25 @@ def watchlist_toggle(request):
     return Response({'added': added})
 
 
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def likes_list(request):
+    likes = selectors.get_user_likes(request.user)
+    return Response([
+        {'content_type': like.content_type, 'object_id': like.object_id}
+        for like in likes
+    ])
+
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def watch_stats(request):
+    """Lifetime + weekly watch-time story for the signed-in profile."""
+    from .watch_stats import build_watch_stats
+
+    return Response(build_watch_stats(request.user))
+
+
 @api_view(['POST'])
 @permission_classes([IsAuthenticated])
 def like_toggle(request):
@@ -120,3 +144,52 @@ def like_toggle(request):
         object_id=data['object_id'],
     )
     return Response({'liked': liked})
+
+
+@api_view(['GET', 'POST'])
+@permission_classes([IsAuthenticated])
+def support_ticket_list_create(request):
+    if request.method == 'GET':
+        tickets = selectors.get_user_support_tickets(request.user)
+        return Response(SupportTicketListSerializer(tickets, many=True).data)
+
+    serializer = SupportTicketCreateSerializer(data=request.data)
+    serializer.is_valid(raise_exception=True)
+    data = serializer.validated_data
+    ticket = services.create_support_ticket(
+        user=request.user,
+        category=data['category'],
+        subject=data['subject'],
+        body=data['body'],
+        related_title=data.get('related_title', ''),
+        related_year=data.get('related_year'),
+        related_url=data.get('related_url', ''),
+    )
+    return Response(SupportTicketSerializer(ticket).data, status=status.HTTP_201_CREATED)
+
+
+@api_view(['GET', 'POST'])
+@permission_classes([IsAuthenticated])
+def support_ticket_detail(request, tracking_code):
+    ticket = selectors.get_support_ticket_for_user(request.user, tracking_code)
+    if not ticket:
+        return Response({'detail': 'پیام پیدا نشد.'}, status=status.HTTP_404_NOT_FOUND)
+
+    if request.method == 'GET':
+        services.mark_ticket_read_by_user(ticket)
+        ticket = selectors.get_support_ticket_for_user(request.user, tracking_code)
+        return Response(SupportTicketSerializer(ticket).data)
+
+    if ticket.status == ticket.Status.CLOSED:
+        return Response({'detail': 'این گفتگو بسته شده است.'}, status=status.HTTP_400_BAD_REQUEST)
+
+    serializer = SupportReplySerializer(data=request.data)
+    serializer.is_valid(raise_exception=True)
+    services.reply_support_ticket(
+        ticket=ticket,
+        author=request.user,
+        body=serializer.validated_data['body'],
+        is_staff_reply=False,
+    )
+    ticket = selectors.get_support_ticket_for_user(request.user, tracking_code)
+    return Response(SupportTicketSerializer(ticket).data)
