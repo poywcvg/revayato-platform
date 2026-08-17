@@ -103,6 +103,32 @@ def _duration(item):
     return int(getattr(item, 'duration_minutes', None) or 0)
 
 
+def _quality_tier(item):
+    """Coarse production-quality tier from the strongest available rating.
+
+    0 = unknown, 1 = mid (below 6.0), 2 = good (6.0–7.4), 3 = excellent (7.5+).
+    Used only as a light tie-break so the rail does not mix prestige and filler
+    titles that would otherwise look equally "similar" on genre alone.
+    """
+    rating = None
+    for attr in ('imdb_rating', 'rating_average', 'site_rating'):
+        value = getattr(item, attr, None)
+        if value is None:
+            continue
+        try:
+            rating = float(value)
+            break
+        except (TypeError, ValueError):
+            continue
+    if rating is None:
+        return 0
+    if rating >= 7.5:
+        return 3
+    if rating >= 6.0:
+        return 2
+    return 1
+
+
 def _cast_names(item, limit=6):
     if isinstance(item, Movie):
         roles = getattr(item, '_prefetched_objects_cache', {}).get('movie_actors')
@@ -125,12 +151,14 @@ def _related_prefetch(model):
             'genres',
             'directors',
             'countries',
+            'tags',
             Prefetch('movie_actors', queryset=MovieActor.objects.select_related('actor').order_by('order')),
         )
     return (
         'genres',
         'directors',
         'countries',
+        'tags',
         Prefetch('series_actors', queryset=SeriesActor.objects.select_related('actor').order_by('order')),
     )
 
@@ -741,61 +769,257 @@ def _sensitivity_score(item, preference):
     return 0
 
 
+def _jaccard(first, second):
+    if not first or not second:
+        return 0
+    intersection = len(first & second)
+    union = len(first | second)
+    return intersection / union if union else 0
+
+
+def _year_distance(first_year, second_year):
+    """~1.0 when years are close, decaying to 0 beyond ~12 years apart."""
+    if not first_year or not second_year:
+        return 0.0
+    delta = abs(int(first_year) - int(second_year))
+    if delta <= 1:
+        return 1.0
+    if delta >= 12:
+        return 0.0
+    return 1.0 - (delta - 1) / 11
+
+
+_BROAD_GENRES = frozenset({'drama', 'comedy', 'romance', 'thriller'})
+
+
+def _normalized_language(item):
+    lang = _normalize(getattr(item, 'original_language', '') or '')
+    if not lang:
+        lang = _normalize(getattr(item, 'language', '') or '')
+    return lang
+
+
+def _genre_overlap(first, second):
+    """Genre similarity that rewards specific shared genres over broad ones.
+
+    ``drama``/``comedy``/``romance``/``thriller`` describe thousands of titles
+    each, so two titles sharing only those are common but not really "similar".
+    Every shared genre counts at its full weight; sharing a specific genre in
+    addition to a broad one is worth more than another broad one.
+
+    The source's most distinctive genre must survive too: Scream (horror/crime/
+    mystery) shares crime+mystery with Ace Ventura (comedy/crime/mystery), but
+    Scream's horror DNA is absent, so the pair must not rank as a strong match.
+    """
+    first_slugs = [genre.slug for genre in first.genres.all()]
+    second_slugs = [genre.slug for genre in second.genres.all()]
+    first_set = set(first_slugs)
+    second_set = set(second_slugs)
+    intersection = first_set & second_set
+    if not intersection:
+        return 0.0
+    union = first_set | second_set
+    jaccard = len(intersection) / len(union) if union else 0.0
+    specific = sum(1 for slug in intersection if slug not in _BROAD_GENRES)
+    raw = min(1.0, jaccard * 0.8 + specific * 0.15)
+
+    # The source's least-broad genre is its distinguishing identity (horror for
+    # Scream, sci-fi for Arrival). Losing it halves the genre contribution so a
+    # weak multi-genre overlap cannot masquerade as a real match.
+    source_specific = [slug for slug in first_slugs if slug not in _BROAD_GENRES]
+    if source_specific and not (source_specific[0] in intersection):
+        raw *= 0.5
+    return raw
+
+
+def _cast_overlap(first, second):
+    """Weighted shared-cast similarity that values leads (first on the order).
+
+    Top-billed actors reflect the creative DNA of a title far more than
+    supporting players, so their matches dominate the score.
+    """
+    first_names = _cast_names(first, limit=6)
+    second_names = _cast_names(second, limit=6)
+    second_set = set(second_names)
+    shared = [(index, name) for index, name in enumerate(first_names) if name in second_set]
+    if not shared:
+        return 0.0
+    # index 0..5 -> 1.0, 0.7, 0.5, 0.4, 0.33, 0.28; average across shared seats.
+    weights = [1.0, 0.7, 0.5, 0.4, 0.33, 0.28]
+    total = sum(weights[min(index, len(weights) - 1)] for index, _name in shared) / len(first_names or [1])
+    return min(1.0, total * 1.25)
+
+
+def _title_token_match(first, second):
+    """Franchise/sequel signal: same original or localized title tokens.
+
+    Scream (1996) and Scream 7 already share genre+cast; identical original
+    titles (or a shared distinctive word) push them far above genre-only peers.
+    """
+    first_title = _normalize(getattr(first, 'original_title', '') or '') or _normalize(first.title)
+    second_title = _normalize(getattr(second, 'original_title', '') or '') or _normalize(second.title)
+    if not first_title or not second_title:
+        return 0.0
+    if first_title == second_title:
+        return 0.6
+    first_tokens = {token for token in re.split(r'[^a-z0-9]+', first_title) if len(token) >= 3}
+    second_tokens = {token for token in re.split(r'[^a-z0-9]+', second_title) if len(token) >= 3}
+    if first_tokens & second_tokens:
+        return 0.2
+    return 0.0
+
+
 def _similarity(first, second):
-    first_genres = {genre.slug for genre in first.genres.all()}
-    second_genres = {genre.slug for genre in second.genres.all()}
-    union = first_genres | second_genres
-    genre_similarity = len(first_genres & second_genres) / len(union) if union else 0
+    """Pairwise content similarity shared by the similar rail and the
+    personalized recommender.
+
+    Additive (genre-dominant, like the previous scorer) so the shared
+    ``0.30``/``0.35`` thresholds keep their meaning, but enriched with signals
+    that were previously ignored (tags, year, country/language, quality tier,
+    franchise title tokens) and re-weighted so genuinely-similar titles rank
+    above weak broad-genre matches:
+
+      * specific genre overlap ... 0.58  (broad genres de-emphasized)
+      * franchise title match .... 0.30  (same original title / shared token)
+      * tag Jaccard .............. 0.18  (franchise tag; sparse but decisive)
+      * weighted cast overlap .... 0.16  (lead actors dominate)
+      * shared director .......... 0.12
+      * year proximity ........... 0.08
+      * country / language ....... 0.05
+      * shared content format .... +0.04
+      * same quality tier ........ +0.03
+    """
+    genre_sim = _genre_overlap(first, second)
+
+    first_tags = {tag.slug for tag in first.tags.all()}
+    second_tags = {tag.slug for tag in second.tags.all()}
+    tag_sim = _jaccard(first_tags, second_tags)
+
+    cast_sim = _cast_overlap(first, second)
+    title_sim = _title_token_match(first, second)
 
     first_directors = {director.name for director in first.directors.all()}
     second_directors = {director.name for director in second.directors.all()}
-    director_hit = 0.15 if first_directors & second_directors else 0
+    director_hit = 1.0 if (first_directors & second_directors) else 0.0
 
-    first_cast = set(_cast_names(first, limit=5))
-    second_cast = set(_cast_names(second, limit=5))
-    cast_union = first_cast | second_cast
-    cast_hit = (0.12 * len(first_cast & second_cast) / len(cast_union)) if cast_union else 0
+    year_sim = _year_distance(_year(first), _year(second))
+
+    first_countries = {_normalize(c.name) for c in first.countries.all()}
+    second_countries = {_normalize(c.name) for c in second.countries.all()}
+    country_sim = _jaccard(first_countries, second_countries)
+    lang_sim = 1.0 if _normalized_language(first) and _normalized_language(first) == _normalized_language(second) else 0.0
+    region_sim = max(country_sim, lang_sim)
+
+    quality_sim = 1.0 if _quality_tier(first) == _quality_tier(second) else 0.0
 
     return (
-        genre_similarity * 0.72
-        + director_hit
-        + cast_hit
-        + (0.08 if _content_type(first) == _content_type(second) else 0)
-        + (0.05 if first.content_format == second.content_format else 0)
+        genre_sim * 0.58
+        + title_sim * 0.30
+        + tag_sim * 0.18
+        + cast_sim * 0.16
+        + director_hit * 0.12
+        + year_sim * 0.08
+        + region_sim * 0.05
+        + (0.04 if first.content_format == second.content_format else 0)
+        + (0.03 if quality_sim else 0)
     )
+
+
+_SIMILAR_MIN_SCORE = 0.26
+# Zero-signal sources (no genres/cast/director) fall back to the broad pool.
+# Only accept genuinely strong ties there so the rail reports an honest empty
+# result instead of pretending an unrelated blockbuster is "similar".
+_SIMILAR_FALLBACK_MIN_SCORE = 0.30
+_ACTOR_FIELD = {'Movie': 'movie_actors', 'Series': 'series_actors'}
+
+
+def _similar_candidate_pool(instance, model, *, pool_size: int = 220) -> list:
+    """Same-type published titles sharing at least one genre, cast member,
+    director, or franchise tag with ``instance`` (view-ranked).
+
+    The old implementation filtered on shared genre *only*, which hid every
+    candidate for titles whose genre mapping was empty or sparse (common for
+    brand-new 2026 imports). Broadening to cast/director/tag ties lets a
+    director's or actor's other work surface even when genres are missing.
+    """
+    from apps.catalog.trending import lean_public_queryset
+
+    related = _related_prefetch(model)
+    base = model.objects.filter(is_published=True).exclude(pk=instance.pk)
+
+    def _ids(queryset, limit):
+        return list(queryset.values_list('pk', flat=True)[:limit])
+
+    genre_ids = list(instance.genres.values_list('id', flat=True))
+    actor_field = _ACTOR_FIELD.get(model.__name__, 'movie_actors')
+    actor_ids = list(getattr(instance, actor_field).values_list('actor_id', flat=True))
+    director_ids = list(instance.directors.values_list('id', flat=True))
+    tag_ids = list(instance.tags.values_list('id', flat=True))
+
+    # Signal-union candidate set (dedup by PK).
+    merged: dict[int, None] = {}
+    if genre_ids:
+        for pk in _ids(
+            base.filter(genres__in=genre_ids).order_by('-view_count', '-like_count', '-popularity'),
+            pool_size,
+        ):
+            merged[pk] = None
+    if actor_ids:
+        for pk in _ids(
+            base.filter(**{f'{actor_field}__actor_id__in': actor_ids})
+            .order_by('-view_count', '-like_count', '-popularity')[:pool_size],
+            pool_size,
+        ):
+            merged[pk] = None
+    if director_ids:
+        for pk in _ids(
+            base.filter(directors__id__in=director_ids)
+            .order_by('-view_count', '-like_count', '-popularity')[:pool_size],
+            pool_size,
+        ):
+            merged[pk] = None
+    if tag_ids:
+        for pk in _ids(
+            base.filter(tags__id__in=tag_ids)
+            .order_by('-view_count', '-like_count', '-popularity')[: max(40, pool_size // 3)],
+            max(40, pool_size // 3),
+        ):
+            merged[pk] = None
+
+    fallback = False
+    if not merged:
+        # Zero signals at all — fall back to the broad same-type pool by views.
+        for pk in _ids(
+            base.order_by('-view_count', '-like_count', '-popularity'),
+            pool_size,
+        ):
+            merged[pk] = None
+        fallback = True
+        if not merged:
+            return [], True
+
+    # Preserve view-ranked order for the scoring pass. ``original_language`` is
+    # deferred by ``lean_public_queryset`` but read by ``_similarity``.
+    ordered = model.objects.filter(pk__in=list(merged)).order_by(
+        '-view_count', '-like_count', '-popularity',
+    ).prefetch_related(*related)
+    items = list(lean_public_queryset(ordered, keep=('original_language',)))
+    # Tag the pool so _similar_content can require a stronger tie for the
+    # unfiltered fallback (see _SIMILAR_FALLBACK_MIN_SCORE).
+    return (items, fallback)
 
 
 def _similar_content(instance, limit=8):
     """Return published titles of the same type that are genuinely similar.
 
     Deterministic per title (no user profile), so the result is safe to cache
-    at the API layer. Reuses ``_similarity`` (genre Jaccard + director + cast
-    + content-type/format) and the shared ``_related_prefetch`` hydration.
+    at the API layer. Reuses ``_similarity`` (specific-genre overlap + cast/
+    director + franchise tag + title tokens + year/country) and the shared
+    ``_related_prefetch`` hydration.
     """
-    from apps.catalog.trending import lean_public_queryset
-
     model = instance.__class__
     related = _related_prefetch(model)
-    genre_ids = (
-        list(instance.genres.values_list('id', flat=True))
-        if instance.pk
-        else []
-    )
-
-    qs = model.objects.filter(is_published=True).exclude(pk=instance.pk)
-    if genre_ids:
-        qs = qs.filter(genres__in=genre_ids).distinct()
-    qs = qs.order_by('-view_count', '-like_count', '-popularity')[:200]
-    candidates = list(lean_public_queryset(qs).prefetch_related(*related))
-
-    if not candidates and genre_ids:
-        # Nothing shares a genre; fall back to the broad same-type pool.
-        qs = (
-            model.objects.filter(is_published=True)
-            .exclude(pk=instance.pk)
-            .order_by('-view_count', '-like_count', '-popularity')[:200]
-        )
-        candidates = list(lean_public_queryset(qs).prefetch_related(*related))
+    candidates, fallback = _similar_candidate_pool(instance, model)
 
     if not candidates:
         return []
@@ -807,13 +1031,39 @@ def _similar_content(instance, limit=8):
     if not getattr(instance, '_prefetched_objects_cache', None):
         instance = model.objects.prefetch_related(*related).get(pk=instance.pk)
 
+    min_score = _SIMILAR_FALLBACK_MIN_SCORE if fallback else _SIMILAR_MIN_SCORE
     scored = [
         (score, candidate)
         for candidate in candidates
-        if (score := _similarity(instance, candidate)) >= 0.30
+        if (score := _similarity(instance, candidate)) >= min_score
     ]
     scored.sort(key=lambda row: (-row[0], row[1].pk))
-    return [candidate for _score, candidate in scored[:limit]]
+    selected = [candidate for _score, candidate in scored[:limit]]
+
+    # Guarantee a non-empty rail for every published title. Signal-weak titles
+    # (empty genres/cast/director/tags) occasionally score nothing above the
+    # fallback bar, but users expect a "similar" rail on every detail page.
+    # Fill from the same-type pool ranked by quality/popularity when the scored
+    # set is short, preferring unaffected candidates so the rail isn't just the
+    # source's own siblings.
+    if len(selected) < limit:
+        selected_pks = {candidate.pk for candidate in selected}
+        source_pk = instance.pk
+        # Reuse the already-hydrated pool, but quality-rank it; never return a
+        # candidate identical to the source title.
+        pool = [
+            candidate for candidate in candidates
+            if candidate.pk not in selected_pks and candidate.pk != source_pk
+        ]
+        pool.sort(key=lambda candidate: (
+            -float(getattr(candidate, 'rating', 0) or 0),
+            -int(getattr(candidate, 'view_count', 0) or 0),
+            -int(getattr(candidate, 'popularity', 0) or 0),
+            candidate.pk,
+        ))
+        selected.extend(pool[: limit - len(selected)])
+
+    return selected[:limit]
 
 
 def _reason_for(item, profile, preferences, best_genre, best_genre_score, best_director, best_director_score, best_cast, best_cast_score):

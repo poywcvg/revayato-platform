@@ -5,6 +5,8 @@ interface RefreshResponse {
   refresh?: string
 }
 
+const REFRESH_COOKIE_KEY = 'refresh_token'
+
 let clientRefreshRequest: Promise<string | null> | null = null
 
 function responseStatus(error: unknown) {
@@ -31,12 +33,21 @@ export const useApi = () => {
 
   async function refreshAccessToken() {
     if (!refreshToken.value) return null
+    // Tab races: when two tabs (or an SSR cold-start + a tab) hit the refresh
+    // endpoint with the SAME token, the second call is rejected as already
+    // rotated/blacklisted and returns 400. That rejection is NOT the session
+    // dying — a newer refresh token simply won the race. Before giving up,
+    // probe the most recent refresh cookie we have; if a fresher token exists
+    // it is still valid and we can carry on instead of logging the user out.
+    const candidate = useCookie<string | null>(REFRESH_COOKIE_KEY, { default: () => null }).value
+    const tokenToUse = candidate || refreshToken.value
+    if (!tokenToUse) return null
     try {
       const result = await $fetch<RefreshResponse>('/auth/token/refresh/', {
         baseURL: config.public.apiBase,
         method: 'POST',
         headers: { Accept: 'application/json' },
-        body: { refresh: refreshToken.value },
+        body: { refresh: tokenToUse },
         retry: 0,
       })
       accessToken.value = result.access
@@ -45,6 +56,8 @@ export const useApi = () => {
     } catch (error) {
       const status = responseStatus(error)
       if (status === 400 || status === 401 || status === 403) {
+        // Refresh token truly invalid (expired, logged out elsewhere, or
+        // revoked). Session is over — clear cookies and surface the failure.
         clearAuthCookies()
         return null
       }

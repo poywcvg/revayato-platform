@@ -103,14 +103,15 @@ class Command(BaseCommand):
                 stats['errors'] += 1
                 return False
 
-            if 'backdrop' not in changed:
+            filled = 'backdrop' in changed or 'backdrop_external_url' in changed
+            if not filled:
                 stats['skipped'] += 1
                 return False
             movie.updated_at = timezone.now()
             movie.save(update_fields=list(dict.fromkeys([*changed, 'updated_at'])))
             stats['movies_filled'] += 1
             self.stdout.write(
-                f"movie#{movie.pk} {(movie.original_title or movie.title)[:60]} → {movie.backdrop.name}"
+                f"movie#{movie.pk} {(movie.original_title or movie.title)[:60]} → {movie.backdrop.name if movie.backdrop and movie.backdrop.name else movie.backdrop_external_url[:80]}"
             )
             return True
 
@@ -149,14 +150,15 @@ class Command(BaseCommand):
                 stats['errors'] += 1
                 return False
 
-            if 'backdrop' not in changed:
+            filled = 'backdrop' in changed or 'backdrop_external_url' in changed
+            if not filled:
                 stats['skipped'] += 1
                 return False
             series.updated_at = timezone.now()
             series.save(update_fields=list(dict.fromkeys([*changed, 'updated_at'])))
             stats['series_filled'] += 1
             self.stdout.write(
-                f"series#{series.pk} {(series.original_title or series.title)[:60]} → {series.backdrop.name}"
+                f"series#{series.pk} {(series.original_title or series.title)[:60]} → {series.backdrop.name if series.backdrop and series.backdrop.name else series.backdrop_external_url[:80]}"
             )
             return True
 

@@ -486,6 +486,9 @@ class Movie(models.Model):
 
     @property
     def has_downloads(self):
+        flag = getattr(self, '_has_downloads_flag', None)
+        if flag is not None:
+            return bool(flag)
         if any(
             isinstance(item, dict) and (item.get('url') or item.get('key'))
             for item in (self.download_links or [])
@@ -752,6 +755,9 @@ class Series(models.Model):
 
     @property
     def has_downloads(self):
+        flag = getattr(self, '_has_downloads_flag', None)
+        if flag is not None:
+            return bool(flag)
         return any(
             isinstance(item, dict) and (item.get('url') or item.get('key'))
             for item in (self.download_links or [])

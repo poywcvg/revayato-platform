@@ -557,17 +557,18 @@ def series_detail(request, slug):
 def movie_similar(request, slug):
     """Published movies genuinely similar to ``slug`` (same director/cast/genres)."""
 
-    def build():
+    def build(limit):
         from apps.recommendations.services import _similar_content
 
         movie = get_object_or_404(
             Movie.objects.filter(is_published=True)
-            .prefetch_related('genres', 'directors', 'countries', 'movie_actors__actor'),
+            .prefetch_related('genres', 'directors', 'countries', 'tags', 'movie_actors__actor'),
             slug=slug,
         )
-        return MovieListSerializer(_similar_content(movie), many=True).data
+        return MovieListSerializer(_similar_content(movie, limit=limit), many=True).data
 
-    return _cached_response(request, f'similar-movie:{slug}', 'detail', build)
+    limit = _bounded_int(request.GET.get('limit'), 8, 1, 24)
+    return _cached_response(request, f'similar-movie:{slug}:{limit}', 'detail', lambda: build(limit))
 
 
 @api_view(['GET'])
@@ -575,17 +576,18 @@ def movie_similar(request, slug):
 def series_similar(request, slug):
     """Published series genuinely similar to ``slug`` (same director/cast/genres)."""
 
-    def build():
+    def build(limit):
         from apps.recommendations.services import _similar_content
 
         series = get_object_or_404(
             Series.objects.filter(is_published=True)
-            .prefetch_related('genres', 'directors', 'countries', 'series_actors__actor'),
+            .prefetch_related('genres', 'directors', 'countries', 'tags', 'series_actors__actor'),
             slug=slug,
         )
-        return SeriesListSerializer(_similar_content(series), many=True).data
+        return SeriesListSerializer(_similar_content(series, limit=limit), many=True).data
 
-    return _cached_response(request, f'similar-series:{slug}', 'detail', build)
+    limit = _bounded_int(request.GET.get('limit'), 8, 1, 24)
+    return _cached_response(request, f'similar-series:{slug}:{limit}', 'detail', lambda: build(limit))
 
 
 @api_view(['GET'])

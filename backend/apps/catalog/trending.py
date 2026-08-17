@@ -14,7 +14,7 @@ import hashlib
 import math
 from datetime import timedelta
 
-from django.db.models import Count, Q
+from django.db.models import BooleanField, Case, Count, Q, Value, When
 from django.utils import timezone
 
 
@@ -45,6 +45,9 @@ def _rating(item) -> float:
 
 
 def _has_downloads(item) -> bool:
+    flag = getattr(item, '_has_downloads_flag', None)
+    if flag is not None:
+        return bool(flag)
     links = getattr(item, 'download_links', None) or []
     if isinstance(links, list) and any(
         isinstance(row, dict) and (row.get('url') or row.get('key'))
@@ -73,8 +76,13 @@ def _playable_bonus(item) -> float:
         score += 3.0
     if _has_downloads(item):
         score += 4.0
-    tracks = getattr(item, 'subtitle_tracks', None) or []
-    if isinstance(tracks, list) and tracks:
+    tracks_flag = getattr(item, '_has_subtitle_tracks_flag', None)
+    if tracks_flag is not None:
+        has_tracks = bool(tracks_flag)
+    else:
+        tracks = getattr(item, 'subtitle_tracks', None) or []
+        has_tracks = bool(tracks)
+    if has_tracks:
         score += 2.0
     return score
 
@@ -162,10 +170,46 @@ def _genre_slugs(item) -> list[str]:
     return slugs
 
 
+# Only genre diversity needs M2M data, and only on the *chosen* rows. Fetching
+# genres/directors/countries for the whole ~520-row candidate pool was costing
+# extra prefetch queries per rail. Fetch them once for the small ordered slice
+# the rail actually returns.
+_DIVERSITY_PREFETCH = ('genres', 'directors', 'countries')
+
+
+def _prefetch_candidates(candidates, *relations) -> list:
+    """Prefetch M2M relations on already-fetched model rows (one query per
+    relation instead of one per row). Used on the ordered slice a rail returns
+    so discovery never fetches these for the whole candidate pool.
+
+    Only refetches when the rows are real model instances with ``pk``s and a
+    manager — the unit tests exercise ``diversify_ranked`` with plain fakes
+    that carry a pre-set ``genres`` relation, which must be left untouched.
+    """
+    relations = relations or _DIVERSITY_PREFETCH
+    if not candidates or not relations:
+        return candidates
+    if not all(
+        hasattr(c, 'pk') and hasattr(c, '_meta') and hasattr(c, '_prefetched_objects_cache')
+        for c in candidates
+    ):
+        return candidates
+    model = candidates[0].__class__
+    pks = [c.pk for c in candidates]
+    objs = model.objects.filter(pk__in=pks).prefetch_related(*relations)
+    by_pk = {obj.pk: obj for obj in objs}
+    return [by_pk.get(c.pk) or c for c in candidates]
+
+
 def diversify_ranked(ranked: list, *, limit: int, max_per_genre: int = 2) -> list:
-    """Keep score order but avoid a rail dominated by one genre."""
+    """Keep score order but avoid a rail dominated by one genre.
+
+    Relations are prefetched once for the ``ranked`` slice (which the caller
+    already restricted to the pages it will return) before genre diversity runs.
+    """
     limit = max(1, int(limit))
     max_per_genre = max(1, int(max_per_genre))
+    ranked = _prefetch_candidates(ranked)
     picked: list = []
     genre_counts: dict[str, int] = {}
     deferred: list = []
@@ -431,6 +475,8 @@ SCORE_FNS = {
 # Public cards and ranking never read these fields. Deferring them keeps wide
 # metadata/SEO JSON and full synopses out of candidate queries (which may scan
 # hundreds of rows) without changing model, serializer, or response contracts.
+# download_links / subtitle_tracks are the heaviest JSONB blobs; ranking only
+# needs a boolean, computed server-side by _ranked_annotations().
 _RANKING_DEFER_FIELDS = {
     'Movie': (
         'description', 'release_date', 'catalog_type', 'publication_status',
@@ -440,12 +486,46 @@ _RANKING_DEFER_FIELDS = {
         'spoken_languages', 'production_companies', 'crew_metadata', 'writers',
         'original_language', 'content_warnings', 'meta_title',
         'meta_description', 'seo_keywords',
+        'download_links', 'subtitle_tracks',
     ),
     'Series': (
         'description', 'content_warnings', 'original_language',
         'metadata_source', 'metadata_synced_at', 'source_metadata',
+        'download_links',
     ),
 }
+
+
+def _ranked_annotations(model):
+    """SQL-computed booleans replacing the decoded download_links/subtitle_tracks
+    JSONB blobs on ranked candidates (movie series can carry megabytes per row).
+
+    Named with a leading underscore so Django can set them without colliding
+    with the read-only ``has_downloads`` property.
+    """
+    model_fields = {field.name for field in model._meta.get_fields()}
+    conditions = []
+    if 'download_key' in model_fields:
+        conditions.append(When(download_key__gt='', then=Value(True)))
+    conditions += [
+        When(download_links=Value([]), then=Value(False)),
+        When(download_links__isnull=True, then=Value(False)),
+    ]
+    annotations = {
+        '_has_downloads_flag': Case(
+            *conditions,
+            default=Value(True),
+            output_field=BooleanField(),
+        ),
+    }
+    if 'subtitle_tracks' in model_fields:
+        annotations['_has_subtitle_tracks_flag'] = Case(
+            When(subtitle_tracks=Value([]), then=Value(False)),
+            When(subtitle_tracks__isnull=True, then=Value(False)),
+            default=Value(True),
+            output_field=BooleanField(),
+        )
+    return annotations
 
 
 def lean_public_queryset(queryset, *, keep=()):
@@ -466,10 +546,11 @@ def lean_public_queryset(queryset, *, keep=()):
 def _candidate_pool(queryset, *, sort: str, pool: int):
     """Mix fresh + engaged + editorial candidates so rising titles are not missed."""
     base = lean_public_queryset(queryset)
+    annotations = _ranked_annotations(base.model)
     if sort == 'popular':
         # The primary ordering already yields a full unique pool. A separate
         # ID merge + hydration pass only adds a round-trip for this common path.
-        return list(base.order_by('-view_count', '-like_count', '-popularity')[:pool])
+        return list(base.order_by('-view_count', '-like_count', '-popularity').annotate(**annotations)[:pool])
 
     model_fields = {field.name for field in base.model._meta.get_fields()}
     editorial_filter = Q(is_featured=True)
@@ -511,7 +592,7 @@ def _candidate_pool(queryset, *, sort: str, pool: int):
         for item_id in chunk.values_list('pk', flat=True):
             merged_ids[item_id] = None
             if len(merged_ids) >= pool:
-                return list(base.filter(pk__in=merged_ids).order_by())
+                return list(base.filter(pk__in=merged_ids).order_by().annotate(**annotations))
     # Fallback fill if filters were sparse.
     if len(merged_ids) < min(pool, 48):
         fallback = base.order_by('-popularity', '-view_count', '-updated_at')[:pool]
@@ -519,7 +600,7 @@ def _candidate_pool(queryset, *, sort: str, pool: int):
             merged_ids[item_id] = None
     if not merged_ids:
         return []
-    return list(base.filter(pk__in=merged_ids).order_by())
+    return list(base.filter(pk__in=merged_ids).order_by().annotate(**annotations))
 
 
 def rank_queryset(queryset, *, sort: str, limit: int = 20, offset: int = 0, pool_size: int | None = None):
@@ -541,15 +622,17 @@ def rank_queryset(queryset, *, sort: str, limit: int = 20, offset: int = 0, pool
         key=lambda item: score_fn(item, now=now, recent_hits=recent.get(item.pk, 0.0)),
         reverse=True,
     )
-    return ranked[offset:offset + limit], len(ranked)
+    page = ranked[offset:offset + limit]
+    # Series lists carry tags; discovery lists carry genres/directors/countries.
+    extra = ('tags',) if model.__name__ == 'Series' else ()
+    page = _prefetch_candidates(page, *_DIVERSITY_PREFETCH, *extra)
+    return page, len(ranked)
 
 
 def trending_queryset(model, *, limit: int = 20):
     """Return published titles ordered for «ترند امروز»."""
     page, _total = rank_queryset(
-        lean_public_queryset(model.objects.filter(is_published=True)).prefetch_related(
-            'genres', 'directors', 'countries',
-        ),
+        lean_public_queryset(model.objects.filter(is_published=True)),
         sort='trending',
         limit=limit,
         offset=0,
@@ -560,9 +643,7 @@ def trending_queryset(model, *, limit: int = 20):
 def featured_queryset(model, *, limit: int = 20):
     """Return published titles ordered for «منتخب‌ها»."""
     page, _total = rank_queryset(
-        lean_public_queryset(model.objects.filter(is_published=True)).prefetch_related(
-            'genres', 'directors', 'countries',
-        ),
+        lean_public_queryset(model.objects.filter(is_published=True)),
         sort='featured',
         limit=limit,
         offset=0,
@@ -601,12 +682,8 @@ def build_home_rails(*, limit: int = 7) -> dict:
     now = timezone.now()
     meta = rail_rotation_meta(now)
 
-    movie_base = lean_public_queryset(Movie.objects.filter(is_published=True)).prefetch_related(
-        'genres', 'directors', 'countries',
-    )
-    series_base = lean_public_queryset(Series.objects.filter(is_published=True)).prefetch_related(
-        'genres', 'directors', 'countries',
-    )
+    movie_base = lean_public_queryset(Movie.objects.filter(is_published=True))
+    series_base = lean_public_queryset(Series.objects.filter(is_published=True))
 
     featured = _rank_with_diversity(movie_base, sort='featured', limit=limit)
     dubbed = _rank_with_diversity(

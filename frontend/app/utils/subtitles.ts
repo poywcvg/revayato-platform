@@ -134,6 +134,15 @@ export function subtitleFetchUrl(src: string): string {
 
 const cueCache = new Map<string, Promise<SubtitleCue[]>>()
 
+/**
+ * Subtitle sync offset range and step (seconds). Positive offset shifts cues
+ * earlier on screen (subs GATELY LATE by <offset>); negative shows them later
+ * (subs EARLY). Kept tight so a misplaced tap can't push subs fully off-media.
+ */
+export const SUBTITLE_OFFSET_MIN = -10
+export const SUBTITLE_OFFSET_MAX = 10
+export const SUBTITLE_OFFSET_STEP = 0.25
+
 export async function loadSubtitleCues(src: string): Promise<SubtitleCue[]> {
   const url = String(src || '').trim()
   if (!url) return []

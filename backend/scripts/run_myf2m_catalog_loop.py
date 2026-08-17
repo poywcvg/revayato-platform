@@ -72,6 +72,9 @@ def main() -> int:
     request_delay = _number('MYF2M_BULK_CRAWL_DELAY_SECONDS', 3.0, minimum=1.0)
     size_workers = _integer('MYF2M_SIZE_WORKERS', 4, minimum=1)
     size_timeout = _integer('MYF2M_SIZE_TIMEOUT_SECONDS', 10, minimum=5)
+    size_probe_batch = _integer('MYF2M_SIZE_PROBE_BATCH', 600, minimum=50)
+    size_limit = _integer('MYF2M_SIZE_LIMIT', 0, minimum=0)
+    probe_sizes = str(os.environ.get('MYF2M_PROBE_SIZES', '1')).strip().lower() in {'1', 'true', 'yes', 'on'}
 
     importer = [
         sys.executable,
@@ -84,14 +87,15 @@ def main() -> int:
         '--require-playback',
         '--no-queue-softsub',
         '--no-dornatv-enrich',
+        *(('--probe-sizes',) if probe_sizes else ()),
     ]
     sizes = [
         sys.executable,
         str(SIZE_SCRIPT),
-        '--source', 'myf2m',
         '--workers', str(size_workers),
         '--timeout', str(size_timeout),
-        '--probe-batch-size', '300',
+        '--probe-batch-size', str(size_probe_batch),
+        '--limit', str(size_limit),
     ]
 
     round_number = 0

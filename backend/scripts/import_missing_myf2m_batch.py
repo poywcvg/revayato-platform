@@ -86,6 +86,96 @@ def _coverage_ok(links, *, require_both: bool) -> tuple[bool, dict]:
     return True, cov
 
 
+def _probe_link_sizes(links, *, workers: int = 6, timeout: int = 12) -> None:
+    """Fill ``size_label`` for direct CDN links that still lack a size.
+
+    Inline HEAD/Range probing so every freshly imported title exposes an
+    accurate per-episode/per-quality size in the download box from day one.
+    Skips subtitle tracks (WebVTT) and un-parseable URLs; uses a short timeout
+    and bounded worker pool so it never stalls a slow provider crawl.
+    """
+    try:
+        from apps.catalog.provider_import.providers.myf2m import enrich_download_link_metadata
+    except Exception:
+        enrich_download_link_metadata = None
+
+    probe_rows = []
+    for item in (links or []):
+        if not isinstance(item, dict):
+            continue
+        if str(item.get('size_label') or '').strip():
+            continue
+        url = str(item.get('url') or '').strip()
+        if not url.lower().startswith(('http://', 'https://')):
+            continue
+        if url.lower().rsplit('.', 1)[-1] in {'vtt', 'srt', 'ass'}:
+            continue
+        probe_rows.append(item)
+
+    if not probe_rows:
+        return
+
+    if enrich_download_link_metadata is not None:
+        try:
+            result = enrich_download_link_metadata(
+                probe_rows,
+                timeout_seconds=timeout,
+                max_workers=workers,
+                min_size_bytes=1,
+            )
+            enriched = result.get('links') or []
+            by_url = {str(row.get('url') or ''): row for row in enriched}
+            for item in probe_rows:
+                found = by_url.get(str(item.get('url') or ''))
+                if found and found.get('size_label'):
+                    item['size_label'] = found['size_label']
+            return
+        except Exception:
+            pass
+
+    # Lightweight fallback: shared backfill prober.
+    from urllib.request import Request, urlopen
+    from urllib.parse import urlsplit
+    from concurrent.futures import ThreadPoolExecutor
+
+    def _human(bytes_):
+        if not bytes_ or bytes_ <= 0:
+            return ''
+        if bytes_ >= 1024 ** 3:
+            return f'{bytes_ / 1024 ** 3:.1f} GB'
+        if bytes_ >= 1024 ** 2:
+            return f'{bytes_ / 1024 ** 2:.0f} MB'
+        return f'{bytes_ // 1024} KB'
+
+    def _probe(url_):
+        headers = {'User-Agent': 'RevayatoCatalogCrawler/1.0 (+https://revayato.com)'}
+        try:
+            req = Request(url_, headers=headers, method='HEAD')
+            with urlopen(req, timeout=timeout) as resp:
+                value = resp.headers.get('Content-Length')
+                if value and value.isdigit():
+                    return int(value)
+        except Exception:
+            pass
+        try:
+            req = Request(url_, headers=dict(headers, Range='bytes=0-0'))
+            with urlopen(req, timeout=timeout) as resp:
+                cr = resp.headers.get('Content-Range') or ''
+                m = re.search(r'/(\d+)\s*$', cr)
+                if m:
+                    return int(m.group(1))
+        except Exception:
+            pass
+        return None
+
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        sizes = list(pool.map(_probe, [item.get('url') for item in probe_rows]))
+    for item, size in zip(probe_rows, sizes):
+        label = _human(size)
+        if label:
+            item['size_label'] = label
+
+
 def _merge_dornatv(obj, *, content_type: str) -> dict:
     """Pull extra qualities/kinds from Dornatv without wiping Film2Media rows."""
     try:
@@ -104,6 +194,7 @@ def main() -> int:
     import django
     django.setup()
 
+    from django.conf import settings
     from django.db import transaction
 
     from apps.catalog.ingestion import upsert_tmdb_movie, upsert_tmdb_series
@@ -180,6 +271,12 @@ def main() -> int:
         help='Only publish movies with a direct stream URL and series with playable episodes.',
     )
     parser.add_argument(
+        '--probe-sizes',
+        action='store_true',
+        default=False,
+        help='Probe CDN Content-Length for freshly imported links to record accurate size_label per episode/quality.',
+    )
+    parser.add_argument(
         '--workers',
         type=int,
         default=int(os.environ.get('MYF2M_CRAWL_WORKERS', '4')),
@@ -232,6 +329,7 @@ def main() -> int:
     enrich_dornatv = not bool(args.no_dornatv_enrich)
     new_only = bool(args.new_only)
     require_playback = bool(args.require_playback)
+    probe_sizes = bool(args.probe_sizes)
     checkpoint_path = (args.checkpoint or '').strip() or None
     resume = bool(args.resume)
 
@@ -847,6 +945,10 @@ def main() -> int:
                         coalesce_download_links(movie.download_links or [], normalized, replace=True),
                         crawled.get('page_path') or page_path,
                     )
+                    # Record accurate per-quality sizes before the row is saved so
+                    # the download box reflects real file sizes from day one.
+                    if args.probe_sizes:
+                        _probe_link_sizes(movie.download_links, workers=workers)
                     if imdb_id and not movie.imdb_id:
                         movie.imdb_id = imdb_id
                     flag_fields = apply_availability_flags(movie, movie.download_links)
@@ -1264,6 +1366,11 @@ def main() -> int:
                         if delay:
                             time.sleep(delay)
                         continue
+
+                    # Record accurate per-episode/per-quality sizes so the download
+                    # box reflects real file sizes from the moment the series ships.
+                    if probe_sizes:
+                        _probe_link_sizes(series.download_links or [], workers=workers)
 
                     _publish_series(series)
                     cov = _version_coverage(series)

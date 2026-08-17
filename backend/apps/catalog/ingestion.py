@@ -610,10 +610,20 @@ def attach_tmdb_artwork(instance, details, *, force=False, prefix='item', allow_
         if content is not None:
             instance.poster.save(content.name, content, save=False)
             changed.append('poster')
+        # The backend may be unable to reach the TMDB image CDN (egress blocked),
+        # but browsers can. Persist the browser-reachable URL for the poster so a
+        # freshly created/re-synced title is never left with bare placeholder art.
+        if hasattr(instance, 'poster_external_url'):
+            external = _tmdb_image_url(poster_path, 'w500')
+            if external and external != getattr(instance, 'poster_external_url', ''):
+                instance.poster_external_url = external
+                if 'poster_external_url' not in changed:
+                    changed.append('poster_external_url')
 
     if backdrop_path and hasattr(instance, 'backdrop') and _should_replace_image(getattr(instance, 'backdrop', None), force=force):
         # Poster fallbacks stay at w780; real backdrops use the wide still.
         size = 'w780' if backdrop_source == 'poster_fallback' else 'w1280'
+        external = _tmdb_image_url(backdrop_path, size)
         content = _download_tmdb_image(
             backdrop_path,
             size=size,
@@ -626,8 +636,11 @@ def attach_tmdb_artwork(instance, details, *, force=False, prefix='item', allow_
                 instance.backdrop_path = backdrop_path[:255]
                 if 'backdrop_path' not in changed:
                     changed.append('backdrop_path')
-            if hasattr(instance, 'backdrop_external_url'):
-                instance.backdrop_external_url = _tmdb_image_url(backdrop_path, size)
+        # Same CDN-egress fallback: keep the wide-still URL even when the local
+        # download fails, so hero/detail pages have backdrop art to render.
+        if hasattr(instance, 'backdrop_external_url'):
+            if external and external != getattr(instance, 'backdrop_external_url', ''):
+                instance.backdrop_external_url = external
                 if 'backdrop_external_url' not in changed:
                     changed.append('backdrop_external_url')
 

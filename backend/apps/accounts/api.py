@@ -10,12 +10,14 @@ from django.db import transaction
 from django.utils import timezone
 from django.utils.encoding import force_bytes, force_str
 from django.utils.http import urlsafe_base64_decode, urlsafe_base64_encode
-from rest_framework import status
+from rest_framework import serializers as drf_serializers, status
 from rest_framework.decorators import api_view, permission_classes, throttle_classes
+from rest_framework.exceptions import ValidationError
 from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.throttling import SimpleRateThrottle
-from rest_framework_simplejwt.exceptions import TokenError
+from rest_framework_simplejwt.exceptions import InvalidToken, TokenBackendError, TokenError
+from rest_framework_simplejwt.serializers import TokenRefreshSerializer
 from rest_framework_simplejwt.token_blacklist.models import BlacklistedToken, OutstandingToken
 from rest_framework_simplejwt.tokens import RefreshToken
 
@@ -100,6 +102,54 @@ def _token_payload(user):
         'refresh': str(refresh),
         'user': MeSerializer({'user': user, 'profile': profile}).data,
     }
+
+
+class _RefreshTokenErrorHelper:
+    """Static helpers so the lenient serializer reads plainly."""
+
+    @staticmethod
+    def _simplejwt_error(exc):
+        """Convert a SimpleJWT exception into DRF error detail for the response."""
+        message = str(exc) or 'Token is invalid or expired'
+        return drf_serializers.ErrorDetail(message, 'token_not_valid')
+
+    @staticmethod
+    def _token_is_blacklisted(raw):
+        """True when this exact refresh token string is blacklisted (rotated)."""
+        try:
+            return BlacklistedToken.objects.filter(token=raw).exists()
+        except Exception:  # noqa: BLE001 - a DB hiccup must not mask the original error
+            return False
+
+
+class LenientRefreshSerializer(TokenRefreshSerializer):
+    """Refresh serializer that tolerates the rotation race across tabs.
+
+    SimpleJWT rotation blacklists a refresh token the moment it is used. A user
+    with two browser tabs (or an SSR cold-start racing an open tab) can therefore
+    send the SAME token twice: the first request rotates it, the second receives
+    "Token is blacklisted" (plain TokenError). That 400 must not end a session
+    that is very much alive — the second request simply raced the first. We
+    degrade that single specific error to an empty rotation (no new token) and
+    let the client fall back to the refresh token a sibling tab already rotated
+    to. Everything else (expired, wrong type, bad signature) is a real session
+    failure and is still surfaced so the client clears cookies.
+    """
+
+    def validate(self, attrs):
+        try:
+            return super().validate(attrs)
+        except (TokenError, TokenBackendError, TypeError) as exc:
+            if _RefreshTokenErrorHelper._token_is_blacklisted(attrs.get('refresh')):
+                return {}
+            raise ValidationError({'detail': _RefreshTokenErrorHelper._simplejwt_error(exc)}) from exc
+
+
+@api_view(['POST'])
+@permission_classes([AllowAny])
+def lenient_token_refresh(request):
+    """Wire the lenient serializer onto the refresh endpoint."""
+    return TokenRefreshView.as_view(serializer_class=LenientRefreshSerializer)(request)
 
 
 def _revoke_user_refresh_tokens(user):

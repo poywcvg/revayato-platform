@@ -142,7 +142,19 @@ export default defineNuxtConfig({
 
   experimental: { payloadExtraction: true, renderJsonPayloads: true },
   devtools: { enabled: false },
-  nitro: { compressPublicAssets: true },
+  nitro: {
+    compressPublicAssets: true,
+    // Give SWR a real in-memory backing store so public pages are only SSR'd
+    // once per TTL instead of re-rendering on every hit (Cloudflare treats
+    // HTML as DYNAMIC without a Cache Rule, so the origin must cache itself).
+    storage: {
+      'data:swr': {
+        driver: 'memory',
+        max: 100 /* max number of cached entries */,
+        ttl: 600 /* seconds; overridden per-route by swr below */,
+      },
+    },
+  },
   routeRules: {
     '/': { swr: 120 },
     '/movies': { swr: 180 },

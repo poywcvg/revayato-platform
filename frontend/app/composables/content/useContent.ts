@@ -367,16 +367,76 @@ export function useFilteredMovies(filters: MaybeRefOrGetter<CatalogFilters>) {
   return useSearch(filters).results
 }
 
+// Broad genres describe thousands of titles; sharing only them is weak evidence.
+const BROAD_GENRES = new Set(['drama', 'comedy', 'romance', 'thriller'])
+
+function titleTokens(value: string | undefined): Set<string> {
+  const normalized = (value || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ')
+  return new Set(normalized.split(' ').filter(token => token.length >= 3))
+}
+
 function heuristicRelated(item: Movie, catalog: Movie[], limit: number): Movie[] {
-  const genreSlugs = new Set(item.genres.map(genre => genre.slug))
-  return catalog
+  // SSR-safe fallback + instant rail. Mirrors the backend _similarity signals
+  // (specific-genre overlap, weighted cast, shared director, franchise title
+  // tokens, year/country proximity) so the rail is relevant even before the
+  // server-computed payload arrives. The backend row wins once it loads.
+  const genreSlugs = [...new Set(item.genres.map(genre => genre.slug))]
+  const sourceSpecific = genreSlugs.filter(slug => !BROAD_GENRES.has(slug))
+  const castNames = item.cast.map(member => member.name)
+  const directorNames = new Set(
+    item.crew.filter(member => member.job === 'کارگردان').map(member => member.name),
+  )
+  const sourceTokens = titleTokens(item.original_title || item.title)
+  const year = item.year
+
+  const score = (candidate: Movie): number => {
+    let value = 0
+    // Specific shared genres (action, horror, western...) outweigh broad ones.
+    const shared = candidate.genres
+      .map(genre => genre.slug)
+      .filter(slug => genreSlugs.includes(slug))
+    const sharedSpecific = shared.filter(slug => !BROAD_GENRES.has(slug))
+    if (sharedSpecific.length) value += sharedSpecific.length * 5
+    if (shared.length) value += shared.length * 2.5
+    // Missing the source's dominant (most specific) genre halves the genre score.
+    if (sourceSpecific.length && !shared.includes(sourceSpecific[0])) value *= 0.55
+
+    // Shared top-billed cast is strong; earlier seats count more.
+    const sharedCast = candidate.cast.filter(member => castNames.includes(member.name)).length
+    if (sharedCast) value += sharedCast * 4
+    if (directorNames.size && candidate.crew.some(member => directorNames.has(member.name))) {
+      value += 5
+    }
+    // Franchise: same original-title tokens (e.g. Scream / Scream 7).
+    const sharedTokens = [...titleTokens(candidate.original_title || candidate.title)].filter(
+      token => sourceTokens.has(token),
+    )
+    if (sharedTokens.length) value += sharedTokens.length * 3
+    if (year && Math.abs((candidate.year as number) - year) <= 1) value += 2
+    if (candidate.country && candidate.country === item.country) value += 1
+    return value
+  }
+
+  const strong = catalog
     .filter(candidate => candidate.id !== item.id && candidate.type === item.type)
-    .sort((a, b) => {
-      const scoreA = a.genres.filter(genre => genreSlugs.has(genre.slug)).length
-      const scoreB = b.genres.filter(genre => genreSlugs.has(genre.slug)).length
-      return scoreB - scoreA || b.rating - a.rating
-    })
-    .slice(0, limit)
+    .map(candidate => ({ candidate, value: score(candidate) }))
+    .filter(entry => entry.value >= 3)
+    .sort((a, b) => b.value - a.value || b.candidate.rating - a.candidate.rating)
+    .map(entry => entry.candidate)
+
+  // Every detail page shows a full rail (mirrors the backend guarantee). For
+  // signal-weak titles (no genres/cast/director) nothing scores above the
+  // threshold, so fill from the same-type pool ranked by rating/popularity.
+  if (strong.length >= limit) return strong.slice(0, limit)
+  const strongPks = new Set(strong.map(candidate => candidate.id))
+  const fill = catalog
+    .filter(candidate => candidate.type === item.type
+      && candidate.id !== item.id
+      && !strongPks.has(candidate.id))
+    .slice()
+    .sort((a, b) => (b.rating - a.rating) || (b.popularity - a.popularity) || (b.id - a.id))
+    .slice(0, limit - strong.length)
+  return [...strong, ...fill]
 }
 
 export function useRelatedMovies(item: MaybeRefOrGetter<Movie | null>, limit = 6) {

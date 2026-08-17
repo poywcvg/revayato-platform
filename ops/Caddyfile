@@ -73,6 +73,12 @@ www.{$SITE_DOMAIN} {
 
 	@backend path /api/* /ws/*
 	handle @backend {
+		# Drop django-cors-headers' "Vary: Origin" so shared caches (Cloudflare)
+		# can store public GET responses (catalog/search/home). Cache-Control
+		# s-maxage arrives from DRF; a single Vary is all the CDN needs.
+		# Private/credentialed responses set Cache-Control: private,no-store
+		# from Django and CF never caches them, so no per-origin Vary is lost.
+		header -Vary ""
 		reverse_proxy backend:8000 {
 			# Keep websocket upgrades snappy; flush immediately for realtime.
 			flush_interval -1
@@ -120,8 +126,14 @@ www.{$SITE_DOMAIN} {
 	}
 
 	handle @html {
-		# max-age=0: browsers revalidate; s-maxage: CDN/shared caches may store.
-		header Cache-Control "public, max-age=0, s-maxage=120, stale-while-revalidate=600"
+		# Nitro already emits the SWR policy this route needs
+		# ("s-maxage=180, stale-while-revalidate" via routeRules). Do not stack a
+		# second Cache-Control here — duplicated headers made cf-cache-status
+		# DYNAMIC and pushed every public page back through SSR. Add a browser
+		# max-age=0 so clients always revalidate against Edge/SWR instead of
+		# pinning stale HTML.
+		header Cache-Control "public, max-age=0, s-maxage=180, stale-while-revalidate=600"
+		header Vary "Accept-Encoding"
 		reverse_proxy frontend:3000
 	}
 

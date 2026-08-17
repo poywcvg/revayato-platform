@@ -38,6 +38,8 @@ import Film from '~icons/lucide/film'
 import Gauge from '~icons/lucide/gauge'
 import Maximize from '~icons/lucide/maximize'
 import Minimize from '~icons/lucide/minimize'
+import Minus from '~icons/lucide/minus'
+import Plus from '~icons/lucide/plus'
 import Pause from '~icons/lucide/pause'
 import PictureInPicture from '~icons/lucide/picture-in-picture-2'
 import Rewind from '~icons/lucide/rewind'
@@ -158,6 +160,7 @@ const iconComponents: Record<CinematicIconName, Component> = {
   'maximize': Maximize,
   'menu': Menu,
   'minimize': Minimize,
+  'minus': Minus,
   'mood': Moon,
   'moon': Moon,
   'movie': Film,
@@ -165,6 +168,7 @@ const iconComponents: Record<CinematicIconName, Component> = {
   'pause': Pause,
   'picture-in-picture': PictureInPicture,
   'play': Play,
+  'plus': Plus,
   'profile': User,
   'rewind': Rewind,
   'puzzle': Puzzle,

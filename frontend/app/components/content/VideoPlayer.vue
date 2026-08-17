@@ -2,7 +2,7 @@
 import type Hls from 'hls.js'
 import type { PlaybackEpisodeOption, PlaybackQuality, PlaybackSnapshot, PlaybackTextTrack, PlaybackVersion } from '~/types'
 import { pickDefaultSubtitleTrack } from '~/utils/subtitlePolicy'
-import { findActiveCue, loadSubtitleCues, type SubtitleCue } from '~/utils/subtitles'
+import { findActiveCue, loadSubtitleCues, SUBTITLE_OFFSET_MAX, SUBTITLE_OFFSET_MIN, SUBTITLE_OFFSET_STEP, type SubtitleCue } from '~/utils/subtitles'
 
 const props = withDefaults(defineProps<{
   src: string
@@ -88,6 +88,9 @@ const subtitleCues = ref<SubtitleCue[]>([])
 const activeCueText = ref('')
 const subtitleLoading = ref(false)
 const subtitleError = ref('')
+// Manual subtitle sync: positive shifts subs EARLIER (subs run late), negative
+// later (subs run early). Applied as mediaTime - offset when picking the cue.
+const subtitleOffset = ref(0)
 const selectedSeason = ref(0)
 
 let hls: Hls | null = null
@@ -318,9 +321,26 @@ async function applyRemotePlayback(state: PlaybackSnapshot) {
 defineExpose({ applyRemotePlayback, getPlaybackSnapshot, prepareResumeAt })
 
 function updateCue(time = currentTime.value) {
-  activeCueText.value = selectedSubtitleId.value === 'off'
-    ? ''
-    : findActiveCue(subtitleCues.value, time)?.text || ''
+  if (selectedSubtitleId.value === 'off') {
+    activeCueText.value = ''
+    return
+  }
+  const offset = subtitleOffset.value || 0
+  activeCueText.value = findActiveCue(subtitleCues.value, time - offset)?.text || ''
+}
+
+function nudgeSubtitleOffset(delta: number) {
+  if (selectedSubtitleId.value === 'off' || !subtitleCues.value.length) return
+  subtitleOffset.value = Math.min(
+    SUBTITLE_OFFSET_MAX,
+    Math.max(SUBTITLE_OFFSET_MIN, Math.round((subtitleOffset.value + delta) * 100) / 100),
+  )
+  updateCue(video.value?.currentTime || 0)
+}
+
+function resetSubtitleOffset() {
+  subtitleOffset.value = 0
+  updateCue(video.value?.currentTime || 0)
 }
 
 function syncBuffer() {
@@ -579,6 +599,7 @@ async function selectSubtitle(trackId: string) {
   subtitleCues.value = []
   activeCueText.value = ''
   subtitleError.value = ''
+  subtitleOffset.value = 0
   if (trackId === 'off') return
   const track = props.subtitleTracks.find(candidate => candidate.id === trackId)
   if (!track?.src) return
@@ -1058,6 +1079,34 @@ onBeforeUnmount(() => {
               </button>
               <p v-if="subtitleLoading" class="px-2 py-1 text-xs text-white/45">در حال آماده‌سازی زیرنویس…</p>
               <p v-if="subtitleError" class="rounded-lg bg-error/10 px-3 py-2 text-xs text-error">{{ subtitleError }}</p>
+
+              <div v-if="selectedSubtitleId !== 'off'" class="mt-1 rounded-xl bg-white/[.03] p-3 ring-1 ring-white/10">
+                <div class="flex items-center justify-between gap-2">
+                  <p class="text-[11px] font-black text-white/70">هماهنگ‌سازی زیرنویس</p>
+                  <button type="button" class="text-[10px] font-bold text-white/40 transition hover:text-white/80" :disabled="subtitleOffset === 0" @click="resetSubtitleOffset">
+                    {{ subtitleOffset === 0 ? 'در وضعیت عادی' : 'بازگردانی' }}
+                  </button>
+                </div>
+                <div class="mt-2 flex items-center justify-between gap-2">
+                  <button type="button" class="revayato-player__btn size-9" aria-label="زیرنویس دیرتر (منفی)" @click="nudgeSubtitleOffset(-SUBTITLE_OFFSET_STEP)">
+                    <CinematicIcon name="minus" class="size-4" />
+                  </button>
+                  <div class="min-w-0 text-center">
+                    <p class="font-latin text-sm font-black tabular-nums" :class="subtitleOffset === 0 ? 'text-white/50' : subtitleOffset > 0 ? 'text-primary-300' : 'text-sky-300'">
+                      {{ subtitleOffset > 0 ? '+' : '' }}{{ subtitleOffset }}s
+                    </p>
+                    <p class="text-[9px] leading-relaxed text-white/35">
+                      {{ subtitleOffset > 0 ? 'زیرنویس جلوتر' : subtitleOffset < 0 ? 'زیرنویس عقب‌تر' : 'هماهنگ' }}
+                    </p>
+                  </div>
+                  <button type="button" class="revayato-player__btn size-9" aria-label="زیرنویس زودتر (مثبت)" @click="nudgeSubtitleOffset(SUBTITLE_OFFSET_STEP)">
+                    <CinematicIcon name="plus" class="size-4" />
+                  </button>
+                </div>
+                <p class="mt-1.5 text-center text-[9px] leading-relaxed text-white/30">
+                  اگر زیرنویس دیر ظاهر می‌شود، {{ SUBTITLE_OFFSET_STEP }} به جلو بزنید.
+                </p>
+              </div>
             </div>
           </div>
         </section>

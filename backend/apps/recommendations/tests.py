@@ -279,3 +279,85 @@ class SimilarContentTests(TestCase):
 
         results = _similar_content(source)
         self.assertNotIn(series, results)
+
+    def test_missing_dominant_genre_is_demoted(self):
+        """Shared secondary genres must not beat a real dominant-genre match."""
+        Horror, _ = Genre.objects.update_or_create(slug='horror', defaults={'title': 'Horror'})
+        Comedy, _ = Genre.objects.update_or_create(slug='comedy', defaults={'title': 'Comedy'})
+        Crime, _ = Genre.objects.update_or_create(slug='crime', defaults={'title': 'Crime'})
+        Mystery, _ = Genre.objects.update_or_create(slug='mystery', defaults={'title': 'Mystery'})
+
+        source = self._movie('Scar', 'scar', self.action, views=100)
+        source.genres.add(Horror, Crime, Mystery)
+        # Shares profession-crime/mystery but misses source's horror identity.
+        decoy = self._movie('Cop Joke', 'cop-joke', self.action, views=999)
+        decoy.genres.remove(self.action)
+        decoy.genres.add(Crime, Mystery, Comedy)
+        real = self._movie('Scar 2', 'scar-2', self.action, views=50)
+        real.genres.add(Horror, Crime, Mystery)
+
+        results = _similar_content(source, limit=4)
+        self.assertEqual(results[0], real)
+        # A comedy sharing only crime+mystery must not outrank the horror twin.
+        self.assertNotIn(decoy, results[:1])
+
+    def test_zero_genre_title_still_finds_cast_ties(self):
+        """A title with no genres uses cast/director ties instead of vanishing."""
+        cast_tied = self._movie('Bardem Work', 'bardem-work', self.action, actor=self.bardem, views=5)
+        source = self._movie('Bardem Vehicle', 'bardem-vehicle', self.action, actor=self.bardem, views=100)
+        source.genres.clear()
+
+        results = _similar_content(source, limit=2)
+        self.assertIn(cast_tied, results)
+
+    def test_zero_signal_title_fills_from_popular_pool(self):
+        """Every published title must keep a full rail, even with zero signals.
+
+        A title with no genres/cast/director/tags cannot be scored against a
+        meaningful similarity bar, so it fills its rail from popular same-type
+        published titles (real, quality order) instead of showing nothing.
+        """
+        source = self._movie('Obscure', 'obscure', self.action)
+        source.genres.clear()
+        # Two other published titles; one clearly more popular.
+        low = self._movie('Low Drama', 'low-drama', self.action, views=10)
+        low.genres.clear()
+        Drama, _ = Genre.objects.update_or_create(slug='drama', defaults={'title': 'Drama'})
+        high = self._movie('Hit Drama', 'hit-drama', self.action, views=9999)
+        high.genres.clear()
+        high.genres.add(Drama)
+
+        results = _similar_content(source, limit=2)
+        self.assertEqual(len(results), 2)
+        # Most popular fill ranks first.
+        self.assertEqual(results[0], high)
+        # Unpublished titles are never dragged in as filler.
+        draft = self._movie('Draft', 'draft-not-live', self.action, views=99999)
+        draft.genres.clear()
+        draft.is_published = False
+        draft.save()
+        draft.genres.add(Drama)
+        self.assertNotIn(draft, _similar_content(source, limit=5))
+
+    def test_full_rail_top_similar_still_ranked_first(self):
+        """Strong signal ties stay ranked above popular filler."""
+        source = self._movie('Nolan A', 'nolan-full-a', self.action, director=self.nolan, views=100)
+        twin = self._movie('Nolan Twin', 'nolan-twin', self.action, director=self.nolan, views=5)
+        source.genres.add(self.drama)
+        twin.genres.add(self.drama)
+        # A popular title sharing only the broad drama genre.
+        popular = self._movie('Popular Drama', 'popular-drama', self.action, views=99999)
+        popular.genres.remove(self.action)
+        popular.genres.add(self.drama)
+        # More published candidates so the fill has material after the twin.
+        filler_a = self._movie('Filler A', 'filler-a', self.action, views=80)
+        filler_b = self._movie('Filler B', 'filler-b', self.action, views=70)
+        filler_c = self._movie('Filler C', 'filler-c', self.action, views=60)
+        for filler in (filler_a, filler_b, filler_c):
+            filler.genres.clear()
+            filler.genres.add(self.drama)
+
+        results = _similar_content(source, limit=3)
+        self.assertEqual(len(results), 3)
+        # Strong signal tie (shared director + genre) ranks above the popular fill.
+        self.assertEqual(results[0], twin)

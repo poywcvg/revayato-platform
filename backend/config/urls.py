@@ -1,13 +1,12 @@
 ﻿from django.contrib import admin
 from django.urls import path, register_converter
-from rest_framework_simplejwt.views import TokenRefreshView
-
 from config.converters import UnicodeSlugConverter
 
 register_converter(UnicodeSlugConverter, 'uslug')
 
 from apps.accounts.api import (
-    confirm_password_reset, login_user, logout_user, me, register, request_password_reset,
+    confirm_password_reset, lenient_token_refresh, login_user, logout_user, me, register,
+    request_password_reset,
 )
 from users.admin_api import admin_user_detail, admin_user_list_create
 from users.analytics_api import (
@@ -76,7 +75,7 @@ urlpatterns = [
     path('api/health/', health_check, name='health_check'),
     path('api/auth/register/', register, name='auth_register'),
     path('api/auth/token/', login_user, name='token_obtain_pair'),
-    path('api/auth/token/refresh/', TokenRefreshView.as_view(), name='token_refresh'),
+    path('api/auth/token/refresh/', lenient_token_refresh, name='token_refresh'),
     path('api/auth/logout/', logout_user, name='auth_logout'),
     path('api/auth/password-reset/', request_password_reset, name='auth_password_reset'),
     path('api/auth/password-reset/confirm/', confirm_password_reset, name='auth_password_reset_confirm'),

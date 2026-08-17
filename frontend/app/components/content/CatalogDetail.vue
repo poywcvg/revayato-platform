@@ -12,7 +12,7 @@ const pendingVersion = ref('')
 const pendingEpisodeId = ref(0)
 const { catalog } = useCatalog()
 const authStore = useAuthStore()
-const related = useRelatedMovies(() => props.item, 7)
+const related = useRelatedMovies(() => props.item, 10)
 const { isLiked, toggleLike } = useLibrary()
 const { trackGenreClick, trackLikeAction, trackTitleView, trackPersonClick, trackTrailerPlay } = useAnalyticsEvent()
 const notifications = useNotifications()
@@ -512,7 +512,6 @@ onBeforeUnmount(() => sectionObserver?.disconnect())
           title="آثار مشابه"
           eyebrow="انتخاب‌های نزدیک به این عنوان"
           :items="related"
-          :href="item.type === 'movie' ? '/movies' : '/series'"
         />
       </div>
       <div class="h-10" />
