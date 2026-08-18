@@ -24,6 +24,18 @@ pnpm install
 pnpm dev
 ```
 
+In a third terminal — the Android app (mobile + TV, one codebase):
+
+```powershell
+pnpm app:start      # Metro bundle server
+# then, in another terminal:
+pnpm app:android    # install + launch on a running emulator / adb device
+```
+
+The app defaults to `http://10.0.2.2:8000/api` (emulator → host). Use
+`$env:API_BASE_URL` for a physical device/TV, and JDK 17+/Android SDK per
+[android-app/README.md](android-app/README.md).
+
 The frontend runs at `http://127.0.0.1:3000`, Django/ASGI at `http://127.0.0.1:8000`, and Redis is bound to localhost on port `6379`.
 
 ## Watch Party

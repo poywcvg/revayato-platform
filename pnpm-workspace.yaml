@@ -1,0 +1,7 @@
+packages:
+  - frontend
+  - android-app
+
+# pnpm خود پیشفرض بیلدهای dependencyهای دارای lifecycle scripts را محدود میکند؛
+# هم فرانت (nuxt prepare) و هم react-native به build scripts نیاز دارند.
+dangerouslyAllowAllBuilds: true

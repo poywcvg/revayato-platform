@@ -1,0 +1,4 @@
+<resources>
+    <!-- Named window background so the TV / phone app never flashes a light screen. -->
+    <color name="revayatoBgMain">#1d1c21</color>
+</resources>

@@ -1,0 +1,25 @@
+{
+  "migIndex": 1,
+  "data": [
+    {
+      "path": "src/assets/fonts/Vazirmatn-Bold.ttf",
+      "sha1": "c01e41bc392a8b2cd4b9f7ae995c5a284a2920c7"
+    },
+    {
+      "path": "src/assets/fonts/Vazirmatn-Light-Regular.ttf",
+      "sha1": "253d2f6e4121d70ee0928568470b032d5eec773a"
+    },
+    {
+      "path": "src/assets/fonts/Vazirmatn-Light.ttf",
+      "sha1": "3981d44c761cf7dc717761cb134d2d288bfc1c3c"
+    },
+    {
+      "path": "src/assets/fonts/Vazirmatn-Medium.ttf",
+      "sha1": "5c21c7fe0ae95852891f0d527fbcbee5b51e637e"
+    },
+    {
+      "path": "src/assets/fonts/Vazirmatn-Regular.ttf",
+      "sha1": "253d2f6e4121d70ee0928568470b032d5eec773a"
+    }
+  ]
+}

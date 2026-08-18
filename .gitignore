@@ -32,6 +32,12 @@ backups/
 # Nuxt / Node
 node_modules/
 **/node_modules/
+
+# Android (react-native app)
+**/.gradle/
+**/android/.cxx/
+**/android/app/build/
+**/android/app/src/main/assets/
 .nuxt/
 **/.nuxt/
 .output/
