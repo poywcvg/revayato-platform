@@ -15,13 +15,13 @@ importers:
         version: 1.24.0(react-native-tvos@0.76.9-0)
       '@react-navigation/bottom-tabs':
         specifier: ^7.4.0
-        version: 7.18.16(@react-navigation/native@7.3.16(react-native-tvos@0.76.9-0)(react@18.3.1))(react-native-safe-area-context@4.14.1(react-native-tvos@0.76.9-0)(react@18.3.1))(react-native-screens@4.27.0(react-native-tvos@0.76.9-0)(react@18.3.1))(react-native-tvos@0.76.9-0)(react@18.3.1)
+        version: 7.18.16(@react-navigation/native@7.3.16(react-native-tvos@0.76.9-0)(react@18.3.1))(react-native-safe-area-context@4.14.1(react-native-tvos@0.76.9-0)(react@18.3.1))(react-native-screens@4.6.0(react-native-tvos@0.76.9-0)(react@18.3.1))(react-native-tvos@0.76.9-0)(react@18.3.1)
       '@react-navigation/native':
         specifier: ^7.1.0
         version: 7.3.16(react-native-tvos@0.76.9-0)(react@18.3.1)
       '@react-navigation/native-stack':
         specifier: ^7.3.0
-        version: 7.18.8(@react-navigation/native@7.3.16(react-native-tvos@0.76.9-0)(react@18.3.1))(react-native-safe-area-context@4.14.1(react-native-tvos@0.76.9-0)(react@18.3.1))(react-native-screens@4.27.0(react-native-tvos@0.76.9-0)(react@18.3.1))(react-native-tvos@0.76.9-0)(react@18.3.1)
+        version: 7.18.8(@react-navigation/native@7.3.16(react-native-tvos@0.76.9-0)(react@18.3.1))(react-native-safe-area-context@4.14.1(react-native-tvos@0.76.9-0)(react@18.3.1))(react-native-screens@4.6.0(react-native-tvos@0.76.9-0)(react@18.3.1))(react-native-tvos@0.76.9-0)(react@18.3.1)
       react:
         specifier: 18.3.1
         version: 18.3.1
@@ -35,8 +35,8 @@ importers:
         specifier: ^4.14.1
         version: 4.14.1(react-native-tvos@0.76.9-0)(react@18.3.1)
       react-native-screens:
-        specifier: ^4.6.0
-        version: 4.27.0(react-native-tvos@0.76.9-0)(react@18.3.1)
+        specifier: 4.6.0
+        version: 4.6.0(react-native-tvos@0.76.9-0)(react@18.3.1)
       react-native-video:
         specifier: ^6.8.0
         version: 6.19.2(react-native-tvos@0.76.9-0)(react@18.3.1)
@@ -6599,8 +6599,8 @@ packages:
       react: '*'
       react-native: '*'
 
-  react-native-screens@4.27.0:
-    resolution: {integrity: sha512-IUukKYilhKhdJqGh59BmxrAjgIO84CaOkdowEY20+RmapOAFpqS//xOIcq2iqDQ4xVoxuwCHGWhY/Tbz6lTblA==}
+  react-native-screens@4.6.0:
+    resolution: {integrity: sha512-PqGtR/moJLiTMSavhfo5spKXNHZrlxffq3g5UUVPmyuu7MmazFlPvYqiAYnR2iB9tkJYgvZO6sbjYAE7619M0A==}
     peerDependencies:
       react: '*'
       react-native: '*'
@@ -10644,7 +10644,7 @@ snapshots:
 
   '@react-native/typescript-config@0.76.9': {}
 
-  '@react-navigation/bottom-tabs@7.18.16(@react-navigation/native@7.3.16(react-native-tvos@0.76.9-0)(react@18.3.1))(react-native-safe-area-context@4.14.1(react-native-tvos@0.76.9-0)(react@18.3.1))(react-native-screens@4.27.0(react-native-tvos@0.76.9-0)(react@18.3.1))(react-native-tvos@0.76.9-0)(react@18.3.1)':
+  '@react-navigation/bottom-tabs@7.18.16(@react-navigation/native@7.3.16(react-native-tvos@0.76.9-0)(react@18.3.1))(react-native-safe-area-context@4.14.1(react-native-tvos@0.76.9-0)(react@18.3.1))(react-native-screens@4.6.0(react-native-tvos@0.76.9-0)(react@18.3.1))(react-native-tvos@0.76.9-0)(react@18.3.1)':
     dependencies:
       '@react-navigation/elements': 2.9.38(@react-navigation/native@7.3.16(react-native-tvos@0.76.9-0)(react@18.3.1))(react-native-safe-area-context@4.14.1(react-native-tvos@0.76.9-0)(react@18.3.1))(react-native-tvos@0.76.9-0)(react@18.3.1)
       '@react-navigation/native': 7.3.16(react-native-tvos@0.76.9-0)(react@18.3.1)
@@ -10652,7 +10652,7 @@ snapshots:
       react: 18.3.1
       react-native: react-native-tvos@0.76.9-0(@babel/core@7.29.7)(@babel/preset-env@7.29.7(@babel/core@7.29.7))(@react-native-community/cli@15.0.1(typescript@5.0.4))(@types/react@18.3.31)(react-native-tvos@0.76.9-0)(react@18.3.1)
       react-native-safe-area-context: 4.14.1(react-native-tvos@0.76.9-0)(react@18.3.1)
-      react-native-screens: 4.27.0(react-native-tvos@0.76.9-0)(react@18.3.1)
+      react-native-screens: 4.6.0(react-native-tvos@0.76.9-0)(react@18.3.1)
       sf-symbols-typescript: 2.2.0
     transitivePeerDependencies:
       - '@react-native-masked-view/masked-view'
@@ -10679,7 +10679,7 @@ snapshots:
       use-latest-callback: 0.2.6(react@18.3.1)
       use-sync-external-store: 1.6.0(react@18.3.1)
 
-  '@react-navigation/native-stack@7.18.8(@react-navigation/native@7.3.16(react-native-tvos@0.76.9-0)(react@18.3.1))(react-native-safe-area-context@4.14.1(react-native-tvos@0.76.9-0)(react@18.3.1))(react-native-screens@4.27.0(react-native-tvos@0.76.9-0)(react@18.3.1))(react-native-tvos@0.76.9-0)(react@18.3.1)':
+  '@react-navigation/native-stack@7.18.8(@react-navigation/native@7.3.16(react-native-tvos@0.76.9-0)(react@18.3.1))(react-native-safe-area-context@4.14.1(react-native-tvos@0.76.9-0)(react@18.3.1))(react-native-screens@4.6.0(react-native-tvos@0.76.9-0)(react@18.3.1))(react-native-tvos@0.76.9-0)(react@18.3.1)':
     dependencies:
       '@react-navigation/elements': 2.9.38(@react-navigation/native@7.3.16(react-native-tvos@0.76.9-0)(react@18.3.1))(react-native-safe-area-context@4.14.1(react-native-tvos@0.76.9-0)(react@18.3.1))(react-native-tvos@0.76.9-0)(react@18.3.1)
       '@react-navigation/native': 7.3.16(react-native-tvos@0.76.9-0)(react@18.3.1)
@@ -10687,7 +10687,7 @@ snapshots:
       react: 18.3.1
       react-native: react-native-tvos@0.76.9-0(@babel/core@7.29.7)(@babel/preset-env@7.29.7(@babel/core@7.29.7))(@react-native-community/cli@15.0.1(typescript@5.0.4))(@types/react@18.3.31)(react-native-tvos@0.76.9-0)(react@18.3.1)
       react-native-safe-area-context: 4.14.1(react-native-tvos@0.76.9-0)(react@18.3.1)
-      react-native-screens: 4.27.0(react-native-tvos@0.76.9-0)(react@18.3.1)
+      react-native-screens: 4.6.0(react-native-tvos@0.76.9-0)(react@18.3.1)
       sf-symbols-typescript: 2.2.0
       warn-once: 0.1.1
     transitivePeerDependencies:
@@ -15810,7 +15810,7 @@ snapshots:
       react: 18.3.1
       react-native: react-native-tvos@0.76.9-0(@babel/core@7.29.7)(@babel/preset-env@7.29.7(@babel/core@7.29.7))(@react-native-community/cli@15.0.1(typescript@5.0.4))(@types/react@18.3.31)(react-native-tvos@0.76.9-0)(react@18.3.1)
 
-  react-native-screens@4.27.0(react-native-tvos@0.76.9-0)(react@18.3.1):
+  react-native-screens@4.6.0(react-native-tvos@0.76.9-0)(react@18.3.1):
     dependencies:
       react: 18.3.1
       react-freeze: 1.0.4(react@18.3.1)
