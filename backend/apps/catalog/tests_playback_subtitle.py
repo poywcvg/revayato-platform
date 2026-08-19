@@ -4,6 +4,7 @@ from rest_framework.test import APIClient
 from unittest.mock import patch
 
 from apps.catalog.models import Movie, PlaybackSubtitleGap
+from apps.catalog.playback_subtitle import read_playback_subtitle_status
 
 
 @override_settings(
@@ -248,3 +249,290 @@ class PlaybackSubtitleEnsureTests(TestCase):
         enqueue.assert_called_once()
         self.assertIn(result.get('status'), {'queued', 'burned_in'})
         self.assertIn(result.get('message'), {'loading', 'hardsub_burned_in', 'burned_in_queued'})
+
+
+@override_settings(
+    SUBTITLESTAR_ENABLED=True,
+    CACHES={'default': {'BACKEND': 'django.core.cache.backends.locmem.LocMemCache'}},
+)
+class PlaybackSubtitleStatusTests(TestCase):
+    """The lightweight GET poll: reads persisted state, never touches providers."""
+
+    def setUp(self):
+        cache.clear()
+        self.client = APIClient()
+        self.movie = Movie.objects.create(
+            title='Status Movie',
+            original_title='Status Movie',
+            slug='status-movie-test',
+            imdb_id='tt0111161',
+            is_published=True,
+            download_links=[{
+                'url': 'https://cdn.example/Original/movie.720p.mkv',
+                'label': 'نسخه اصلی · 720p',
+                'quality': '720p',
+            }],
+            subtitle_tracks=[],
+        )
+
+    def test_status_reports_ready_with_tracks_when_persisted(self):
+        gap = PlaybackSubtitleGap.objects.create(
+            content_type='movie',
+            object_id=self.movie.pk,
+            episode_id=0,
+            slug=self.movie.slug,
+            title=self.movie.title,
+            status=PlaybackSubtitleGap.Status.OPEN,
+        )
+        self.movie.subtitle_tracks = [{
+            'id': 'fa-1',
+            'language': 'fa',
+            'label': 'فارسی',
+            'key': 'catalog/subtitles/persisted.vtt',
+        }]
+        self.movie.save(update_fields=['subtitle_tracks'])
+
+        response = self.client.get(
+            '/api/catalog/playback-subtitle-status/',
+            {'report_id': gap.pk, 'content_type': 'movie', 'slug': self.movie.slug},
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data.get('status'), 'ready')
+        self.assertTrue(response.data.get('has_subtitle_tracks'))
+        self.assertEqual(response.data.get('report_id'), gap.pk)
+        self.assertTrue(response.data.get('reported'))
+        self.assertEqual(response.data['subtitle_tracks'][0]['key'], 'catalog/subtitles/persisted.vtt')
+        self.assertEqual(response['Cache-Control'], 'private, no-store')
+
+    def test_status_never_enqueues(self):
+        gap = PlaybackSubtitleGap.objects.create(
+            content_type='movie',
+            object_id=self.movie.pk,
+            episode_id=0,
+            slug=self.movie.slug,
+            title=self.movie.title,
+            status=PlaybackSubtitleGap.Status.QUEUED,
+        )
+        with (
+            patch('apps.catalog.tasks.enqueue_movie_softsub_urgent') as enqueue_movie,
+            patch('apps.catalog.tasks.enqueue_series_softsub_urgent') as enqueue_series,
+        ):
+            response = self.client.get(
+                '/api/catalog/playback-subtitle-status/',
+                {'report_id': gap.pk, 'content_type': 'movie', 'slug': self.movie.slug},
+            )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data.get('status'), 'queued')
+        self.assertFalse(response.data.get('has_subtitle_tracks'))
+        enqueue_movie.assert_not_called()
+        enqueue_series.assert_not_called()
+
+    def test_status_missing_report(self):
+        response = self.client.get(
+            '/api/catalog/playback-subtitle-status/',
+            {'report_id': 999999, 'content_type': 'movie', 'slug': self.movie.slug},
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data.get('status'), 'missing_report')
+        self.assertEqual(response.data.get('message'), 'report_not_found')
+        self.assertFalse(response.data.get('has_subtitle_tracks'))
+
+    def test_status_invalid(self):
+        response = self.client.get(
+            '/api/catalog/playback-subtitle-status/',
+            {'report_id': 1, 'content_type': 'film', 'slug': self.movie.slug},
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data.get('status'), 'invalid')
+        self.assertEqual(response.data.get('message'), 'invalid_request')
+
+    def test_status_queued_when_open(self):
+        gap = PlaybackSubtitleGap.objects.create(
+            content_type='movie',
+            object_id=self.movie.pk,
+            episode_id=0,
+            slug=self.movie.slug,
+            title=self.movie.title,
+            status=PlaybackSubtitleGap.Status.OPEN,
+        )
+        response = self.client.get(
+            '/api/catalog/playback-subtitle-status/',
+            {'content_type': 'movie', 'slug': self.movie.slug},
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data.get('status'), 'queued')
+        self.assertFalse(response.data.get('has_subtitle_tracks'))
+        # No report_id given → resolved by identity; report_id still surfaced.
+        self.assertEqual(response.data.get('report_id'), gap.pk)
+
+    def test_status_missing_title(self):
+        response = self.client.get(
+            '/api/catalog/playback-subtitle-status/',
+            {'content_type': 'movie', 'slug': 'no-such-movie'},
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data.get('status'), 'missing')
+        self.assertEqual(response.data.get('message'), 'title_not_found')
+
+
+@override_settings(
+    SUBTITLESTAR_ENABLED=True,
+    CACHES={'default': {'BACKEND': 'django.core.cache.backends.locmem.LocMemCache'}},
+)
+class PlaybackSubtitleStampedeTests(TestCase):
+    """Repeated reports of the same open gap must NOT clear circuits or miss caches."""
+
+    def setUp(self):
+        cache.clear()
+        self.client = APIClient()
+        self.movie = Movie.objects.create(
+            title='Stampede Movie',
+            original_title='Stampede Movie',
+            slug='stampede-movie-test',
+            imdb_id='tt0111161',
+            is_published=True,
+            download_links=[{
+                'url': 'https://cdn.example/Original/movie.720p.mkv',
+                'label': 'نسخه اصلی · 720p',
+                'quality': '720p',
+            }],
+            subtitle_tracks=[],
+        )
+
+    def test_stampede_keeps_circuits_closed(self):
+        """A repeat viewer report preserves the provider circuit-open flag."""
+        gap = PlaybackSubtitleGap.objects.create(
+            content_type='movie',
+            object_id=self.movie.pk,
+            episode_id=0,
+            slug=self.movie.slug,
+            title=self.movie.title,
+            status=PlaybackSubtitleGap.Status.OPEN,
+        )
+        # Same gap already reported once → this is a repeat viewer, not a fresh report.
+        PlaybackSubtitleGap.objects.filter(pk=gap.pk).update(report_count=2)
+
+        for provider_key in ('catalog:subtitlestar:circuit-open', 'catalog:subzone:circuit-open'):
+            cache.set(provider_key, True, timeout=1800)
+        for miss_key in ('catalog:subtitlestar:miss:tt0111161', 'catalog:subzone:miss:tt0111161'):
+            cache.set(miss_key, True, timeout=86400)
+
+        with (
+            patch('apps.catalog.tasks.enqueue_movie_softsub_urgent', return_value=True),
+            patch('apps.catalog.subtitle_extract._attach_subtitlestar_subtitle', return_value=False),
+            patch('apps.catalog.subtitle_extract._attach_subzone_subtitle', return_value=False),
+        ):
+            for _ in range(2):
+                response = self.client.post(
+                    '/api/catalog/playback-subtitle-ensure/',
+                    {'content_type': 'movie', 'slug': self.movie.slug, 'sync': False},
+                    format='json',
+                )
+                self.assertEqual(response.status_code, 200)
+
+        # Both circuits must remain closed; miss caches must stay cached.
+        self.assertTrue(cache.get('catalog:subtitlestar:circuit-open'))
+        self.assertTrue(cache.get('catalog:subzone:circuit-open'))
+        self.assertTrue(cache.get('catalog:subtitlestar:miss:tt0111161'))
+        self.assertTrue(cache.get('catalog:subzone:miss:tt0111161'))
+        gap.refresh_from_db()
+        self.assertEqual(gap.report_count, 4)
+
+    def test_fresh_report_clears_miss_caches_but_not_circuits(self):
+        """A genuinely-new report gets one re-probe, but circuits stay closed."""
+        for provider_key in ('catalog:subtitlestar:circuit-open', 'catalog:subzone:circuit-open'):
+            cache.set(provider_key, True, timeout=1800)
+        for miss_key in ('catalog:subtitlestar:miss:tt0111161', 'catalog:subzone:miss:tt0111161'):
+            cache.set(miss_key, True, timeout=86400)
+
+        with (
+            patch('apps.catalog.tasks.enqueue_movie_softsub_urgent', return_value=True),
+            patch('apps.catalog.subtitle_extract._attach_subtitlestar_subtitle', return_value=False),
+            patch('apps.catalog.subtitle_extract._attach_subzone_subtitle', return_value=False),
+        ):
+            response = self.client.post(
+                '/api/catalog/playback-subtitle-ensure/',
+                {'content_type': 'movie', 'slug': self.movie.slug, 'sync': False},
+                format='json',
+            )
+            self.assertEqual(response.status_code, 200)
+            self.assertTrue(response.data.get('reported'))
+
+        # Fresh report clears stale misses so providers get one re-probe…
+        self.assertIsNone(cache.get('catalog:subtitlestar:miss:tt0111161'))
+        self.assertIsNone(cache.get('catalog:subzone:miss:tt0111161'))
+        # …but the genuinely-down provider stays closed.
+        self.assertTrue(cache.get('catalog:subtitlestar:circuit-open'))
+        self.assertTrue(cache.get('catalog:subzone:circuit-open'))
+
+
+@override_settings(
+    SUBTITLESTAR_ENABLED=True,
+    CACHES={'default': {'BACKEND': 'django.core.cache.backends.locmem.LocMemCache'}},
+)
+class PlaybackSubtitleStatusReaderTests(TestCase):
+    """Direct unit coverage of read_playback_subtitle_status (bypasses the view)."""
+
+    def setUp(self):
+        cache.clear()
+        self.movie = Movie.objects.create(
+            title='Reader Movie',
+            original_title='Reader Movie',
+            slug='reader-movie-test',
+            imdb_id='tt0111161',
+            is_published=True,
+            download_links=[{
+                'url': 'https://cdn.example/Original/movie.720p.mkv',
+                'label': 'نسخه اصلی · 720p',
+                'quality': '720p',
+            }],
+            subtitle_tracks=[],
+        )
+
+    def test_reader_rejects_unknown_kind(self):
+        result = read_playback_subtitle_status(
+            content_type='audio', slug=self.movie.slug,
+        )
+        self.assertEqual(result['status'], 'invalid')
+
+    def test_reader_uses_episode_tracks_for_series(self):
+        gap = PlaybackSubtitleGap.objects.create(
+            content_type='series',
+            object_id=4242,
+            episode_id=7,
+            slug='reader-series-test',
+            title='Reader Series',
+            status=PlaybackSubtitleGap.Status.QUEUED,
+        )
+        result = read_playback_subtitle_status(
+            report_id=gap.pk,
+            content_type='series',
+            slug='reader-series-test',
+            episode_id=7,
+        )
+        self.assertEqual(result['status'], 'missing')  # no such series → missing title
+        self.assertFalse(result['has_subtitle_tracks'])
+
+    def test_reader_never_enqueues(self):
+        gap = PlaybackSubtitleGap.objects.create(
+            content_type='movie',
+            object_id=self.movie.pk,
+            episode_id=0,
+            slug=self.movie.slug,
+            title=self.movie.title,
+            status=PlaybackSubtitleGap.Status.OPEN,
+        )
+        with (
+            patch('apps.catalog.tasks.enqueue_movie_softsub_urgent') as enqueue_movie,
+            patch('apps.catalog.tasks.enqueue_series_softsub_urgent') as enqueue_series,
+        ):
+            result = read_playback_subtitle_status(
+                report_id=gap.pk,
+                content_type='movie',
+                slug=self.movie.slug,
+            )
+        self.assertEqual(result['status'], 'queued')
+        self.assertFalse(result['has_subtitle_tracks'])
+        self.assertEqual(result['report_id'], gap.pk)
+        enqueue_movie.assert_not_called()
+        enqueue_series.assert_not_called()

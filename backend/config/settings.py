@@ -321,6 +321,27 @@ SUBZONE_USER_AGENT = os.environ.get(
 ).strip()
 SUBZONE_VERIFY_SSL = env_bool('SUBZONE_VERIFY_SSL', True)
 
+# Online playback auto-subtitle report pipeline (report → extract → bind).
+# The player's sync window is deliberately short: quick provider sidecars only,
+# so the POST never blocks video start; everything else runs on the worker.
+PLAYBACK_SUBTITLE_SYNC_MAX_SECONDS = max(
+    3, int(os.environ.get('PLAYBACK_SUBTITLE_SYNC_MAX_SECONDS', '6')),
+)
+# Redis micro-cache TTL for the lightweight status endpoint read by player polls.
+PLAYBACK_SUBTITLE_STATUS_CACHE_SECONDS = max(
+    1, int(os.environ.get('PLAYBACK_SUBTITLE_STATUS_CACHE_SECONDS', '3')),
+)
+# Stale-open playback gap retry safety nets (beat + management command).
+PLAYBACK_GAP_DRAIN_MIN_AGE_SECONDS = max(
+    60, int(os.environ.get('PLAYBACK_GAP_DRAIN_MIN_AGE_SECONDS', '600')),
+)
+PLAYBACK_GAP_DRAIN_MAX_PER_BATCH = max(
+    1, int(os.environ.get('PLAYBACK_GAP_DRAIN_MAX_PER_BATCH', '20')),
+)
+PLAYBACK_GAP_DRAIN_MAX_ATTEMPTS = max(
+    1, int(os.environ.get('PLAYBACK_GAP_DRAIN_MAX_ATTEMPTS', '3')),
+)
+
 # Primary + secondary link providers for publish auto-crawl and catalog import.
 # Always crawl both Film2Media and Dornatv and merge qualities.
 CATALOG_LINK_PROVIDER = os.environ.get('CATALOG_LINK_PROVIDER', 'myf2m').strip().lower() or 'myf2m'
@@ -361,6 +382,11 @@ CORS_ALLOWED_ORIGINS = [
     ).split(',')
     if origin.strip()
 ]
+# Native app (Android/TV) requests carry no Origin header; React-Native fetch sees
+# our API as cross-origin without a browser-context Origin. Allow-All keeps those
+# calls unblocked while credentialed browser traffic still honors the allowlist.
+# Defaults to True; set DJANGO_CORS_ALLOW_ALL_ORIGINS=False to restrict strictly.
+CORS_ALLOW_ALL_ORIGINS = env_bool('DJANGO_CORS_ALLOW_ALL_ORIGINS', True)
 CORS_ALLOW_CREDENTIALS = True
 CSRF_TRUSTED_ORIGINS = [
     origin.strip()
@@ -405,6 +431,7 @@ REST_FRAMEWORK = {
         # the very small anonymous authentication/API bucket.
         'catalog': os.environ.get('CATALOG_THROTTLE_RATE', '600/minute'),
         'playback_subtitle_ensure': os.environ.get('PLAYBACK_SUBTITLE_ENSURE_THROTTLE_RATE', '30/minute'),
+        'playback_subtitle_status': os.environ.get('PLAYBACK_SUBTITLE_STATUS_THROTTLE_RATE', '60/minute'),
         'watch_party_create': '10/hour',
         'watch_party_join': '60/hour',
     },
@@ -559,6 +586,10 @@ CELERY_BEAT_SCHEDULE = {
     'catalog-softsub-backfill': {
         'task': 'apps.catalog.tasks.backfill_softsub_tracks_task',
         'schedule': 60 * 60,
+    },
+    'catalog-playback-gap-drain': {
+        'task': 'apps.catalog.tasks.drain_playback_subtitle_gaps_task',
+        'schedule': 300,
     },
     'catalog-dornatv-import-missing': {
         'task': 'apps.catalog.provider_import.tasks.import_missing_dornatv_task',

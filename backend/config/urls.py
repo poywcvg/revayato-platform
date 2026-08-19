@@ -21,7 +21,7 @@ from apps.catalog.api import (
     recent_catalog,
     actor_detail, actor_list, country_list, director_detail, director_list,
     genre_list, home_rails, movie_detail, movie_list, movie_similar,
-    playback_subtitle_ensure, search_content, series_detail, series_list, series_similar,
+    playback_subtitle_ensure, playback_subtitle_status, search_content, series_detail, series_list, series_similar,
     trending,
 )
 from apps.catalog.admin_api import (
@@ -89,6 +89,7 @@ urlpatterns = [
     path('api/watch-party/rooms/<str:invite_code>/end/', end_room, name='watchparty_end'),
     path('api/catalog/recent/', recent_catalog, name='catalog_recent'),
     path('api/catalog/playback-subtitle-ensure/', playback_subtitle_ensure, name='playback_subtitle_ensure'),
+    path('api/catalog/playback-subtitle-status/', playback_subtitle_status, name='playback_subtitle_status'),
     path('api/movies/', movie_list, name='movie_list'),
     path('api/movies/<uslug:slug>/', movie_detail, name='movie_detail'),
     path('api/movies/<uslug:slug>/similar/', movie_similar, name='movie_similar'),

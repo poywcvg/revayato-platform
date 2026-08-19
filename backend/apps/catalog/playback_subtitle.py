@@ -403,11 +403,14 @@ def ensure_playback_subtitles(
                     'message': 'rate_limited',
                 }
 
-            cache.delete('catalog:subtitlestar:circuit-open')
-            cache.delete('catalog:subzone:circuit-open')
-            _clear_subtitlestar_miss_for_movie(movie)
-            from apps.catalog.subzone import clear_subzone_miss_for_movie
-            clear_subzone_miss_for_movie(movie)
+            # Only a genuinely-fresh report (row just created) clears stale
+            # provider miss caches so providers get one re-probe. Circuit keys
+            # are never cleared here: a genuinely-down provider must stay closed.
+            fresh = int(gap.report_count or 0) <= 1
+            if fresh:
+                _clear_subtitlestar_miss_for_movie(movie)
+                from apps.catalog.subzone import clear_subzone_miss_for_movie
+                clear_subzone_miss_for_movie(movie)
             queued = enqueue_movie_softsub_urgent(
                 movie.pk,
                 force=True,
@@ -471,11 +474,11 @@ def ensure_playback_subtitles(
 
         # First hit queues the embedded-first urgent worker. Provider sync only
         # runs here when the catalog has no extractable Soft source.
-        cache.delete('catalog:subtitlestar:circuit-open')
-        cache.delete('catalog:subzone:circuit-open')
-        _clear_subtitlestar_miss_for_movie(movie)
-        from apps.catalog.subzone import clear_subzone_miss_for_movie
-        clear_subzone_miss_for_movie(movie)
+        fresh = int(gap.report_count or 0) <= 1
+        if fresh:
+            _clear_subtitlestar_miss_for_movie(movie)
+            from apps.catalog.subzone import clear_subzone_miss_for_movie
+            clear_subzone_miss_for_movie(movie)
         queued = enqueue_movie_softsub_urgent(
             movie.pk,
             force=True,
@@ -613,11 +616,11 @@ def ensure_playback_subtitles(
                 'message': 'rate_limited',
             }
 
-        cache.delete('catalog:subtitlestar:circuit-open')
-        cache.delete('catalog:subzone:circuit-open')
-        _clear_subtitlestar_miss_for_series(series)
-        from apps.catalog.subzone import clear_subzone_miss_for_series
-        clear_subzone_miss_for_series(series)
+        fresh = int(gap.report_count or 0) <= 1
+        if fresh:
+            _clear_subtitlestar_miss_for_series(series)
+            from apps.catalog.subzone import clear_subzone_miss_for_series
+            clear_subzone_miss_for_series(series)
         queued = enqueue_series_softsub_urgent(
             series.pk,
             force=True,
@@ -674,11 +677,11 @@ def ensure_playback_subtitles(
             'message': 'rate_limited',
         }
 
-    cache.delete('catalog:subtitlestar:circuit-open')
-    cache.delete('catalog:subzone:circuit-open')
-    _clear_subtitlestar_miss_for_series(series)
-    from apps.catalog.subzone import clear_subzone_miss_for_series
-    clear_subzone_miss_for_series(series)
+    fresh = int(gap.report_count or 0) <= 1
+    if fresh:
+        _clear_subtitlestar_miss_for_series(series)
+        from apps.catalog.subzone import clear_subzone_miss_for_series
+        clear_subzone_miss_for_series(series)
     # Prefer a small urgent batch so the open episode is covered quickly.
     queued = enqueue_series_softsub_urgent(
         series.pk,
@@ -760,3 +763,149 @@ def ensure_playback_subtitles(
             else ('loading' if queued else 'no_source')
         ),
     }
+
+
+def read_playback_subtitle_status(
+    *,
+    report_id: int | None = None,
+    content_type: str = '',
+    slug: str = '',
+    episode_id: int = 0,
+) -> dict[str, Any]:
+    """Lightweight answer to "has the reported subtitle gap been filled yet?".
+
+    This is a pure read: it never enqueues a worker, never probes SubtitleStar /
+    Subzone, and never clears provider caches. The player polls this instead of
+    re-submitting the heavy ensure POST. A short Redis micro-cache (keyed on the
+    report identity) keeps the DB read cheap under many concurrent pollers.
+    """
+    from django.conf import settings as django_settings
+
+    kind = str(content_type or '').strip().lower()
+    slug = str(slug or '').strip()
+    ep_id = int(episode_id or 0)
+
+    if kind not in {'movie', 'series'} or not slug:
+        return {
+            'status': 'invalid',
+            'has_subtitle_tracks': False,
+            'report_id': report_id,
+            'message': 'invalid_request',
+        }
+
+    cache_seconds = max(1, int(getattr(django_settings, 'PLAYBACK_SUBTITLE_STATUS_CACHE_SECONDS', 3)))
+    cache_key = f'catalog:playback-sub-status:{kind}:{slug}:{ep_id}'
+    if report_id:
+        cache_key = f'{cache_key}:report:{int(report_id)}'
+    cached = cache.get(cache_key)
+    if isinstance(cached, dict):
+        return cached
+
+    payload = _build_status_payload(
+        kind=kind,
+        slug=slug,
+        episode_id=ep_id,
+        report_id=report_id,
+    )
+    cache.set(cache_key, payload, timeout=cache_seconds)
+    return payload
+
+
+def _build_status_payload(*, kind: str, slug: str, episode_id: int, report_id: int | None) -> dict[str, Any]:
+    """DB-backed status payload for the lightweight poll endpoint."""
+    from apps.catalog.models import Episode, Movie, PlaybackSubtitleGap, Series
+    from apps.catalog.subtitle_contract import publicize_subtitle_tracks
+
+    ep_id = int(episode_id or 0)
+    gap = None
+    if report_id:
+        gap = PlaybackSubtitleGap.objects.filter(pk=int(report_id)).first()
+        if gap is None:
+            return {
+                'status': 'missing_report',
+                'has_subtitle_tracks': False,
+                'report_id': report_id,
+                'message': 'report_not_found',
+            }
+
+    if kind == 'movie':
+        movie = Movie.objects.filter(is_published=True, slug=slug).first()
+        if movie is None:
+            return {
+                'status': 'missing',
+                'has_subtitle_tracks': False,
+                'report_id': gap.pk if gap else None,
+                'message': 'title_not_found',
+            }
+        tracks = movie.subtitle_tracks or []
+        ready = _has_tracks(tracks)
+        return {
+            'status': 'ready' if ready else _gap_status_label(gap),
+            'reported': gap is not None,
+            'queued': bool(gap and gap.status != PlaybackSubtitleGap.Status.UNAVAILABLE),
+            'has_subtitle_tracks': ready,
+            'subtitle_tracks': publicize_subtitle_tracks(tracks) if ready else [],
+            'report_id': gap.pk if gap else None,
+            'message': 'tracks_present' if ready else 'loading',
+        }
+
+    series = Series.objects.filter(is_published=True, slug=slug).first()
+    if series is None:
+        return {
+            'status': 'missing',
+            'has_subtitle_tracks': False,
+            'report_id': gap.pk if gap else None,
+            'message': 'title_not_found',
+        }
+
+    if ep_id:
+        episode = Episode.objects.filter(
+            pk=ep_id, season__series_id=series.pk, is_published=True,
+        ).first()
+        if episode is None:
+            return {
+                'status': 'missing',
+                'has_subtitle_tracks': False,
+                'episode_id': ep_id,
+                'report_id': gap.pk if gap else None,
+                'message': 'episode_not_found',
+            }
+        ready = _has_tracks(episode.subtitle_tracks)
+        return {
+            'status': 'ready' if ready else _gap_status_label(gap),
+            'reported': gap is not None,
+            'queued': bool(gap and gap.status != PlaybackSubtitleGap.Status.UNAVAILABLE),
+            'has_subtitle_tracks': ready,
+            'subtitle_tracks': publicize_subtitle_tracks(episode.subtitle_tracks or []) if ready else [],
+            'episode_id': episode.pk,
+            'report_id': gap.pk if gap else None,
+            'message': 'tracks_present' if ready else 'loading',
+        }
+
+    series_ready = _has_tracks(series.subtitle_tracks)
+    has_any = Episode.objects.filter(
+        season__series_id=series.pk, is_published=True,
+    ).exclude(subtitle_tracks=[]).exclude(subtitle_tracks__isnull=True).exists()
+    ready = bool(series_ready or has_any)
+    return {
+        'status': 'ready' if ready else _gap_status_label(gap),
+        'reported': gap is not None,
+        'queued': bool(gap and gap.status != PlaybackSubtitleGap.Status.UNAVAILABLE),
+        'has_subtitle_tracks': ready,
+        'subtitle_tracks': publicize_subtitle_tracks(series.subtitle_tracks or []) if ready else [],
+        'report_id': gap.pk if gap else None,
+        'message': 'tracks_present' if ready else 'loading',
+    }
+
+
+def _gap_status_label(gap) -> str:
+    """Map a gap row's status onto the lightweight public status vocabulary."""
+    from apps.catalog.models import PlaybackSubtitleGap
+
+    if gap is None or gap.status == PlaybackSubtitleGap.Status.OPEN:
+        return 'queued'
+    if gap.status == PlaybackSubtitleGap.Status.RESOLVED:
+        return 'queued'
+    if gap.status == PlaybackSubtitleGap.Status.UNAVAILABLE:
+        return 'unavailable'
+    return 'queued'
