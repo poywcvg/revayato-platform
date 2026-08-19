@@ -15,7 +15,7 @@ from .cache import (
     get_cached_payload,
     set_cached_payload,
 )
-from .countries import country_code_for_name
+from .countries import country_code_for_name, persian_country_name
 from .models import (
     Actor, Country, Director, Episode, Genre, Movie, MovieActor, Season, Series,
     SeriesActor,
@@ -44,6 +44,12 @@ class PlaybackSubtitleEnsureThrottle(AnonRateThrottle):
     """Allow a few urgent SoftSub ensures per client without starving catalog reads."""
 
     scope = 'playback_subtitle_ensure'
+
+
+class PlaybackSubtitleStatusThrottle(AnonRateThrottle):
+    """Lightweight player poll bucket; never shares the heavy ensure budget."""
+
+    scope = 'playback_subtitle_status'
 
 
 def _queue_missing_softsub(obj, *, kind: str) -> None:
@@ -778,15 +784,42 @@ def home_rails(request):
 @throttle_classes([CatalogReadThrottle])
 def country_list(request):
     def build():
-        queryset = (
-            Country.objects.annotate(
-                movie_count=Count('movies', filter=Q(movies__is_published=True), distinct=True),
-                series_count=Count('series', filter=Q(series__is_published=True), distinct=True),
+        # Two grouped scans beat per-country filtered Count(distinct) on large
+        # M2M tables — the same pattern as genre_list.
+        movie_map = {
+            int(row['countries']): int(row['c'])
+            for row in (
+                Movie.objects.filter(is_published=True, countries__isnull=False)
+                .values('countries')
+                .annotate(c=Count('id', distinct=True))
             )
-            .filter(Q(movie_count__gt=0) | Q(series_count__gt=0))
-            .order_by('name')
-        )
-        return CountrySerializer(queryset, many=True).data
+            if row.get('countries') is not None
+        }
+        series_map = {
+            int(row['countries']): int(row['c'])
+            for row in (
+                Series.objects.filter(is_published=True, countries__isnull=False)
+                .values('countries')
+                .annotate(c=Count('id', distinct=True))
+            )
+            if row.get('countries') is not None
+        }
+        payload = []
+        for country in Country.objects.all().order_by('name').only(
+            'id', 'name', 'code',
+        ):
+            movie_count = movie_map.get(country.id, 0)
+            series_count = series_map.get(country.id, 0)
+            if not (movie_count or series_count):
+                continue
+            payload.append({
+                'id': country.id,
+                'name': persian_country_name(country.code, country.name),
+                'code': country.code,
+                'movie_count': movie_count,
+                'series_count': series_count,
+            })
+        return payload
 
     return _cached_response(request, 'countries', 'genres', build)
 
@@ -1060,7 +1093,12 @@ def playback_subtitle_ensure(request):
 
     Order: embedded movie/episode track → SubtitleStar → Subzone/provider fallbacks.
     Body: ``{ content_type, slug, episode_id?, version?, source_url?, sync? }``
+
+    The sync lane is intentionally short (PLAYBACK_SUBTITLE_SYNC_MAX_SECONDS) so
+    the POST never blocks video start; long extraction runs on the worker.
     """
+    from django.conf import settings as django_settings
+
     from apps.catalog.playback_subtitle import ensure_playback_subtitles
 
     payload = request.data if isinstance(request.data, dict) else {}
@@ -1070,6 +1108,7 @@ def playback_subtitle_ensure(request):
     else:
         sync = bool(sync_raw)
 
+    sync_cap = max(3, int(getattr(django_settings, 'PLAYBACK_SUBTITLE_SYNC_MAX_SECONDS', 6)))
     result = ensure_playback_subtitles(
         content_type=str(payload.get('content_type') or payload.get('type') or ''),
         slug=str(payload.get('slug') or ''),
@@ -1077,7 +1116,32 @@ def playback_subtitle_ensure(request):
         playback_version=str(payload.get('version') or payload.get('playback_version') or ''),
         playback_source_url=str(payload.get('source_url') or payload.get('playback_source_url') or ''),
         sync=sync,
-        timeout_seconds=14,
+        timeout_seconds=min(14, sync_cap),
+    )
+    response = Response(result)
+    response['Cache-Control'] = 'private, no-store'
+    return response
+
+
+@api_view(['GET'])
+@throttle_classes([PlaybackSubtitleStatusThrottle])
+def playback_subtitle_status(request):
+    """Lightweight player poll: has the reported gap been filled yet?
+
+    Never enqueues workers or probes providers. Query: ``report_id`` and/or
+    ``content_type`` + ``slug`` + ``episode_id``. A short Redis micro-cache keeps
+    the DB read cheap across many pollers.
+    """
+    from apps.catalog.playback_subtitle import read_playback_subtitle_status
+
+    query = request.query_params
+    report_id = query.get('report_id')
+    episode_id = query.get('episode_id') or query.get('episode') or 0
+    result = read_playback_subtitle_status(
+        report_id=int(report_id) if str(report_id or '').strip().isdigit() else None,
+        content_type=str(query.get('content_type') or query.get('type') or ''),
+        slug=str(query.get('slug') or ''),
+        episode_id=int(episode_id) if str(episode_id or '').strip().isdigit() else 0,
     )
     response = Response(result)
     response['Cache-Control'] = 'private, no-store'

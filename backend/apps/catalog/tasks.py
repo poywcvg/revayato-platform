@@ -520,5 +520,148 @@ def backfill_softsub_tracks_task():
     return {'status': 'ok'}
 
 
+def drain_playback_subtitle_gaps(
+    *,
+    max_batch: int = 20,
+    min_age_seconds: int = 600,
+    max_attempts: int = 3,
+    reset_drain_count: bool = False,
+    dry_run: bool = False,
+) -> dict:
+    """Re-enqueue stale OPEN/QUEUED playback gaps so a dead worker cannot orphan
+    a viewer report forever. Pure enqueue + track-check: no provider work, no
+    circuit/miss cache clearing (a fresh probe is the worker's job).
+
+    Returns counts so both the beat task and the management command can report.
+    ``dry_run=True`` never enqueues, never claims locks, never mutates rows —
+    it only tallies what a real pass would do.
+    """
+    from datetime import timedelta
+
+    from django.utils import timezone as dj_timezone
+
+    from .models import PlaybackSubtitleGap
+
+    gap_drain_lock_ttl = 10 * 60
+    stale_before = dj_timezone.now() - timedelta(seconds=max(60, int(min_age_seconds)))
+    rows = PlaybackSubtitleGap.objects.filter(
+        status__in=[PlaybackSubtitleGap.Status.OPEN, PlaybackSubtitleGap.Status.QUEUED],
+        updated_at__lt=stale_before,
+    ).order_by('updated_at')[:max(1, int(max_batch))]
+
+    stats = {'processed': 0, 'enqueued': 0, 're_enqueued': 0, 'resolved': 0, 'skipped': 0}
+    for gap in rows:
+        stats['processed'] += 1
+        # Per-row claim so concurrent beats/commands never double-enqueue.
+        lock_key = f'catalog:gap-drain:{gap.pk}'
+        if dry_run:
+            attempts = 0
+            if reset_drain_count:
+                attempts = 0
+            if _gap_has_tracks(gap):
+                stats['resolved'] += 1
+                continue
+            if attempts < max(1, int(max_attempts)):
+                stats['re_enqueued'] += 1
+            else:
+                stats['skipped'] += 1
+            continue
+        if not cache.add(lock_key, 'draining', timeout=gap_drain_lock_ttl):
+            stats['skipped'] += 1
+            continue
+
+        attempts = int((gap.meta or {}).get('drain_count') or 0)
+        if reset_drain_count:
+            attempts = 0
+        try:
+            # If tracks landed since the report, just close it.
+            if _gap_has_tracks(gap):
+                from .playback_subtitle import resolve_playback_subtitle_gaps
+
+                resolve_playback_subtitle_gaps(
+                    content_type=gap.content_type,
+                    object_id=gap.object_id,
+                    episode_ids=[gap.episode_id] if gap.episode_id else None,
+                    last_result='ready',
+                )
+                stats['resolved'] += 1
+                continue
+
+            if attempts >= max(1, int(max_attempts)):
+                # Give up re-enqueueing after several tries; leave for viewers.
+                _touch_gap_meta(gap, {'drain_count': attempts + 1})
+                stats['skipped'] += 1
+                continue
+
+            meta = dict(gap.meta or {})
+            preferred_source_url = str(meta.get('preferred_source_url') or '')
+            if gap.content_type == PlaybackSubtitleGap.ContentType.MOVIE:
+                queued = enqueue_movie_softsub_urgent(
+                    gap.object_id,
+                    force=True,
+                    preferred_source_url=preferred_source_url,
+                )
+            else:
+                ep_id = int(gap.episode_id or 0)
+                queued = enqueue_series_softsub_urgent(
+                    gap.object_id,
+                    force=True,
+                    episode_limit=8 if ep_id else 24,
+                    episode_id=ep_id,
+                    preferred_source_url=preferred_source_url,
+                )
+            if queued:
+                # Worker holds the 2h queue lock now; next beat may resolve us.
+                _touch_gap_meta(gap, {'drain_count': attempts + 1})
+                gap.status = PlaybackSubtitleGap.Status.QUEUED
+                gap.last_result = 'drain_re_enqueued'
+                gap.save(update_fields=['status', 'last_result', 'meta', 'updated_at'])
+                stats['re_enqueued'] += 1
+            else:
+                # 2h queue lock held by an in-flight worker — don't stampede it.
+                stats['skipped'] += 1
+        finally:
+            cache.delete(lock_key)
+    return stats
+
+
+def _gap_has_tracks(gap) -> bool:
+    from .models import Episode, Movie, Series
+    from .playback_subtitle import _has_tracks
+
+    if gap.content_type == PlaybackSubtitleGap.ContentType.MOVIE:
+        movie = Movie.objects.filter(pk=gap.object_id, is_published=True).only(
+            'subtitle_tracks', 'has_subtitle',
+        ).first()
+        return bool(movie and _has_tracks(movie.subtitle_tracks))
+    series = Series.objects.filter(pk=gap.object_id, is_published=True).only('subtitle_tracks').first()
+    if series and _has_tracks(series.subtitle_tracks):
+        return True
+    qs = Episode.objects.filter(season__series_id=gap.object_id, is_published=True)
+    if gap.episode_id:
+        qs = qs.filter(pk=gap.episode_id)
+    return qs.exclude(subtitle_tracks=[]).exclude(subtitle_tracks__isnull=True).exists()
+
+
+def _touch_gap_meta(gap, updates: dict) -> None:
+    merged = dict(gap.meta or {})
+    merged.update(updates)
+    gap.meta = merged
+    gap.save(update_fields=['meta', 'updated_at'])
+
+
+@shared_task
+def drain_playback_subtitle_gaps_task():
+    """Periodic safety net: re-enqueue viewer reports a dead worker may have
+    dropped so open players still get cues (see drain_playback_subtitle_gaps)."""
+    from django.conf import settings as django_settings
+
+    return drain_playback_subtitle_gaps(
+        max_batch=int(getattr(django_settings, 'PLAYBACK_GAP_DRAIN_MAX_PER_BATCH', 20)),
+        min_age_seconds=int(getattr(django_settings, 'PLAYBACK_GAP_DRAIN_MIN_AGE_SECONDS', 600)),
+        max_attempts=int(getattr(django_settings, 'PLAYBACK_GAP_DRAIN_MAX_ATTEMPTS', 3)),
+    )
+
+
 # Ensure Celery workers load provider-import tasks via this module.
 from apps.catalog.provider_import.tasks import run_provider_import_job_task  # noqa: E402,F401
