@@ -47,8 +47,8 @@ export function getMovie(slug: string): Promise<ApiMovieDetail> {
 export function getMovieSimilar(
   slug: string,
   limit = 12,
-): Promise<ApiPaginated<ApiMovieListItem>> {
-  return get<ApiPaginated<ApiMovieListItem>>(
+): Promise<ApiPaginated<ApiMovieListItem> | ApiMovieListItem[]> {
+  return get<ApiPaginated<ApiMovieListItem> | ApiMovieListItem[]>(
     `/movies/${encodeURIComponent(slug)}/similar/`,
     {query: {limit}},
   );
@@ -68,8 +68,8 @@ export function getSeries(slug: string): Promise<ApiSeriesDetail> {
 export function getSeriesSimilar(
   slug: string,
   limit = 12,
-): Promise<ApiPaginated<ApiSeriesListItem>> {
-  return get<ApiPaginated<ApiSeriesListItem>>(
+): Promise<ApiPaginated<ApiSeriesListItem> | ApiSeriesListItem[]> {
+  return get<ApiPaginated<ApiSeriesListItem> | ApiSeriesListItem[]>(
     `/series/${encodeURIComponent(slug)}/similar/`,
     {query: {limit}},
   );

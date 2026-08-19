@@ -21,7 +21,7 @@ export function CountriesScreen() {
   const {data, isLoading, error, refetch} = useApiGet(
     'countries',
     () => listCountries(),
-    {persistKey: 'countries', persistTtlMs: 24 * 60 * 60 * 1000},
+    {persistKey: 'countries', persistTtlMs: 6 * 60 * 60 * 1000},
   );
 
   const countries = data ?? [];

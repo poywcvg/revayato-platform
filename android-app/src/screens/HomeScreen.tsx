@@ -26,7 +26,7 @@ export function HomeScreen() {
   const rails = useApiGet(
     'home-rails',
     () => getHomeRails(7),
-    {persistKey: 'home-rails', persistTtlMs: 24 * 60 * 60 * 1000, refreshOnResume: true},
+    {persistKey: 'home-rails', persistTtlMs: 6 * 60 * 60 * 1000, refreshOnResume: true},
   );
   const trending = useApiGet('home-trending', () => getTrending('all', 12));
 

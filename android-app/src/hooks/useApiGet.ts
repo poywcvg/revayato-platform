@@ -7,6 +7,7 @@
  */
 import {useEffect, useRef, useState} from 'react';
 import {AppState} from 'react-native';
+import {CACHE} from '../config';
 import {CachePolicy, fetchCached} from '../api/cache';
 
 interface UseApiGetOptions<T, TResult = T> extends CachePolicy {
@@ -28,7 +29,7 @@ export function useApiGet<T, TResult = T>(
   fetcher: () => Promise<T>,
   options: UseApiGetOptions<T, TResult> = {},
 ): UseApiGetState<TResult> {
-  const ttlMs = options.ttlMs ?? 30 * 60 * 1000;
+  const ttlMs = options.ttlMs ?? CACHE.memoryTtlMs;
   const [data, setData] = useState<TResult | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [isRefreshing, setIsRefreshing] = useState(false);

@@ -1,17 +1,22 @@
 /**
  * Single source of truth for app configuration.
  *
- * Values come from the ambient env (react-native-config-style .env when present)
- * with checked-in development defaults so `pnpm android` works immediately on an
- * emulator (10.0.2.2 = host loopback from Android emulator).
+ * The release APK is built with `API_BASE_URL` inlined at bundle time
+ * (babel-plugin-transform-inline-environment-variables in babel.config.js), so
+ * a shipped build always points at the production API. The dev fallback here
+ * is `REVAYATO_DEFAULT_API_BASE`, which still prefers a real override and only
+ * otherwise targets the production API — never a stale emulator address.
  *
  * NOTE: this module must stay react-native-free so the data layer (adapter /
  * url helpers) is unit-testable under plain node jest. Platform-dependent
  * values live in utils/platform.
  */
+export const REVAYATO_DEFAULT_API_BASE =
+  process.env.REVAYATO_DEFAULT_API_BASE?.replace(/\/$/, '') ??
+  'https://revayato.com/api';
+
 export const API_BASE_URL =
-  process.env.API_BASE_URL?.replace(/\/$/, '') ??
-  'http://10.0.2.2:8000/api';
+  process.env.API_BASE_URL?.replace(/\/$/, '') ?? REVAYATO_DEFAULT_API_BASE;
 
 /**
  * Whether the app should force Persian RTL layout. Kept as a constant so the
@@ -28,9 +33,12 @@ export const FONT_STACK = 'Vazirmatn';
  * - detail is session-scoped so back-nav and episode switching are instant.
  */
 export const CACHE = {
-  memoryTtlMs: 30 * 60 * 1000, // 30m in-memory
-  railsTtlMs: 24 * 60 * 60 * 1000, // persist 24h
-  railsRefreshAgeMs: 6 * 60 * 60 * 1000, // background refresh after 6h
+  // Short in-memory TTL so web catalog changes reach the app within minutes.
+  // Backend invalidates its Redis cache versions instantly on publish/change,
+  // so the only stale window here is bounded by these client TTLs.
+  memoryTtlMs: 5 * 60 * 1000, // 5m in-memory
+  railsTtlMs: 12 * 60 * 60 * 1000, // persist 12h (offline cold-start window)
+  railsRefreshAgeMs: 10 * 60 * 1000, // background refresh after 10m
   namespace: 'revayato:cache:v1',
 };
 

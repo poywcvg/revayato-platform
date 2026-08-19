@@ -21,7 +21,7 @@ export function GenresScreen() {
   const {data, isLoading, error, refetch} = useApiGet(
     'genres',
     () => listGenres(),
-    {persistKey: 'genres', persistTtlMs: 24 * 60 * 60 * 1000},
+    {persistKey: 'genres', persistTtlMs: 6 * 60 * 60 * 1000},
   );
 
   const genres = data ?? [];

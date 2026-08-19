@@ -1,0 +1,93 @@
+name: Build Android APK + Release
+
+on:
+  push:
+    tags:
+      - 'app-v*'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build Revayato APK
+    runs-on: ubuntu-latest
+    env:
+      COREPACK_ENABLE_PROJECT_SPEC: '0'
+      API_BASE_URL: ${{ vars.API_BASE_URL || 'https://revayato.com/api' }}
+      REVAYATO_DEFAULT_API_BASE: ${{ vars.REVAYATO_DEFAULT_API_BASE || 'https://revayato.com/api' }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Java 17 (temurin)
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Setup Node 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'pnpm'
+
+      - name: Enable Corepack + pin pnpm 9
+        run: |
+          corepack enable
+          corepack prepare pnpm@9.15.0 --activate
+          pnpm --version
+
+      - name: Install dependencies
+        working-directory: android-app
+        run: pnpm install --frozen-lockfile
+
+      - name: Copy fonts/assets into native res
+        working-directory: android-app
+        run: pnpm assets
+
+      - name: Typecheck
+        working-directory: android-app
+        run: pnpm typecheck
+
+      - name: Lint
+        working-directory: android-app
+        run: pnpm lint
+
+      - name: Unit tests (data layer)
+        working-directory: android-app
+        run: pnpm test
+
+      - name: Build release APK (inlines production API base at bundle time)
+        working-directory: android-app/android
+        run: ./gradlew assembleRelease --no-daemon --stacktrace
+
+      - name: Rename APK for a clean download URL
+        run: |
+          cp android-app/android/app/build/outputs/apk/release/app-release.apk \
+             android-app/android/app/build/outputs/apk/release/Revayato-v1.0.apk
+
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: revayato-apk
+          path: android-app/android/app/build/outputs/apk/release/Revayato-v1.0.apk
+          retention-days: 14
+
+      - name: Create GitHub Release (tagged builds only)
+        uses: softprops/action-gh-release@v2
+        if: startsWith(github.ref, 'refs/tags/app-')
+        with:
+          name: روایتو ${{ github.ref_name }}
+          tag_name: ${{ github.ref_name }}
+          body: |
+            نسخه عمومی اپلیکیشن روایتو — اندروید و اندروید تی‌وی
+
+            - فایل «Revayato-v1.0.apk» را دانلود و نصب کنید.
+            - تنظیمات اندروید: «نصب از منابع ناشناس» را فعال کنید.
+            - سرور: `API_BASE_URL = https://revayato.com/api`
+          files: |
+            android-app/android/app/build/outputs/apk/release/Revayato-v1.0.apk
+          fail_on_unmatched_files: false

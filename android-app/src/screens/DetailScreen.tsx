@@ -274,18 +274,22 @@ function SimilarRow({
   onPress: (m: AppMedia) => void;
 }) {
   const {data} = useApiGet<
-    ApiPaginated<ApiMovieListItem> | ApiPaginated<ApiSeriesListItem>,
+    ApiPaginated<ApiMovieListItem> | ApiPaginated<ApiSeriesListItem> | ApiMovieListItem[] | ApiSeriesListItem[],
     AppMedia[]
   >(
     `${type}:similar:${slug}`,
     () => (type === 'series' ? getSeriesSimilar(slug, 12) : getMovieSimilar(slug, 12)),
     {
-      select: page =>
-        (page?.results ?? []).map(item =>
+      // Backend returns either a paginated envelope (web-style listing) or a
+      // plain array (similar rail). Accept both like web unwrapApiList.
+      select: page => {
+        const items = Array.isArray(page) ? page : (page?.results ?? []);
+        return items.map(item =>
           type === 'series'
             ? adaptListSeries(item as ApiSeriesListItem)
             : adaptListMovie(item as ApiMovieListItem),
-        ),
+        );
+      },
     },
   );
   const matches = data ?? [];
