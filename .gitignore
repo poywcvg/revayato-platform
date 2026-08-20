@@ -39,6 +39,7 @@ node_modules/
 **/android/app/build/
 **/android/app/src/main/assets/
 **/android/local.properties
+**/local.properties
 .nuxt/
 **/.nuxt/
 .output/

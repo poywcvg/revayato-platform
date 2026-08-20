@@ -1,0 +1,5 @@
+// Root build — the "app is only a WebView wrapper" project.
+// No third-party repositories required beyond the standard google()/mavenCentral().
+plugins {
+    id 'com.android.application' version '8.6.0' apply false
+}
