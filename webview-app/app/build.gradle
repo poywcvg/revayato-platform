@@ -1,0 +1,43 @@
+plugins {
+    id 'com.android.application'
+}
+
+android {
+    namespace 'com.revayato.webview'
+    compileSdk 35
+
+    defaultConfig {
+        applicationId 'com.revayato.webview'
+        minSdk 24
+        targetSdk 34
+        versionCode 1
+        versionName '1.0'
+    }
+
+    signingConfigs {
+        debug {
+            storeFile rootProject.file('debug.keystore')
+            storePassword 'android'
+            keyAlias 'androiddebugkey'
+            keyPassword 'android'
+        }
+    }
+
+    buildTypes {
+        debug {
+            signingConfig signingConfigs.debug
+        }
+        release {
+            // Single-file WebView app; no code/data to protect. Match the debug
+            // keystore used by the shipped android-app APKs unless a release
+            // keystore is added later (see README).
+            signingConfig signingConfigs.debug
+            minifyEnabled false
+        }
+    }
+}
+
+dependencies {
+    // No third-party dependencies. Everything (WebView, DownloadManager,
+    // orientation, cookies) is platform API.
+}

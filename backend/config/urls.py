@@ -5,8 +5,8 @@ from config.converters import UnicodeSlugConverter
 register_converter(UnicodeSlugConverter, 'uslug')
 
 from apps.accounts.api import (
-    confirm_password_reset, lenient_token_refresh, login_user, logout_user, me, register,
-    request_password_reset,
+    LenientRefreshSerializer, TokenRefreshView, confirm_password_reset, login_user,
+    lenient_token_refresh, logout_user, me, register, request_password_reset,
 )
 from users.admin_api import admin_user_detail, admin_user_list_create
 from users.analytics_api import (

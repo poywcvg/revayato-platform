@@ -420,6 +420,8 @@ services:
       - "80:80"
       - "443:443"
       - "443:443/udp"
+      # Direct-origin cleartext fallback for the native app (see ops/Caddyfile :8080).
+      - "8080:8080"
     volumes:
       - ./ops/Caddyfile:/etc/caddy/Caddyfile:ro
       - caddy_data:/data

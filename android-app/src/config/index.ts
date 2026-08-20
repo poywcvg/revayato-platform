@@ -19,6 +19,21 @@ export const API_BASE_URL =
   process.env.API_BASE_URL?.replace(/\/$/, '') ?? REVAYATO_DEFAULT_API_BASE;
 
 /**
+ * Base URLs the app will try, in order, when a network/TLS failure occurs.
+ * Primary is the public site. The direct-origin fallback reaches the VPS's
+ * own public IP (plain HTTP, cleartext allowed for this exact origin) so the
+ * app can load even on networks where the Cloudflare edge for revayato.com is
+ * unreachable (e.g. some Iranian ISPs). The first base that responds is kept
+ * for subsequent requests in this session.
+ */
+export const API_BASE_URL_FALLBACKS: string[] = [
+  API_BASE_URL,
+  ...(process.env.API_BASE_URL_FALLBACK
+    ? process.env.API_BASE_URL_FALLBACK.split(',').map(s => s.trim().replace(/\/$/, ''))
+    : ['http://45.13.119.115:8080/api']),
+].filter(Boolean);
+
+/**
  * Whether the app should force Persian RTL layout. Kept as a constant so the
  * RN I18nManager pin in index.js stays the single enforcement point.
  */

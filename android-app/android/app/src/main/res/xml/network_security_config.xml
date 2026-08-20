@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<network-security-config>
+    <!-- Site HTTPS is always allowed (default). The app additionally allows
+         cleartext ONLY to the VPS direct-origin fallback IP so it can reach
+         the API/media on networks that block the Cloudflare edge for
+         revayato.com. Nothing else permits cleartext. -->
+    <domain-config cleartextTrafficPermitted="true">
+        <domain includeSubdomains="false">45.13.119.115</domain>
+    </domain-config>
+</network-security-config>

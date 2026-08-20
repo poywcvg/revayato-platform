@@ -76,6 +76,22 @@ jobs:
           path: android-app/android/app/build/outputs/apk/release/Revayato-v1.0.apk
           retention-days: 14
 
+      - name: Build WebView APK (~0.3 MB, signed with committed debug key)
+        working-directory: webview-app
+        run: |
+          echo "sdk.dir=$ANDROID_HOME" > local.properties
+          chmod +x ./gradlew
+          ./gradlew :app:assembleRelease --no-daemon --stacktrace
+          mkdir -p dist
+          cp app/build/outputs/apk/release/app-release.apk dist/Revayato-WebView.apk
+
+      - name: Upload WebView APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: revayato-webview-apk
+          path: webview-app/dist/Revayato-WebView.apk
+          retention-days: 14
+
       - name: Create GitHub Release (tagged builds only)
         uses: softprops/action-gh-release@v2
         if: startsWith(github.ref, 'refs/tags/app-')
@@ -86,8 +102,10 @@ jobs:
             نسخه عمومی اپلیکیشن روایتو — اندروید و اندروید تی‌وی
 
             - فایل «Revayato-v1.0.apk» را دانلود و نصب کنید.
+            - فایل «Revayato-WebView.apk» (نسخه WebView) را دانلود و نصب کنید.
             - تنظیمات اندروید: «نصب از منابع ناشناس» را فعال کنید.
             - سرور: `API_BASE_URL = https://revayato.com/api`
           files: |
             android-app/android/app/build/outputs/apk/release/Revayato-v1.0.apk
+            webview-app/dist/Revayato-WebView.apk
           fail_on_unmatched_files: false

@@ -18,6 +18,7 @@ from rest_framework.response import Response
 from rest_framework.throttling import SimpleRateThrottle
 from rest_framework_simplejwt.exceptions import InvalidToken, TokenBackendError, TokenError
 from rest_framework_simplejwt.serializers import TokenRefreshSerializer
+from rest_framework_simplejwt.views import TokenRefreshView
 from rest_framework_simplejwt.token_blacklist.models import BlacklistedToken, OutstandingToken
 from rest_framework_simplejwt.tokens import RefreshToken
 
@@ -145,11 +146,12 @@ class LenientRefreshSerializer(TokenRefreshSerializer):
             raise ValidationError({'detail': _RefreshTokenErrorHelper._simplejwt_error(exc)}) from exc
 
 
-@api_view(['POST'])
-@permission_classes([AllowAny])
-def lenient_token_refresh(request):
-    """Wire the lenient serializer onto the refresh endpoint."""
-    return TokenRefreshView.as_view(serializer_class=LenientRefreshSerializer)(request)
+# The lenient serializer is wired on ASGI/uvicorn at the URL layer (config.urls)
+# so DRF's request lifecycle runs exactly once — nesting the second APIView inside
+# the @api_view handler would re-enter dispatch with a DRF Request and blow up.
+lenient_token_refresh = TokenRefreshView.as_view(
+    serializer_class=LenientRefreshSerializer,
+)
 
 
 def _revoke_user_refresh_tokens(user):

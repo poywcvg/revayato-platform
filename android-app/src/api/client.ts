@@ -10,7 +10,7 @@
  * v1 is anonymous (browse + playback); the auth seam just needs this module
  * to stay token-aware.
  */
-import {API_BASE_URL, HTTP_TIMEOUT_MS} from '../config';
+import {API_BASE_URL_FALLBACKS, HTTP_TIMEOUT_MS} from '../config';
 
 export type RequestMethod = 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE';
 
@@ -77,25 +77,28 @@ async function refreshTokens(): Promise<string | null> {
   if (!auth.refresh) {return null;}
   if (!refreshInFlight) {
     refreshInFlight = (async () => {
-      try {
-        const res = await fetch(`${API_BASE_URL}/auth/token/refresh/`, {
-          method: 'POST',
-          headers: {Accept: 'application/json', 'Content-Type': 'application/json'},
-          body: JSON.stringify({refresh: auth.refresh}),
-        });
-        const data = await res.json().catch(() => ({}));
-        if (!res.ok) {
-          auth.access = null;
-          return null;
+      const headers = {Accept: 'application/json', 'Content-Type': 'application/json'};
+      for (const base of API_BASE_URL_FALLBACKS) {
+        try {
+          const res = await fetch(`${base}/auth/token/refresh/`, {
+            method: 'POST',
+            headers,
+            body: JSON.stringify({refresh: auth.refresh}),
+          });
+          const data = await res.json().catch(() => ({}));
+          if (!res.ok) {
+            auth.access = null;
+            return null;
+          }
+          auth.access = data.access ?? null;
+          if (data.refresh) {auth.refresh = data.refresh;}
+          return auth.access;
+        } catch {
+          // network failure → try next base
         }
-        auth.access = data.access ?? null;
-        if (data.refresh) {auth.refresh = data.refresh;}
-        return auth.access;
-      } catch {
-        return null;
-      } finally {
-        refreshInFlight = null;
       }
+      auth.access = null;
+      return null;
     })();
   }
   return refreshInFlight;
@@ -106,11 +109,7 @@ export async function request<T>(
   options: RequestOptions = {},
 ): Promise<T> {
   const method = options.method ?? 'GET';
-  const url = `${API_BASE_URL}${path}${buildQuery(options.query)}`;
-
   const timeoutMs = options.timeout ?? HTTP_TIMEOUT_MS.default;
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), timeoutMs);
 
   const headers: Record<string, string> = {
     Accept: 'application/json',
@@ -122,44 +121,55 @@ export async function request<T>(
     headers.Authorization = `Bearer ${auth.access}`;
   }
 
-  let res: Response;
-  try {
-    res = await fetch(url, {
-      method,
-      headers,
-      signal: controller.signal,
-      body: options.body !== undefined ? JSON.stringify(options.body) : undefined,
-    });
-  } catch (error) {
-    const isAbort = error instanceof Error && error.name === 'AbortError';
-    throw new ApiError('عدم پاسخگویی سرور', {
-      isNetwork: true,
-      isTimeout: isAbort,
-    });
-  } finally {
-    clearTimeout(timer);
-  }
-
-  const raw = await res.text();
-  let body: unknown = null;
-  try {
-    body = raw ? JSON.parse(raw) : null;
-  } catch {
-    body = raw;
-  }
-
-  if (res.status === 401 && !path.startsWith('/auth/') && auth.refresh) {
-    const token = await refreshTokens();
-    if (token) {
-      return request<T>(path, options);
+  let lastNetworkError: unknown = null;
+  // Try each base URL in order; only network/TLS/timeout failures fall through
+  // to the next base (an HTTP status response — even an error — is final).
+  for (const base of API_BASE_URL_FALLBACKS) {
+    const url = `${base}${path}${buildQuery(options.query)}`;
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    let res: Response;
+    try {
+      res = await fetch(url, {
+        method,
+        headers,
+        signal: controller.signal,
+        body: options.body !== undefined ? JSON.stringify(options.body) : undefined,
+      });
+    } catch (error) {
+      lastNetworkError = error;
+      continue;
+    } finally {
+      clearTimeout(timer);
     }
+
+    const raw = await res.text();
+    let body: unknown = null;
+    try {
+      body = raw ? JSON.parse(raw) : null;
+    } catch {
+      body = raw;
+    }
+
+    if (res.status === 401 && !path.startsWith('/auth/') && auth.refresh) {
+      const token = await refreshTokens();
+      if (token) {
+        return request<T>(path, options);
+      }
+    }
+
+    if (!res.ok) {
+      throw errorFrom(res.status, body, `درخواست ناموفق (${res.status})`);
+    }
+
+    return body as T;
   }
 
-  if (!res.ok) {
-    throw errorFrom(res.status, body, `درخواست ناموفق (${res.status})`);
-  }
-
-  return body as T;
+  const isAbort = lastNetworkError instanceof Error && lastNetworkError.name === 'AbortError';
+  throw new ApiError('عدم پاسخگویی سرور', {
+    isNetwork: true,
+    isTimeout: isAbort,
+  });
 }
 
 export function get<T>(path: string, options?: RequestOptions): Promise<T> {

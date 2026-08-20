@@ -8,7 +8,10 @@ www.{$SITE_DOMAIN} {
 	redir https://{$SITE_DOMAIN}{uri} permanent
 }
 
-{$SITE_DOMAIN} {
+# ---- Shared handler set, imported by both the public HTTPS site and the
+# ---- native-app direct-origin fallback (plain HTTP on :8080). Keeps the two
+# ---- in lockstep so the app gets identical routes on either path.
+(site_common) {
 	encode zstd gzip
 
 	log {
@@ -22,7 +25,6 @@ www.{$SITE_DOMAIN} {
 		X-Frame-Options "DENY"
 		Referrer-Policy "strict-origin-when-cross-origin"
 		Permissions-Policy "camera=(), microphone=(), geolocation=()"
-		Strict-Transport-Security "max-age={$HSTS_MAX_AGE}"
 		Content-Security-Policy "upgrade-insecure-requests"
 	}
 
@@ -149,4 +151,20 @@ www.{$SITE_DOMAIN} {
 	handle {
 		reverse_proxy frontend:3000
 	}
+}
+
+{$SITE_DOMAIN} {
+	import site_common
+
+	header Strict-Transport-Security "max-age={$HSTS_MAX_AGE}"
+}
+
+# Direct-origin fallback for the native app (Android/TV): plain HTTP on the
+# VPS's own public IP, no TLS, no SNI, no CDN. Lets the app reach the API /
+# media / downloads even on networks where revayato.com through the Cloudflare
+# edge is unreachable (e.g. Iranian ISPs blocking the CF path). The app allows
+# cleartext ONLY for this origin, via its network security config.
+:8080 {
+	import site_common
+	header Access-Control-Allow-Origin "*"
 }

@@ -155,6 +155,30 @@ class AuthenticationApiTests(APITestCase):
         refresh_response = self.client.post('/api/auth/token/refresh/', {'refresh': refresh}, format='json')
         self.assertEqual(refresh_response.status_code, status.HTTP_401_UNAUTHORIZED)
 
+    def test_refresh_with_invalid_token_returns_401_not_500(self):
+        """A malformed or revoked refresh token must never crash as a 500.
+
+        Regression for the missing TokenRefreshView import: previously the
+        lenient refresh view raised NameError → the server returned 500, which
+        the native/web clients treat as transient and retry forever instead of
+        clearing the dead session.
+        """
+        for bad in [
+            # Well-formed JWT with a bogus signature/payload.
+            'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ0b2tlbl90eXBlIjoicmVmcmVzaCIsImV4cCI6OTk5OTk5OTk5OX0.not-a-real-signature',
+            # Garbage that is not a JWT at all.
+            'definitely-invalid',
+        ]:
+            response = self.client.post('/api/auth/token/refresh/', {'refresh': bad}, format='json')
+            self.assertNotEqual(
+                response.status_code, status.HTTP_500_INTERNAL_SERVER_ERROR,
+                f'expected non-500 for refresh {bad!r}, got {response.status_code}',
+            )
+            self.assertEqual(
+                response.status_code, status.HTTP_401_UNAUTHORIZED,
+                f'expected 401 for refresh {bad!r}, got {response.status_code}',
+            )
+
     def test_refresh_token_has_persistent_rotating_lifetime(self):
         login_response = self.login()
         refresh = login_response.data['refresh']
