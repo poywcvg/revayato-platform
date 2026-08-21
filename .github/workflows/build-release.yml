@@ -70,13 +70,13 @@ jobs:
       - name: Rename APK for a clean download URL
         run: |
           cp android-app/android/app/build/outputs/apk/release/app-release.apk \
-             android-app/android/app/build/outputs/apk/release/Revayato-v1.1.apk
+             android-app/android/app/build/outputs/apk/release/Revayato-v1.2.apk
 
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
         with:
           name: revayato-apk
-          path: android-app/android/app/build/outputs/apk/release/Revayato-v1.1.apk
+          path: android-app/android/app/build/outputs/apk/release/Revayato-v1.2.apk
           retention-days: 14
 
       - name: Build WebView APK (~0.3 MB, signed with committed debug key)
@@ -104,11 +104,11 @@ jobs:
           body: |
             نسخه عمومی اپلیکیشن روایتو — اندروید و اندروید تی‌وی
 
-            - فایل «Revayato-v1.1.apk» را دانلود و نصب کنید.
+            - فایل «Revayato-v1.2.apk» را دانلود و نصب کنید.
             - فایل «Revayato-WebView.apk» (نسخه WebView) را دانلود و نصب کنید.
             - تنظیمات اندروید: «نصب از منابع ناشناس» را فعال کنید.
             - سرور: `API_BASE_URL = https://revayato.com/api`
           files: |
-            android-app/android/app/build/outputs/apk/release/Revayato-v1.1.apk
+            android-app/android/app/build/outputs/apk/release/Revayato-v1.2.apk
             webview-app/dist/Revayato-WebView.apk
           fail_on_unmatched_files: false
