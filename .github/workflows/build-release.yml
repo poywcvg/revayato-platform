@@ -13,32 +13,41 @@ jobs:
   build:
     name: Build Revayato APK
     runs-on: ubuntu-latest
+
     env:
       COREPACK_ENABLE_PROJECT_SPEC: '0'
       API_BASE_URL: ${{ vars.API_BASE_URL || 'https://revayato.com/api' }}
       REVAYATO_DEFAULT_API_BASE: ${{ vars.REVAYATO_DEFAULT_API_BASE || 'https://revayato.com/api' }}
+
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout
+        uses: actions/checkout@v5
         with:
           fetch-depth: 0
 
-      - name: Setup Java 17 (temurin)
-        uses: actions/setup-java@v4
+      - name: Setup Java 17 (Temurin)
+        uses: actions/setup-java@v5
         with:
           distribution: temurin
           java-version: '17'
 
       - name: Setup Node 20
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v5
         with:
           node-version: '20'
-          cache: 'pnpm'
 
-      - name: Enable Corepack + pin pnpm 9
+      - name: Setup pnpm 9.15.0
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9.15.0
+          run_install: false
+
+      - name: Verify tools
         run: |
-          corepack enable
-          corepack prepare pnpm@9.15.0 --activate
+          node --version
+          npm --version
           pnpm --version
+          java -version
 
       - name: Install dependencies
         working-directory: android-app
@@ -60,11 +69,11 @@ jobs:
         working-directory: android-app
         run: pnpm test
 
-      - name: Build release APK (inlines production API base at bundle time)
+      - name: Build release APK
         working-directory: android-app/android
         run: ./gradlew assembleRelease --no-daemon --stacktrace
 
-      - name: Rename APK for a clean download URL
+      - name: Rename APK
         run: |
           cp android-app/android/app/build/outputs/apk/release/app-release.apk \
              android-app/android/app/build/outputs/apk/release/Revayato-v1.0.apk
@@ -76,7 +85,7 @@ jobs:
           path: android-app/android/app/build/outputs/apk/release/Revayato-v1.0.apk
           retention-days: 14
 
-      - name: Build WebView APK (~0.3 MB, signed with committed debug key)
+      - name: Build WebView APK
         working-directory: webview-app
         run: |
           echo "sdk.dir=$ANDROID_HOME" > local.properties
@@ -92,19 +101,18 @@ jobs:
           path: webview-app/dist/Revayato-WebView.apk
           retention-days: 14
 
-      - name: Create GitHub Release (tagged builds only)
+      - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         if: startsWith(github.ref, 'refs/tags/app-')
         with:
-          name: روایتو ${{ github.ref_name }}
+          name: Revayato ${{ github.ref_name }}
           tag_name: ${{ github.ref_name }}
           body: |
-            نسخه عمومی اپلیکیشن روایتو — اندروید و اندروید تی‌وی
+            Revayato Android application.
 
-            - فایل «Revayato-v1.0.apk» را دانلود و نصب کنید.
-            - فایل «Revayato-WebView.apk» (نسخه WebView) را دانلود و نصب کنید.
-            - تنظیمات اندروید: «نصب از منابع ناشناس» را فعال کنید.
-            - سرور: `API_BASE_URL = https://revayato.com/api`
+            - Revayato-v1.0.apk
+            - Revayato-WebView.apk
+            - API_BASE_URL = https://revayato.com/api
           files: |
             android-app/android/app/build/outputs/apk/release/Revayato-v1.0.apk
             webview-app/dist/Revayato-WebView.apk
