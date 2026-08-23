@@ -55,9 +55,8 @@ jobs:
       - name: Verify React Native Gradle Plugin
         run: |
           echo "Checking React Native Gradle Plugin..."
-          test -d node_modules/@react-native/gradle-plugin
-          ls -la node_modules/@react-native/gradle-plugin
-
+          test -d android-app/node_modules/@react-native/gradle-plugin
+          ls -la android-app/node_modules/@react-native/gradle-plugin
 
       - name: Copy fonts/assets into native res
         working-directory: android-app
