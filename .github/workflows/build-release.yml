@@ -52,6 +52,14 @@ jobs:
       - name: Install dependencies
         working-directory: android-app
         run: pnpm install --frozen-lockfile
+      
+      - name: Verify React Native Gradle Plugin
+        working-directory: android-app
+        run: |
+          echo "Checking React Native Gradle Plugin..."
+          test -d node_modules/@react-native/gradle-plugin
+          ls -la node_modules/@react-native/gradle-plugin
+
 
       - name: Copy fonts/assets into native res
         working-directory: android-app
