@@ -37,15 +37,10 @@ jobs:
           node-version: '20'
 
       - name: Setup pnpm 9.15.0
-        uses: pnpm/action-setup@v4
+        uses: pnpm/action-setup@v4.2.0
         with:
           version: 9.15.0
           run_install: false
-
-      - name: Enable pnpm
-        run: |
-          corepack Enable
-          corepack prepare pnpm@9.15.0 --activate
 
       - name: Verify tools
         run: |
