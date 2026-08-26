@@ -2,12 +2,18 @@
 const route = useRoute()
 const year = new Date().getFullYear()
 
-const links = [
+const quickLinks = [
   { label: 'فیلم‌ها', to: '/movies' },
   { label: 'سریال‌ها', to: '/series' },
   { label: 'تازه‌ها', to: '/new' },
+  { label: 'اپلیکیشن', to: '/app' },
+]
+
+const supportLinks = [
+  { label: 'درخواست فیلم یا سریال', to: '/contact?subject=content_request' },
+  { label: 'حمایت از روایتو', to: 'https://daramet.com/revayato', external: true },
   { label: 'درباره ما', to: '/about' },
-  { label: 'تماس', to: '/contact' },
+  { label: 'تماس با ما', to: '/contact' },
   { label: 'قوانین', to: '/terms' },
   { label: 'حریم خصوصی', to: '/privacy' },
 ]
@@ -25,39 +31,85 @@ function isActive(to: string) {
 <template>
   <footer class="site-footer">
     <div class="page-shell site-footer__inner">
-      <div class="site-footer__meta">
-        <p class="site-footer__copy">© {{ year }} روایتو</p>
+      <div class="site-footer__grid">
+        <div class="site-footer__brand">
+          <NuxtLink to="/" class="site-footer__logo" aria-label="روایتو، صفحه اصلی">
+            روایتو
+          </NuxtLink>
+          <p class="site-footer__tagline">
+            تماشای آنلاین فیلم و سریال با زیرنویس فارسی، روی موبایل، تبلت و کامپیوتر.
+          </p>
+          <a
+            href="https://t.me/revayato"
+            target="_blank"
+            rel="noopener noreferrer"
+            class="site-footer__telegram"
+            aria-label="کانال تلگرام روایتو، @revayato؛ باز کردن در پنجره جدید"
+          >
+            <svg
+              class="site-footer__telegram-icon"
+              viewBox="0 0 32 32"
+              fill="currentColor"
+              aria-hidden="true"
+            >
+              <path d="M16 0a16 16 0 1 0 0 32 16 16 0 0 0 0-32Zm7.84 10.72-2.4 11.32c-.18.8-.66 1-1.33.62l-3.66-2.7-1.76 1.7c-.2.2-.36.36-.74.36l.27-3.72L21 12.17c.3-.27-.06-.41-.46-.15l-8.39 5.28-3.61-1.13c-.78-.24-.8-.78.17-1.16l14.11-5.44c.66-.25 1.23.14 1.02 1.15Z" />
+            </svg>
+            <span>تلگرام</span>
+            <span class="site-footer__telegram-handle" dir="ltr">@revayato</span>
+          </a>
+        </div>
+
+        <nav class="site-footer__col" aria-label="دسترسی سریع">
+          <h2 class="site-footer__heading">دسترسی سریع</h2>
+          <ul class="site-footer__list">
+            <li v-for="item in quickLinks" :key="item.to">
+              <NuxtLink
+                :to="item.to"
+                class="site-footer__link"
+                :class="{ 'is-active': isActive(item.to) }"
+                :aria-current="isActive(item.to) ? 'page' : undefined"
+              >
+                {{ item.label }}
+              </NuxtLink>
+            </li>
+          </ul>
+        </nav>
+
+        <nav class="site-footer__col" aria-label="پشتیبانی و راهنما">
+          <h2 class="site-footer__heading">پشتیبانی</h2>
+          <ul class="site-footer__list">
+            <li v-for="item in supportLinks" :key="item.to">
+              <a
+                v-if="item.external"
+                :href="item.to"
+                target="_blank"
+                rel="noopener noreferrer"
+                class="site-footer__link site-footer__link--donation"
+              >♥ {{ item.label }}</a>
+              <NuxtLink
+                v-else
+                :to="item.to"
+                class="site-footer__link"
+                :class="{ 'is-active': isActive(item.to) }"
+                :aria-current="isActive(item.to) ? 'page' : undefined"
+              >
+                {{ item.label }}
+              </NuxtLink>
+            </li>
+          </ul>
+        </nav>
+      </div>
+
+      <div class="site-footer__bar">
+        <p class="site-footer__copy">© {{ year }} روایتو — همه حقوق محفوظ است.</p>
         <a
           href="https://t.me/revayato"
           target="_blank"
           rel="noopener noreferrer"
-          class="site-footer__telegram"
-          aria-label="کانال تلگرام روایتو، @revayato؛ باز کردن در پنجره جدید"
-        >
-          <svg
-            class="site-footer__telegram-icon"
-            viewBox="0 0 32 32"
-            fill="currentColor"
-            aria-hidden="true"
-          >
-            <path d="M16 0a16 16 0 1 0 0 32 16 16 0 0 0 0-32Zm7.84 10.72-2.4 11.32c-.18.8-.66 1-1.33.62l-3.66-2.7-1.76 1.7c-.2.2-.36.36-.74.36l.27-3.72L21 12.17c.3-.27-.06-.41-.46-.15l-8.39 5.28-3.61-1.13c-.78-.24-.8-.78.17-1.16l14.11-5.44c.66-.25 1.23.14 1.02 1.15Z" />
-          </svg>
-          <span>تلگرام</span>
-          <span class="site-footer__telegram-handle" dir="ltr">@revayato</span>
-        </a>
+          class="site-footer__handle"
+          dir="ltr"
+        >@revayato</a>
       </div>
-
-      <nav class="site-footer__nav" aria-label="پیوندهای پایین صفحه">
-        <NuxtLink
-          v-for="item in links"
-          :key="item.to"
-          :to="item.to"
-          :class="{ 'is-active': isActive(item.to) }"
-          :aria-current="isActive(item.to) ? 'page' : undefined"
-        >
-          {{ item.label }}
-        </NuxtLink>
-      </nav>
     </div>
   </footer>
 </template>
@@ -70,46 +122,65 @@ function isActive(to: string) {
 }
 
 .site-footer__inner {
-  display: flex;
-  min-height: 52px;
-  padding-block: 14px max(14px, env(safe-area-inset-bottom));
-  align-items: center;
-  justify-content: space-between;
-  gap: 16px 28px;
+  padding-block: 2rem max(1.25rem, env(safe-area-inset-bottom));
 }
 
-.site-footer__copy {
-  margin: 0;
-  color: var(--theme-text-muted);
-  font-size: .7rem;
-  white-space: nowrap;
+.site-footer__grid {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 2rem;
 }
 
-.site-footer__meta {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 8px 14px;
+@media (min-width: 640px) {
+  .site-footer__grid {
+    grid-template-columns: 1fr 1fr;
+  }
+}
+
+@media (min-width: 1024px) {
+  .site-footer__grid {
+    grid-template-columns: minmax(0, 1.5fr) 1fr 1fr;
+    gap: 3rem;
+  }
+}
+
+.site-footer__logo {
+  display: inline-block;
+  background: linear-gradient(120deg, var(--theme-accent-primary), var(--theme-accent-crimson, var(--theme-accent-primary)));
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  font-size: 1.35rem;
+  font-weight: 900;
+}
+
+.site-footer__tagline {
+  margin-top: .55rem;
+  max-width: 22rem;
+  color: var(--theme-text-secondary);
+  font-size: .78rem;
+  line-height: 1.9;
 }
 
 .site-footer__telegram {
   display: inline-flex;
-  min-height: 36px;
-  padding-inline: 9px 11px;
+  min-height: 2.25rem;
+  margin-top: 1rem;
+  padding-inline: 10px 12px;
   align-items: center;
   gap: 6px;
   border: 1px solid color-mix(in srgb, #2aabee 24%, var(--theme-border));
   border-radius: 9999px;
   background: color-mix(in srgb, #2aabee 7%, var(--theme-bg-elevated));
   color: var(--theme-text-secondary);
-  font-size: .7rem;
+  font-size: .72rem;
   font-weight: 700;
   transition: border-color 160ms ease, background-color 160ms ease, color 160ms ease, transform 160ms ease;
 }
 
 .site-footer__telegram-icon {
-  width: 18px;
-  height: 18px;
+  width: 17px;
+  height: 17px;
   flex: none;
   color: #2aabee;
 }
@@ -129,61 +200,64 @@ function isActive(to: string) {
   transform: translateY(-1px);
 }
 
-.site-footer__nav {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  justify-content: flex-end;
-  gap: 2px 2px;
+.site-footer__heading {
+  margin: 0 0 .65rem;
+  color: var(--theme-text-primary);
+  font-size: .82rem;
+  font-weight: 800;
 }
 
-.site-footer__nav a {
+.site-footer__list {
+  display: flex;
+  flex-direction: column;
+  gap: .15rem;
+}
+
+.site-footer__link {
   display: inline-flex;
-  min-height: 32px;
-  padding-inline: 8px;
+  min-height: 2rem;
   align-items: center;
   color: var(--theme-text-muted);
-  font-size: .7rem;
-  font-weight: 600;
+  font-size: .75rem;
   transition: color 160ms ease;
 }
 
-.site-footer__nav a:hover,
-.site-footer__nav a.is-active {
+.site-footer__link:hover,
+.site-footer__link.is-active {
   color: var(--theme-accent-primary);
 }
 
-@media (max-width: 639px) {
-  .site-footer__inner {
-    flex-direction: column;
-    align-items: stretch;
-    gap: 10px;
-  }
+.site-footer__bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: .5rem 1rem;
+  margin-top: 2rem;
+  padding-top: 1rem;
+  border-top: 1px solid color-mix(in srgb, var(--theme-border) 60%, transparent);
+}
 
-  .site-footer__meta {
-    width: 100%;
-    justify-content: space-between;
-  }
+.site-footer__copy {
+  margin: 0;
+  color: var(--theme-text-muted);
+  font-size: .7rem;
+}
 
-  .site-footer__nav {
-    width: 100%;
-    justify-content: flex-start;
-    gap: 0;
-  }
+.site-footer__handle {
+  color: var(--theme-text-muted);
+  font-family: var(--font-latin-ui);
+  font-size: .7rem;
+  transition: color 160ms ease;
+}
 
-  .site-footer__nav a {
-    min-height: 2.75rem;
-    padding-inline: .55rem;
-    font-size: .72rem;
-  }
-
-  .site-footer__telegram {
-    min-height: 2.75rem;
-  }
+.site-footer__handle:hover {
+  color: #2aabee;
 }
 
 @media (max-width: 379px) {
-  .site-footer__telegram-handle {
+  .site-footer__telegram-handle,
+  .site-footer__handle {
     display: none;
   }
 }

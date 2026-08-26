@@ -3,11 +3,7 @@
   "private": true,
   "packageManager": "pnpm@9.15.0+sha512.76e2379760a4328ec4415815bcd6628dee727af3779aaa4c914e3944156c4299921a89f976381ee107d41f12cfa4b66681ca9c718f0668fa0831ed4c6d8ba56c",
   "scripts": {
-    "app:start": "pnpm --dir android-app start",
-    "app:android": "pnpm --dir android-app android",
-    "app:typecheck": "pnpm --dir android-app typecheck",
-    "app:lint": "pnpm --dir android-app lint",
-    "app:test": "pnpm --dir android-app test",
-    "app:assets": "pnpm --dir android-app assets"
+    "app:build": "cd android-app && ./gradlew --no-daemon assembleRelease",
+    "app:debug": "cd android-app && ./gradlew --no-daemon assembleDebug"
   }
 }

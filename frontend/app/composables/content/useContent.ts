@@ -6,7 +6,7 @@ import type { ApiCatalogItem, ApiGenre, ApiListResponse } from '~/data/catalogAd
 import { normalizeSearchText, rankCatalogSearch, scoreCatalogItem } from '~/utils/searchRank'
 import { featuredScore, popularScore, trendingScore, newestTimestamp } from '~/utils/trendingScore'
 
-export type CatalogSort = 'newest' | 'rating' | 'popular' | 'trending' | 'featured' | 'imdb_top'
+export type CatalogSort = 'newest' | 'year' | 'rating' | 'popular' | 'trending' | 'featured' | 'imdb_top'
 export type CatalogLoadMode = 'home' | 'full'
 
 export interface CatalogFilters {
@@ -77,7 +77,8 @@ export function useCatalog() {
     listPending.value = true
     error.value = null
 
-    const request = (async () => {
+    let request!: Promise<void>
+    request = (async () => {
       try {
         // Home needs only enough candidates for one full rail (railLimit=7).
         // SSR payload lean cuts HTML transfer/hydration cost without changing UI.
@@ -328,6 +329,7 @@ export function useSearch(filters: MaybeRefOrGetter<CatalogFilters>) {
 
     if (!query) {
       return [...pool].sort((a, b) => {
+        if (active.sort === 'year') return b.year - a.year || newestTimestamp(b) - newestTimestamp(a)
         if (active.sort === 'rating') return b.rating - a.rating
         if (active.sort === 'popular') return popularScore(b) - popularScore(a) || b.popularity - a.popularity
         if (active.sort === 'trending') return trendingScore(b) - trendingScore(a) || b.popularity - a.popularity
@@ -338,6 +340,9 @@ export function useSearch(filters: MaybeRefOrGetter<CatalogFilters>) {
 
     if (active.sort === 'rating') {
       return [...pool].sort((a, b) => b.rating - a.rating || (scoreCatalogItem(b, query)?.score || 0) - (scoreCatalogItem(a, query)?.score || 0))
+    }
+    if (active.sort === 'year') {
+      return [...pool].sort((a, b) => b.year - a.year || newestTimestamp(b) - newestTimestamp(a))
     }
     if (active.sort === 'popular') {
       return [...pool].sort((a, b) => popularScore(b) - popularScore(a) || b.popularity - a.popularity)
@@ -399,7 +404,8 @@ function heuristicRelated(item: Movie, catalog: Movie[], limit: number): Movie[]
     if (sharedSpecific.length) value += sharedSpecific.length * 5
     if (shared.length) value += shared.length * 2.5
     // Missing the source's dominant (most specific) genre halves the genre score.
-    if (sourceSpecific.length && !shared.includes(sourceSpecific[0])) value *= 0.55
+    const dominantGenre = sourceSpecific[0]
+    if (dominantGenre && !shared.includes(dominantGenre)) value *= 0.55
 
     // Shared top-billed cast is strong; earlier seats count more.
     const sharedCast = candidate.cast.filter(member => castNames.includes(member.name)).length

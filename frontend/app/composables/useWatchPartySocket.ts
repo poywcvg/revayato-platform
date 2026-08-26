@@ -44,6 +44,7 @@ export function useWatchPartySocket(inviteCode: MaybeRef<string>) {
   const socketError = ref<WatchPartySocketError | null>(null)
   const lastPlaybackEvent = shallowRef<WatchPartyPlaybackEvent | null>(null)
   const lastChatMessage = shallowRef<WatchPartyMessage | null>(null)
+  const syncRequestSequence = ref(0)
 
   let socket: WebSocket | null = null
   let manualDisconnect = false
@@ -114,6 +115,8 @@ export function useWatchPartySocket(inviteCode: MaybeRef<string>) {
       }
     } else if (payload.type === 'latency.pong') {
       updateLatency(payload)
+    } else if (payload.type === 'playback.sync.requested') {
+      syncRequestSequence.value += 1
     }
 
     if (PLAYBACK_EVENTS.has(payload.type as WatchPartyPlaybackEventType) && payload.playback_state) {
@@ -124,6 +127,7 @@ export function useWatchPartySocket(inviteCode: MaybeRef<string>) {
         return
       }
       if (stamp) lastPlaybackStampMs = Math.max(lastPlaybackStampMs, stamp)
+      refineClockFromEvent(payload.playback_state)
       playbackState.value = payload.playback_state
       lastPlaybackEvent.value = {
         sequence: ++sequence,
@@ -160,6 +164,14 @@ export function useWatchPartySocket(inviteCode: MaybeRef<string>) {
     clockOffsetMs.value = clockOffsetMs.value * 0.75 + sampleOffset * 0.25
   }
 
+  function refineClockFromEvent(state: { server_time_ms?: number, updated_at: string }) {
+    const stamp = Number(state.server_time_ms) || Date.parse(state.updated_at)
+    if (!Number.isFinite(stamp) || !stamp) return
+    const latency = latencyMs.value
+    const sampleOffset = stamp - (Date.now() - (latency ?? 0) / 2)
+    clockOffsetMs.value = clockOffsetMs.value * 0.8 + sampleOffset * 0.2
+  }
+
   function serverNowMs() {
     return Date.now() + clockOffsetMs.value
   }
@@ -171,7 +183,7 @@ export function useWatchPartySocket(inviteCode: MaybeRef<string>) {
   function scheduleReconnect() {
     if (manualDisconnect || room.value?.status !== 'active') return
     connectionStatus.value = 'reconnecting'
-    const delay = Math.min(1000 * 2 ** reconnectAttempts, 10000)
+    const delay = Math.min(750 * 2 ** reconnectAttempts, 10000) * (0.8 + Math.random() * 0.4)
     reconnectAttempts += 1
     reconnectTimer = setTimeout(connect, delay)
   }
@@ -216,11 +228,12 @@ export function useWatchPartySocket(inviteCode: MaybeRef<string>) {
       connectionStatus.value = 'connected'
       wasConnected = true
       reconnectAttempts = 0
+      lastPlaybackStampMs = 0
       sendEvent({ type: 'room.join' })
       sendLatencyPing()
       if (reconnected) sendEvent({ type: 'playback.sync.request' })
-      heartbeatTimer = setInterval(() => sendEvent({ type: 'heartbeat' }), 25000)
-      latencyTimer = setInterval(sendLatencyPing, 6000)
+      heartbeatTimer = setInterval(() => sendEvent({ type: 'heartbeat' }), 15000)
+      latencyTimer = setInterval(sendLatencyPing, 3000)
     })
     socket.addEventListener('message', (event) => {
       try {
@@ -298,6 +311,7 @@ export function useWatchPartySocket(inviteCode: MaybeRef<string>) {
     socketError: readonly(socketError),
     lastPlaybackEvent: readonly(lastPlaybackEvent),
     lastChatMessage: readonly(lastChatMessage),
+    syncRequestSequence: readonly(syncRequestSequence),
     connect,
     disconnect,
     sendEvent,

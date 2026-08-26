@@ -425,9 +425,15 @@ def ensure_persian_metadata(
     elif not contains_persian((details.get('overview') or '').strip()):
         english_overview = (details.get('overview') or '').strip()
         translated_overview = translate_to_persian(english_overview) if english_overview else ''
-        if translated_overview:
+        if translated_overview and contains_persian(translated_overview):
             details['overview'] = translated_overview
             details['_persian_overview_source'] = 'machine_translation'
+        elif english_overview:
+            # Never persist an English plot as the public description. Keeping
+            # this empty also makes completeness checks block publication and
+            # allows a later sync/backfill to retry localization safely.
+            details['overview'] = ''
+            details['_persian_overview_source'] = 'translation_pending'
 
     fa_tagline = (fa.get('tagline') or '').strip()
     if fa_tagline and contains_persian(fa_tagline):

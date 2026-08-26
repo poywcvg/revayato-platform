@@ -32,6 +32,10 @@ const props = withDefaults(
     smoothing?: number
     defaultActive?: number | null
     className?: string
+    /** When true, renders a magnetic mint pill that follows the pointer/finger. */
+    magneticPill?: boolean
+    /** Pill color (defaults to accentColor). */
+    pillColor?: string
   }>(),
   {
     items: () => [
@@ -67,14 +71,19 @@ const props = withDefaults(
     smoothing: 100,
     defaultActive: null,
     className: '',
+    magneticPill: false,
+    pillColor: '',
   },
 )
 
 const emit = defineEmits<{
-  itemClick: [index: number, label: string]
+  itemClick: [index: number, label: string, event?: PointerEvent | MouseEvent]
+  /** Fired (only when magneticPill) when the nearest item under the pointer changes. */
+  magnetMove: [index: number]
 }>()
 
 const list = useTemplateRef<HTMLUListElement>('list')
+const pillEl = useTemplateRef<HTMLSpanElement>('pill')
 const itemEls: Array<HTMLLIElement | null> = []
 const targets: number[] = []
 const currents: number[] = []
@@ -83,9 +92,38 @@ let rafId: number | null = null
 let lastTime = 0
 let reduceMotion = false
 
+// Magnetic pill state. The pill tracks either the live pointer position (while
+// the pointer is over the list) or the active/nearest item center otherwise.
+const magnetIndex = ref<number | null>(null)
+let pointerActive = false
+let pointerY = 0
+const pillY = ref(0)
+const pillMagnet = ref(0)
+
+const resolvedPillColor = computed(() => props.pillColor || props.accentColor)
+
+const lerp = (a: number, b: number, t: number) => a + (b - a) * t
+
+function nearestIndex(y: number): number | null {
+  let best: number | null = null
+  let bestDist = Infinity
+  for (let i = 0; i < itemEls.length; i++) {
+    const el = itemEls[i]
+    if (!el) continue
+    const center = el.offsetTop + el.offsetHeight / 2
+    const dist = Math.abs(center - y)
+    if (dist < bestDist) {
+      bestDist = dist
+      best = i
+    }
+  }
+  return best
+}
+
 // Single rAF loop that eases every item's --effect toward its target using
 // frame-rate independent exponential smoothing, so color, shift and scale
-// all move together without staggering CSS transitions.
+// all move together without staggering CSS transitions. The magnetic pill is
+// driven by the same loop so it stays in step.
 function runFrame(now: number) {
   const dt = Math.min((now - lastTime) / 1000, 0.05)
   lastTime = now
@@ -106,6 +144,23 @@ function runFrame(now: number) {
     if (!settled) moving = true
   }
 
+  if (props.magneticPill && pillEl.value) {
+    let target: number
+    if (pointerActive) {
+      const maxH = list.value?.clientHeight ?? 0
+      target = Math.max(0, Math.min(pointerY, maxH))
+    } else {
+      const idx = magnetIndex.value ?? activeIndex.value
+      const el = idx != null ? itemEls[idx] : null
+      target = el ? el.offsetTop + el.offsetHeight / 2 : pillY.value
+    }
+    pillY.value = lerp(pillY.value, target, k)
+    pillMagnet.value = lerp(pillMagnet.value, pointerActive ? 1 : 0, k)
+    pillEl.value.style.top = `${pillY.value.toFixed(2)}px`
+    pillEl.value.style.setProperty('--pill-magnet', pillMagnet.value.toFixed(4))
+    if (Math.abs(target - pillY.value) >= 0.5) moving = true
+  }
+
   rafId = moving ? requestAnimationFrame(runFrame) : null
 }
 
@@ -119,7 +174,8 @@ function handlePointerMove(event: PointerEvent) {
   const root = list.value
   if (!root) return
   const rect = root.getBoundingClientRect()
-  const pointerY = event.clientY - rect.top
+  pointerActive = true
+  pointerY = event.clientY - rect.top
   const ease = FALLOFF_CURVES[props.falloff] ?? FALLOFF_CURVES.linear
   const radius = Math.max(props.proximityRadius, 1)
   for (let i = 0; i < itemEls.length; i++) {
@@ -129,17 +185,40 @@ function handlePointerMove(event: PointerEvent) {
     const distance = Math.abs(pointerY - center)
     targets[i] = ease(Math.max(0, 1 - distance / radius))
   }
+  if (props.magneticPill) {
+    const near = nearestIndex(pointerY)
+    if (near != null && near !== magnetIndex.value) {
+      magnetIndex.value = near
+      emit('magnetMove', near)
+    }
+  }
   startLoop()
 }
 
 function handlePointerLeave() {
+  pointerActive = false
   targets.fill(0)
   startLoop()
 }
 
-function handleClick(index: number, label: string) {
+function handleFocusIn(event: FocusEvent) {
+  if (!props.magneticPill) return
+  const target = event.target as HTMLElement | null
+  const li = target?.closest<HTMLLIElement>('.line-sidebar__item')
+  if (!li) return
+  const idx = itemEls.indexOf(li)
+  if (idx >= 0 && idx !== magnetIndex.value) {
+    magnetIndex.value = idx
+    emit('magnetMove', idx)
+    pointerActive = false
+    startLoop()
+  }
+}
+
+function handleClick(index: number, label: string, event?: PointerEvent | MouseEvent) {
   activeIndex.value = index
-  emit('itemClick', index, label)
+  if (props.magneticPill) magnetIndex.value = index
+  emit('itemClick', index, label, event)
 }
 
 function setItemRef(el: Element | ComponentPublicInstance | null, index: number) {
@@ -156,6 +235,11 @@ watch(
 
 onMounted(() => {
   reduceMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches
+  if (props.magneticPill) {
+    const idx = activeIndex.value ?? 0
+    const el = itemEls[idx]
+    if (el) pillY.value = el.offsetTop + el.offsetHeight / 2
+  }
   startLoop()
 })
 
@@ -181,15 +265,28 @@ onBeforeUnmount(() => {
       '--item-gap': `${itemGap}px`,
       '--font-size': `${fontSize}rem`,
       '--smoothing': `${smoothing}ms`,
+      '--pill-color': resolvedPillColor,
     }"
   >
-    <ul ref="list" class="line-sidebar__list" @pointermove="handlePointerMove" @pointerleave="handlePointerLeave">
+    <ul
+      ref="list"
+      class="line-sidebar__list"
+      @pointermove="handlePointerMove"
+      @pointerleave="handlePointerLeave"
+      @focusin="handleFocusIn"
+    >
+      <span
+        v-if="magneticPill"
+        ref="pill"
+        class="line-sidebar__magnet-pill"
+        aria-hidden="true"
+      />
       <li
         v-for="(label, index) in items"
         :key="`${label}-${index}`"
         :ref="el => setItemRef(el, index)"
         class="line-sidebar__item"
-        @click="handleClick(index, label)"
+        @click="handleClick(index, label, $event)"
       >
         <span v-if="showMarker" class="line-sidebar__marker" aria-hidden="true" />
         <button type="button" class="line-sidebar__control" :aria-current="activeIndex === index ? 'true' : undefined">
@@ -219,6 +316,7 @@ onBeforeUnmount(() => {
   --font-size: 1.1rem;
   --smoothing: 100ms;
   --shift-direction: var(--max-shift);
+  --pill-color: var(--accent-color);
 
   position: relative;
   display: flex;
@@ -234,6 +332,7 @@ onBeforeUnmount(() => {
 }
 
 .line-sidebar__list {
+  position: relative;
   list-style: none;
   margin: 0;
   padding: 1rem 0;
@@ -247,6 +346,7 @@ onBeforeUnmount(() => {
    step, with no CSS transitions to stagger. */
 .line-sidebar__item {
   position: relative;
+  z-index: 1;
   cursor: pointer;
 }
 
@@ -341,5 +441,46 @@ onBeforeUnmount(() => {
 .line-sidebar--scale-tick .line-sidebar__item:not(:last-child)::after {
   transform-origin: left center;
   transform: translateY(-50%) scaleX(calc(0.7 + var(--effect, 0) * 0.6));
+}
+
+/* Magnetic mint pill that liquid-follows the pointer / focused item. */
+.line-sidebar__magnet-pill {
+  position: absolute;
+  inset-inline: 0.35rem;
+  top: 0;
+  height: calc(var(--touch-target, 44px) * 0.9);
+  z-index: 0;
+  pointer-events: none;
+  border-radius: 0.95rem;
+  border: 1px solid color-mix(in srgb, var(--pill-color) 34%, transparent);
+  background:
+    radial-gradient(130% 150% at 50% 0%, color-mix(in srgb, var(--pill-color) 18%, transparent), transparent 70%),
+    color-mix(in srgb, var(--pill-color) 9%, var(--theme-bg-elevated, #141414));
+  box-shadow:
+    inset 0 1px 0 color-mix(in srgb, var(--pill-color) 24%, transparent),
+    inset 0 0 18px color-mix(in srgb, var(--pill-color) 8%, transparent);
+  transform: translateY(-50%) scale(calc(1 + var(--pill-magnet, 0) * 0.03));
+  transition: opacity 0.25s ease;
+}
+
+.line-sidebar__magnet-pill::before {
+  content: '';
+  position: absolute;
+  inset-inline-start: 0.55rem;
+  top: 50%;
+  width: 0.32rem;
+  height: 1.5rem;
+  border-radius: 9999px;
+  background: var(--pill-color);
+  transform: translateY(-50%) scaleY(calc(0.5 + var(--pill-magnet, 0) * 0.5));
+  transform-origin: center;
+  box-shadow: 0 0 12px color-mix(in srgb, var(--pill-color) 75%, transparent);
+}
+
+:global(html[data-theme='light'] .line-sidebar__magnet-pill) {
+  border-color: color-mix(in srgb, var(--pill-color) 44%, transparent);
+  background:
+    radial-gradient(130% 150% at 50% 0%, color-mix(in srgb, var(--pill-color) 22%, transparent), transparent 70%),
+    color-mix(in srgb, var(--pill-color) 14%, var(--theme-bg-elevated, #f1f5f3));
 }
 </style>

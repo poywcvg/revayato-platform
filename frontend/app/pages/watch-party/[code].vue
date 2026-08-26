@@ -55,14 +55,17 @@ const recreatePartyPath = computed(() => {
   return { path: '/watch-party', query }
 })
 let hostSyncTimer: ReturnType<typeof setTimeout> | undefined
+let syncTightTimer: ReturnType<typeof setTimeout> | undefined
+const syncTight = ref(false)
 let noticeTimer: number | undefined
 let inviteCopiedTimer: ReturnType<typeof setTimeout> | undefined
 let lastAppliedStampMs = 0
 let seekPublishTimer: ReturnType<typeof setTimeout> | undefined
 
-const HOST_SYNC_PLAYING_MS = 1500
-const HOST_SYNC_PAUSED_MS = 4500
+const HOST_SYNC_PLAYING_MS = 1200
+const HOST_SYNC_PAUSED_MS = 3000
 const failedPlaybackSources = new Set<string>()
+const hostLiveState = ref<WatchPartyPlaybackState | null>(null)
 
 const room = computed(() => socket.room.value)
 const isHost = computed(() => Boolean(room.value?.is_host))
@@ -139,6 +142,11 @@ function openPartyChat() {
     return
   }
   panelActiveTab.value = 'chat'
+  panelOpen.value = true
+}
+
+function openPartyPanel(tab: 'chat' | 'members' | 'invite' = 'chat') {
+  panelActiveTab.value = tab
   panelOpen.value = true
 }
 
@@ -338,8 +346,22 @@ function sendPlayback(
   })
 }
 
+function refreshHostLiveState() {
+  if (!isHost.value || !playerReady.value) return
+  const snapshot = player.value?.getPlaybackSnapshot()
+  if (snapshot) {
+    hostLiveState.value = {
+      ...snapshot,
+      updated_by: room.value?.host ?? null,
+      updated_at: new Date().toISOString(),
+      server_time_ms: Date.now(),
+    }
+  }
+}
+
 function publishHostPlaybackState() {
   if (!isHost.value || !playerReady.value || socket.connectionStatus.value !== 'connected') return
+  refreshHostLiveState()
   const state = player.value?.getPlaybackSnapshot()
   if (state) sendPlayback('playback.sync', state)
 }
@@ -364,12 +386,14 @@ async function handlePlayerReady() {
 
 function onHostPlay(state: PlaybackSnapshot) {
   if (seekPublishTimer) clearTimeout(seekPublishTimer)
+  refreshHostLiveState()
   sendPlayback('playback.play', state)
   scheduleHostSync()
 }
 
 function onHostPause(state: PlaybackSnapshot) {
   if (seekPublishTimer) clearTimeout(seekPublishTimer)
+  refreshHostLiveState()
   sendPlayback('playback.pause', state)
   scheduleHostSync()
 }
@@ -378,7 +402,10 @@ function onHostSeek(_state: PlaybackSnapshot) {
   if (seekPublishTimer) clearTimeout(seekPublishTimer)
   seekPublishTimer = setTimeout(() => {
     const fresh = player.value?.getPlaybackSnapshot()
-    if (fresh) sendPlayback('playback.seek', fresh)
+    if (fresh) {
+      refreshHostLiveState()
+      sendPlayback('playback.seek', fresh)
+    }
     scheduleHostSync()
   }, 120)
 }
@@ -387,6 +414,12 @@ async function activateMemberPlayback() {
   if (socket.playbackState.value) await applyPartyState(socket.playbackState.value, true)
   socket.requestSync()
   showNotice('در حال هماهنگ‌سازی با میزبان…')
+}
+
+function onSyncCorrection() {
+  syncTight.value = true
+  if (syncTightTimer) clearTimeout(syncTightTimer)
+  syncTightTimer = setTimeout(() => { syncTight.value = false }, 1200)
 }
 
 function selectStream(link: WatchPartyStreamLink) {
@@ -491,6 +524,44 @@ watch(() => socket.messages.value.length, (count) => {
   }
 })
 
+watch(() => socket.syncRequestSequence.value, () => {
+  if (isHost.value) publishHostPlaybackState()
+})
+
+watch(panelOpen, (open) => {
+  if (!import.meta.client || window.matchMedia('(min-width: 1024px)').matches) return
+  document.body.classList.toggle('party-panel-open', open)
+}, { flush: 'post' })
+
+function handleTabVisibility() {
+  if (import.meta.server || document.hidden) return
+  if (socket.connectionStatus.value !== 'connected') return
+  if (isHost.value) {
+    // Tabs throttled by the browser: publish the exact fresh state at once.
+    clearHostSync()
+    publishHostPlaybackState()
+    scheduleHostSync()
+    return
+  }
+  // Guests: hidden tabs drift (tab throttling); re-align immediately on return.
+  socket.requestSync()
+  if (socket.playbackState.value) {
+    void applyPartyState(socket.playbackState.value, true)
+    showNotice('هم‌زمان با میزبان')
+  }
+}
+
+function handleRoomKeydown(event: KeyboardEvent) {
+  if (event.key !== 'Escape') return
+  if (fullscreenChatOpen.value) closeFullscreenChat()
+  else if (panelOpen.value && !window.matchMedia('(min-width: 1024px)').matches) panelOpen.value = false
+}
+
+function clearHostSync() {
+  if (hostSyncTimer) clearTimeout(hostSyncTimer)
+  hostSyncTimer = undefined
+}
+
 onMounted(() => {
   void loadRoom()
   if (import.meta.client && window.matchMedia('(min-width: 1024px)').matches) {
@@ -499,13 +570,20 @@ onMounted(() => {
     // New hosts land on invite tab so they can share immediately.
     panelOpen.value = true
   }
+  document.addEventListener('visibilitychange', handleTabVisibility)
+  window.addEventListener('keydown', handleRoomKeydown)
 })
 
 onBeforeUnmount(() => {
+  document.removeEventListener('visibilitychange', handleTabVisibility)
+  window.removeEventListener('keydown', handleRoomKeydown)
+  document.body.classList.remove('party-panel-open')
   if (hostSyncTimer) clearTimeout(hostSyncTimer)
   hostSyncTimer = undefined
   if (seekPublishTimer) clearTimeout(seekPublishTimer)
   seekPublishTimer = undefined
+  if (syncTightTimer) clearTimeout(syncTightTimer)
+  syncTightTimer = undefined
   if (noticeTimer) window.clearTimeout(noticeTimer)
   if (inviteCopiedTimer) clearTimeout(inviteCopiedTimer)
   socket.disconnect(false)
@@ -621,7 +699,7 @@ useSeoMeta({
               aria-controls="watch-party-panel"
               :aria-expanded="panelOpen"
               aria-label="باز کردن گفت‌وگو"
-              @click="panelOpen = !panelOpen"
+              @click="panelOpen ? panelOpen = false : openPartyPanel('chat')"
             >
               <CinematicIcon name="comments" class="party-btn__icon" />
               <span class="party-btn__label">چت</span>
@@ -694,6 +772,7 @@ useSeoMeta({
                 @source-failed="handleSourceFailed"
                 @notice="showNotice"
                 @fullscreen-change="handlePartyFullscreenChange"
+                @sync-correction="onSyncCorrection"
               >
                 <template #fullscreen-overlay="{ isFullscreen }">
                   <div
@@ -806,7 +885,7 @@ useSeoMeta({
             <div class="mt-3 rounded-2xl border border-white/8 bg-black/35 p-3 backdrop-blur-md">
               <WatchPartyPresence
                 :members="socket.members.value"
-                :playback-state="socket.playbackState.value"
+                :playback-state="isHost ? (hostLiveState || socket.playbackState.value) : socket.playbackState.value"
                 :is-host="isHost"
                 :latency-ms="socket.latencyMs.value"
               />
@@ -838,6 +917,7 @@ useSeoMeta({
               <p class="inline-flex items-center gap-1.5">
                 <CinematicIcon name="lock" class="size-4 text-crimson-hover" />
                 پخش با {{ room.host.display_name }} جلو می‌رود.
+                <span v-if="syncTight" class="size-1.5 animate-pulse rounded-full bg-success" aria-hidden="true" />
               </p>
               <button
                 type="button"
@@ -852,7 +932,7 @@ useSeoMeta({
           </section>
 
             <div
-              class="party-room__panel-shell fixed inset-x-0 bottom-0 z-40 max-h-[78dvh] origin-bottom lg:static lg:z-auto lg:max-h-none"
+              class="party-room__panel-shell fixed inset-x-0 bottom-0 z-40 isolate max-h-[78dvh] origin-bottom lg:static lg:z-auto lg:max-h-none"
               :class="[
                 panelOpen ? 'block' : 'hidden lg:block',
                 focusMode && 'lg:!hidden',
@@ -906,7 +986,7 @@ useSeoMeta({
             aria-controls="watch-party-panel"
             :aria-expanded="panelOpen"
             aria-label="باز کردن کنترل اتاق"
-            @click="panelOpen = true"
+            @click="openPartyPanel('chat')"
           >
             <CinematicIcon name="comments" class="party-btn__icon" />
             <span class="party-btn__label">چت</span>

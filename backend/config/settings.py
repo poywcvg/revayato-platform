@@ -62,6 +62,7 @@ INSTALLED_APPS = [
     'apps.accounts',
     'apps.recommendations',
     'apps.watchparty',
+    'apps.assistant',
 ]
 
 MIDDLEWARE = [
@@ -325,7 +326,7 @@ SUBZONE_VERIFY_SSL = env_bool('SUBZONE_VERIFY_SSL', True)
 # The player's sync window is deliberately short: quick provider sidecars only,
 # so the POST never blocks video start; everything else runs on the worker.
 PLAYBACK_SUBTITLE_SYNC_MAX_SECONDS = max(
-    3, int(os.environ.get('PLAYBACK_SUBTITLE_SYNC_MAX_SECONDS', '6')),
+    3, int(os.environ.get('PLAYBACK_SUBTITLE_SYNC_MAX_SECONDS', '9')),
 )
 # Redis micro-cache TTL for the lightweight status endpoint read by player polls.
 PLAYBACK_SUBTITLE_STATUS_CACHE_SECONDS = max(

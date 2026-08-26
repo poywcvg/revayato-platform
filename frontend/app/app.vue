@@ -2,11 +2,13 @@
   <NuxtLoadingIndicator
     color="linear-gradient(90deg, #285a48, #b0e4cc 55%, #408a71)"
     :height="3"
-    :duration="1500"
-    :throttle="60"
+    :duration="600"
+    :throttle="40"
   />
   <NuxtRouteAnnouncer />
   <AppNotifications />
+  <SupportModal />
+  <DonationNudge />
   <NuxtLayout>
     <NuxtPage />
   </NuxtLayout>

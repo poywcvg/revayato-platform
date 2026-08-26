@@ -137,44 +137,59 @@ def _quality_base_and_extras(text: str) -> tuple[str, list[str]]:
 
 
 def _quality_from(url: str, label: str = '') -> str:
-    """Prefer CDN filename resolution; ignore source tags like WEB-DL when 1080p exists."""
-    blob = f'{url or ""} {label or ""}'
-    resolution = re.search(r'\b(\d{3,4})\s*p\b', blob, re.I)
-    if not resolution and re.search(r'\b(4k|uhd|2160)\b', blob, re.I):
-        base = '2160p'
-        flat = re.sub(r'[\s._-]+', '', blob.lower())
-        extras: list[str] = []
-        if '10bit' in flat:
-            extras.append('10bit')
-        if 'x265' in flat or 'hevc' in flat:
-            extras.append('x265')
-        elif 'x264' in flat or 'avc' in flat:
-            extras.append('x264')
-        return (' '.join([base, *extras]))[:40]
-    if resolution:
-        base = f'{resolution.group(1)}p'
-        flat = re.sub(r'[\s._-]+', '', blob.lower())
-        extras = []
-        if '10bit' in flat:
-            extras.append('10bit')
-        if 'x265' in flat or 'hevc' in flat:
-            extras.append('x265')
-        elif 'x264' in flat or 'avc' in flat:
-            extras.append('x264')
-        return (' '.join([base, *extras]))[:40]
+    """Return the precise release quality exposed by the provider/CDN filename.
 
-    url_base, url_extras = _quality_base_and_extras(url or '')
-    label_base, label_extras = _quality_base_and_extras(label or '')
-    base = url_base or label_base
-    if not base:
-        return ''
-    if not re.match(r'^\d{3,4}p$', str(base), re.I) and str(base).lower() not in {'2160p'}:
-        return ''
-    extras = []
-    for token in [*url_extras, *label_extras]:
-        if token not in extras:
-            extras.append(token)
-    return (' '.join([base, *extras]))[:40]
+    Resolution alone is not enough to distinguish two download rows.  Preserve
+    source, bit depth, HDR and codec when they are present, while keeping a
+    stable display order (for example ``WEB-DL 1080p HDR 10bit x265``).
+    """
+    blob = f'{url or ""} {label or ""}'
+    compact = re.sub(r'[._\-]+', ' ', unescape(blob)).lower()
+    flat = re.sub(r'[\s._\-]+', '', compact)
+    resolution = re.search(r'\b(\d{3,4})\s*p\b', blob, re.I)
+    if not resolution and re.search(r'\b(4k|uhd|2160)\b', compact, re.I):
+        base = '2160p'
+    elif resolution:
+        base = f'{resolution.group(1)}p'
+    else:
+        url_base, _ = _quality_base_and_extras(url or '')
+        label_base, _ = _quality_base_and_extras(label or '')
+        base = url_base or label_base
+        if not re.match(r'^\d{3,4}p$', str(base), re.I):
+            return ''
+
+    source = ''
+    if 'remux' in compact:
+        source = 'Remux'
+    elif re.search(r'\bblu\s*ray\b|\bbluray\b', compact):
+        source = 'BluRay'
+    elif re.search(r'\bweb\s*dl\b|\bwebdl\b', compact):
+        source = 'WEB-DL'
+    elif re.search(r'\bweb\s*rip\b|\bwebrip\b', compact):
+        source = 'WEBRip'
+    elif re.search(r'\bhdtv\b', flat):
+        source = 'HDTV'
+    elif re.search(r'\bhdrip\b', flat):
+        source = 'HDRip'
+    elif re.search(r'\b(?:hdtc|hdcam)\b', flat):
+        source = 'HDTC'
+    elif re.search(r'\bcam(?:rip)?\b', compact):
+        source = 'CAM'
+
+    extras: list[str] = []
+    if re.search(r'\b(?:dolby\s*vision|dovi|dv)\b', compact):
+        extras.append('Dolby Vision')
+    elif re.search(r'\bhdr10\+?\b', compact):
+        extras.append('HDR10+' if 'hdr10+' in compact else 'HDR10')
+    elif re.search(r'\bhdr\b', compact):
+        extras.append('HDR')
+    if '10bit' in flat:
+        extras.append('10bit')
+    if 'x265' in flat or 'h265' in flat or 'hevc' in flat:
+        extras.append('x265')
+    elif 'x264' in flat or 'h264' in flat or 'avc' in flat:
+        extras.append('x264')
+    return (' '.join(part for part in [source, base, *extras] if part))[:40]
 
 
 def season_number_from_label(label: str) -> int | None:

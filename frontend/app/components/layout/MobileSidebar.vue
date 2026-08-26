@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { gsap } from 'gsap'
 import type { LiquidNavItem } from '~/types'
 
 const open = defineModel<boolean>('open', { default: false })
@@ -6,9 +7,47 @@ const open = defineModel<boolean>('open', { default: false })
 const route = useRoute()
 const { watchlistIds } = useLibrary()
 const authStore = useAuthStore()
+const { open: openSupportModal } = useSupportModal()
 const sidebar = useTemplateRef<HTMLElement>('sidebar')
+const navigation = useTemplateRef<HTMLElement>('navigation')
 let previouslyFocused: HTMLElement | null = null
 const sidebarFocusable = 'a[href], button:not([disabled]), [tabindex]:not([tabindex="-1"])'
+const reduceMotion = ref(false)
+
+// Scroll affordance state for the sidebar navigation rail: drives the top/bottom
+// edge fades and the inline scroll-progress bar so the user always sees that the
+// menu scrolls and how far they are through it.
+const atTop = ref(true)
+const atBottom = ref(false)
+const hasOverflow = ref(false)
+const scrollProgress = ref(0)
+
+function updateScroll() {
+  const el = navigation.value
+  if (!el) return
+  const max = el.scrollHeight - el.clientHeight
+  const top = el.scrollTop
+  atTop.value = top <= 1
+  atBottom.value = max <= 1 || top >= max - 1
+  hasOverflow.value = max > 1
+  scrollProgress.value = max > 0 ? Math.min(1, Math.max(0, top / max)) : 0
+}
+
+function spawnRipple(event: PointerEvent | MouseEvent, host: HTMLElement) {
+  if (reduceMotion.value || !import.meta.client) return
+  const rect = host.getBoundingClientRect()
+  const x = (event.clientX || rect.left + rect.width / 2) - rect.left
+  const y = (event.clientY || rect.top + rect.height / 2) - rect.top
+  const size = Math.max(rect.width, rect.height) * 2.4
+  const ripple = document.createElement('span')
+  ripple.className = 'mobile-sidebar__ripple'
+  ripple.style.setProperty('--ripple-x', `${x}px`)
+  ripple.style.setProperty('--ripple-y', `${y}px`)
+  ripple.style.width = `${size}px`
+  ripple.style.height = `${size}px`
+  host.appendChild(ripple)
+  ripple.addEventListener('animationend', () => ripple.remove(), { once: true })
+}
 
 const homeItem: LiquidNavItem = { label: 'خانه', to: '/', icon: 'home', exact: true }
 const navItems = computed<LiquidNavItem[]>(() => [
@@ -65,11 +104,23 @@ function close() {
   open.value = false
 }
 
-function handleLineSidebarClick(index: number) {
+function handleLineSidebarClick(index: number, _label: string, event?: PointerEvent | MouseEvent) {
   const item = navItems.value[index]
   if (!item) return
+  if (event && sidebar.value) spawnRipple(event, sidebar.value)
   close()
   void navigateTo(item.to)
+}
+
+function handleFooterClick(event: PointerEvent | MouseEvent, host: HTMLElement) {
+  spawnRipple(event, host)
+  close()
+}
+
+function openQuickSupport(category: 'content_request' | 'support', event?: PointerEvent | MouseEvent) {
+  if (event && sidebar.value) spawnRipple(event, sidebar.value)
+  close()
+  openSupportModal(category)
 }
 
 watch(() => route.fullPath, close)
@@ -93,6 +144,21 @@ function trapSidebarFocus(event: KeyboardEvent) {
   }
 }
 
+// GSAP-backed entrance for inner content (the panel slide itself is handled by
+// the Vue Transition). Nav items rise in a stagger, then the magnetic pill
+// fades in. Skipped under prefers-reduced-motion (panel still appears instantly).
+function playOpen() {
+  if (!import.meta.client || reduceMotion.value || !sidebar.value) return
+  const panel = sidebar.value
+  const items = panel.querySelectorAll<HTMLElement>('.line-sidebar__item, .mobile-sidebar__foot > *')
+  const pill = panel.querySelector<HTMLElement>('.line-sidebar__magnet-pill')
+  gsap.killTweensOf([...items, pill].filter(Boolean))
+  gsap.set(items, { autoAlpha: 0, y: 10 })
+  if (pill) gsap.set(pill, { autoAlpha: 0 })
+  gsap.to(items, { autoAlpha: 1, y: 0, duration: 0.32, ease: 'power2.out', stagger: 0.035, delay: 0.14 })
+  if (pill) gsap.to(pill, { autoAlpha: 1, duration: 0.4, delay: 0.34 })
+}
+
 watch(open, async (value) => {
   if (!import.meta.client) return
   document.documentElement.style.overflow = value ? 'hidden' : ''
@@ -100,6 +166,13 @@ watch(open, async (value) => {
     previouslyFocused = document.activeElement instanceof HTMLElement ? document.activeElement : null
     await nextTick()
     sidebar.value?.querySelector<HTMLElement>(sidebarFocusable)?.focus()
+    // Sync scroll affordances after the panel mounts/animates in, then keep
+    // them live while the user scrolls the navigation rail.
+    updateScroll()
+    requestAnimationFrame(updateScroll)
+    navigation.value?.addEventListener('scroll', updateScroll, { passive: true })
+    // Hide synchronously (no flash), then animate the rise in.
+    playOpen()
   } else {
     previouslyFocused?.focus()
     previouslyFocused = null
@@ -107,7 +180,16 @@ watch(open, async (value) => {
 })
 
 onBeforeUnmount(() => {
-  if (import.meta.client) document.documentElement.style.overflow = ''
+  if (import.meta.client) {
+    document.documentElement.style.overflow = ''
+    navigation.value?.removeEventListener('scroll', updateScroll)
+  }
+})
+
+onMounted(() => {
+  if (import.meta.client) {
+    reduceMotion.value = window.matchMedia('(prefers-reduced-motion: reduce)').matches
+  }
 })
 </script>
 
@@ -147,7 +229,16 @@ onBeforeUnmount(() => {
           </button>
         </header>
 
-        <div class="mobile-sidebar__navigation soft-scrollbar min-h-0 flex-1 overflow-y-auto">
+        <div
+          ref="navigation"
+          class="mobile-sidebar__navigation soft-scrollbar min-h-0 flex-1 overflow-y-auto"
+          :class="{
+            'is-scrollable': hasOverflow,
+            'is-at-top': atTop,
+            'is-at-bottom': atBottom,
+          }"
+        >
+          <span class="mobile-sidebar__fade mobile-sidebar__fade--top" aria-hidden="true" />
           <LineSidebar
             :items="lineSidebarItems"
             :icons="lineSidebarIcons"
@@ -166,10 +257,48 @@ onBeforeUnmount(() => {
             :item-gap="4"
             :font-size="0.9"
             :smoothing="80"
+            :magnetic-pill="true"
+            pill-color="var(--theme-accent-primary)"
             class="mobile-sidebar__line-nav"
             @item-click="handleLineSidebarClick"
           />
+
+          <span class="mobile-sidebar__fade mobile-sidebar__fade--bottom" aria-hidden="true" />
+
+          <section class="mobile-sidebar__help" aria-labelledby="mobile-sidebar-help-title">
+            <button type="button" class="mobile-sidebar__request" @click="openQuickSupport('content_request', $event)">
+              <span class="mobile-sidebar__request-glow" aria-hidden="true" />
+              <span class="mobile-sidebar__request-icon" aria-hidden="true">
+                <CinematicIcon name="film" class="size-5" />
+                <span class="mobile-sidebar__request-plus">+</span>
+              </span>
+              <span class="min-w-0 flex-1 text-start">
+                <strong id="mobile-sidebar-help-title" class="mobile-sidebar__request-title">چی دوست داری ببینی؟</strong>
+                <small class="mobile-sidebar__request-copy">فیلم یا سریالت را درخواست کن</small>
+              </span>
+              <span class="mobile-sidebar__request-arrow" aria-hidden="true"><CinematicIcon name="arrow-left" class="size-4" /></span>
+            </button>
+
+            <div class="mobile-sidebar__help-actions">
+              <button type="button" class="mobile-sidebar__help-action" @click="openQuickSupport('support', $event)">
+                <span class="mobile-sidebar__help-icon mobile-sidebar__help-icon--support"><CinematicIcon name="comments" class="size-4.5" /></span>
+                <span><strong>پشتیبانی</strong><small>سؤال یا مشکل</small></span>
+              </button>
+              <a href="https://daramet.com/revayato" target="_blank" rel="noopener noreferrer" class="mobile-sidebar__help-action" @click="handleFooterClick($event, $el)">
+                <span class="mobile-sidebar__help-icon mobile-sidebar__help-icon--donate"><CinematicIcon name="heart" class="size-4.5" /></span>
+                <span><strong>حمایت از ما</strong><small>دونیت امن</small></span>
+              </a>
+            </div>
+          </section>
         </div>
+
+        <span
+          class="mobile-sidebar__progress"
+          :class="hasOverflow && 'is-active'"
+          aria-hidden="true"
+        >
+          <span class="mobile-sidebar__progress-thumb" :style="{ transform: `scaleX(${scrollProgress})` }" />
+        </span>
 
         <footer class="mobile-sidebar__foot">
           <NuxtLink
@@ -177,6 +306,7 @@ onBeforeUnmount(() => {
             class="mobile-sidebar__account"
             :class="route.path.startsWith('/profile') && 'mobile-sidebar__account--active'"
             :aria-current="route.path.startsWith('/profile') ? 'page' : undefined"
+            @click="handleFooterClick($event, $el)"
           >
             <span v-if="authStore.isAuthenticated" class="mobile-sidebar__avatar" aria-hidden="true">
               <img v-if="authStore.user?.profile.avatar" :src="authStore.user.profile.avatar" alt="" class="size-full object-cover">
@@ -196,18 +326,9 @@ onBeforeUnmount(() => {
               class="mobile-sidebar__footer-icon"
               aria-label="درباره روایتو"
               title="درباره روایتو"
-              @click="close"
+              @click="handleFooterClick($event, $el)"
             >
               <CinematicIcon name="info" class="size-5" />
-            </NuxtLink>
-            <NuxtLink
-              to="/contact"
-              class="mobile-sidebar__footer-icon"
-              aria-label="پشتیبانی"
-              title="پشتیبانی"
-              @click="close"
-            >
-              <CinematicIcon name="comments" class="size-5" />
             </NuxtLink>
             <NotificationCenter />
           </div>
@@ -224,6 +345,33 @@ onBeforeUnmount(() => {
 
 :global(html[data-theme="light"] .mobile-sidebar-backdrop) {
   background: var(--theme-overlay-backdrop);
+}
+
+/* Click ripple: a mint wave that blooms from the tap point and fades. */
+.mobile-sidebar__account,
+.mobile-sidebar__footer-icon,
+.mobile-sidebar__request,
+.mobile-sidebar__help-action {
+  position: relative;
+  overflow: hidden;
+}
+
+.mobile-sidebar__ripple {
+  position: absolute;
+  left: var(--ripple-x, 50%);
+  top: var(--ripple-y, 50%);
+  border-radius: 9999px;
+  transform: translate(-50%, -50%) scale(0);
+  background: radial-gradient(circle, color-mix(in srgb, var(--theme-accent-primary) 42%, transparent), color-mix(in srgb, var(--theme-accent-primary) 12%, transparent) 60%, transparent 72%);
+  pointer-events: none;
+  display: block;
+  animation: mobile-sidebar-ripple 520ms cubic-bezier(.22, .61, .36, 1) forwards;
+  will-change: transform, opacity;
+}
+
+@keyframes mobile-sidebar-ripple {
+  0% { transform: translate(-50%, -50%) scale(0); opacity: 0.85; }
+  100% { transform: translate(-50%, -50%) scale(1); opacity: 0; }
 }
 
 .mobile-sidebar {
@@ -351,9 +499,105 @@ onBeforeUnmount(() => {
 }
 
 .mobile-sidebar__navigation {
+  position: relative;
   padding: 0 .65rem .5rem;
   overscroll-behavior: contain;
 }
+
+/* Edge fades + inline scroll-progress bar give the rail a clear, distinct
+   scroll state without adding a heavy scrollbar: a veil appears above/below
+   only while more content exists in that direction, and the progress thumb
+   tracks position. All purely visual — never blocks the scrolled content. */
+.mobile-sidebar__fade {
+  position: sticky;
+  inset-inline: -.65rem;
+  z-index: 3;
+  flex: none;
+  height: 1.5rem;
+  margin-block: -.25rem;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 180ms ease;
+}
+
+.mobile-sidebar__fade--top {
+  top: -.5rem;
+  margin-bottom: -.75rem;
+  background: linear-gradient(to bottom, var(--theme-bg-surface), transparent);
+}
+
+.mobile-sidebar__fade--bottom {
+  bottom: -.5rem;
+  margin-top: -.75rem;
+  background: linear-gradient(to top, var(--theme-bg-surface), transparent);
+}
+
+.mobile-sidebar__navigation.is-scrollable:not(.is-at-top) .mobile-sidebar__fade--top,
+.mobile-sidebar__navigation.is-scrollable:not(.is-at-bottom) .mobile-sidebar__fade--bottom {
+  opacity: 1;
+}
+
+.mobile-sidebar__progress {
+  position: absolute;
+  inset-inline: .35rem;
+  bottom: calc(.5rem + env(safe-area-inset-bottom, 0px));
+  z-index: 4;
+  height: 3px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--theme-border) 60%, transparent);
+  overflow: hidden;
+  opacity: 0;
+  transition: opacity 200ms ease;
+}
+
+.mobile-sidebar__progress.is-active { opacity: 1; }
+
+.mobile-sidebar__progress-thumb {
+  display: block;
+  height: 100%;
+  width: 100%;
+  transform-origin: right center;
+  border-radius: 999px;
+  background: linear-gradient(to left, var(--theme-accent-primary), var(--theme-accent-crimson));
+}
+
+:global(html[data-theme="light"] .mobile-sidebar__progress) {
+  background: color-mix(in srgb, var(--theme-border) 70%, transparent);
+}
+
+.mobile-sidebar__help { display: grid; gap: .5rem; padding: .25rem .1rem .75rem; }
+
+.mobile-sidebar__request {
+  isolation: isolate;
+  display: flex;
+  width: 100%;
+  min-height: 4.75rem;
+  align-items: center;
+  gap: .7rem;
+  border: 1px solid color-mix(in srgb, var(--theme-accent-primary) 42%, transparent);
+  border-radius: 1.15rem;
+  background: linear-gradient(125deg, color-mix(in srgb, var(--theme-accent-primary) 19%, var(--theme-bg-elevated)), color-mix(in srgb, var(--theme-accent-crimson, #b04848) 10%, var(--theme-bg-elevated)));
+  padding: .7rem;
+  color: var(--theme-text-primary);
+  box-shadow: inset 0 1px 0 rgb(255 255 255 / 7%), 0 .65rem 1.8rem color-mix(in srgb, var(--theme-accent-primary) 8%, transparent);
+  transition: transform 160ms ease, border-color 160ms ease, box-shadow 160ms ease;
+}
+.mobile-sidebar__request:hover, .mobile-sidebar__request:focus-visible { border-color: color-mix(in srgb, var(--theme-accent-primary) 72%, transparent); box-shadow: inset 0 1px 0 rgb(255 255 255 / 10%), 0 .75rem 2rem color-mix(in srgb, var(--theme-accent-primary) 15%, transparent); transform: translateY(-1px); }
+.mobile-sidebar__request:active { transform: scale(.985); }
+.mobile-sidebar__request-glow { position: absolute; z-index: -1; width: 7rem; height: 7rem; inset-inline-end: -3rem; top: -4rem; border-radius: 9999px; background: var(--theme-accent-primary); filter: blur(35px); opacity: .18; }
+.mobile-sidebar__request-icon { position: relative; display: grid; width: 2.8rem; height: 2.8rem; flex: none; place-items: center; border-radius: .9rem; background: var(--theme-accent-primary); color: var(--theme-on-accent); box-shadow: 0 .45rem 1.2rem color-mix(in srgb, var(--theme-accent-primary) 28%, transparent); }
+.mobile-sidebar__request-plus { position: absolute; inset-inline-end: -.18rem; top: -.25rem; display: grid; width: 1rem; height: 1rem; place-items: center; border: 2px solid var(--theme-bg-surface); border-radius: 9999px; background: var(--theme-accent-crimson, #b04848); color: white; font: 800 .65rem/1 var(--font-latin-ui); }
+.mobile-sidebar__request-title { display: block; font-size: .82rem; font-weight: 900; }
+.mobile-sidebar__request-copy { display: block; margin-top: .2rem; color: var(--theme-text-muted); font-size: .65rem; }
+.mobile-sidebar__request-arrow { display: grid; width: 2rem; height: 2rem; flex: none; place-items: center; border-radius: .65rem; background: color-mix(in srgb, var(--theme-bg-surface) 45%, transparent); color: var(--theme-accent-primary); }
+.mobile-sidebar__help-actions { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: .5rem; }
+.mobile-sidebar__help-action { display: flex; min-width: 0; min-height: 3.4rem; align-items: center; gap: .55rem; border: 1px solid color-mix(in srgb, var(--theme-border) 70%, transparent); border-radius: .95rem; background: color-mix(in srgb, var(--theme-bg-elevated) 68%, transparent); padding: .5rem; color: var(--theme-text-secondary); text-align: start; transition: border-color 150ms ease, background-color 150ms ease, transform 150ms ease; }
+.mobile-sidebar__help-action:hover, .mobile-sidebar__help-action:focus-visible { border-color: color-mix(in srgb, var(--theme-accent-primary) 32%, var(--theme-border)); background: var(--theme-bg-elevated); transform: translateY(-1px); }
+.mobile-sidebar__help-action strong { display: block; color: var(--theme-text-primary); font-size: .7rem; font-weight: 850; white-space: nowrap; }
+.mobile-sidebar__help-action small { display: block; margin-top: .12rem; color: var(--theme-text-muted); font-size: .58rem; white-space: nowrap; }
+.mobile-sidebar__help-icon { display: grid; width: 2rem; height: 2rem; flex: none; place-items: center; border-radius: .65rem; }
+.mobile-sidebar__help-icon--support { background: color-mix(in srgb, var(--theme-accent-primary) 12%, transparent); color: var(--theme-accent-primary); }
+.mobile-sidebar__help-icon--donate { background: color-mix(in srgb, var(--theme-accent-crimson, #b04848) 13%, transparent); color: var(--theme-accent-crimson, #d66); }
 
 .mobile-sidebar__line-nav {
   width: 100%;
@@ -461,9 +705,11 @@ onBeforeUnmount(() => {
 .sidebar-fade-enter-from,
 .sidebar-fade-leave-to { opacity: 0; }
 
-.sidebar-slide-enter-active,
-.sidebar-slide-leave-active { transition: transform 240ms cubic-bezier(.22, 1, .36, 1); }
-.sidebar-slide-enter-from,
+/* Panel slides in with a springy overshoot, slides straight out on close.
+   GSAP owns the inner item stagger + pill (independent of this transform). */
+.sidebar-slide-enter-active { transition: transform 360ms cubic-bezier(.34, 1.56, .64, 1); }
+.sidebar-slide-leave-active { transition: transform 260ms cubic-bezier(.4, 0, .2, 1); }
+.sidebar-slide-enter-from { transform: translateX(106%); }
 .sidebar-slide-leave-to { transform: translateX(100%); }
 
 @media (prefers-reduced-motion: reduce) {

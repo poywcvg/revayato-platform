@@ -544,10 +544,23 @@ def drain_playback_subtitle_gaps(
 
     gap_drain_lock_ttl = 10 * 60
     stale_before = dj_timezone.now() - timedelta(seconds=max(60, int(min_age_seconds)))
-    rows = PlaybackSubtitleGap.objects.filter(
-        status__in=[PlaybackSubtitleGap.Status.OPEN, PlaybackSubtitleGap.Status.QUEUED],
-        updated_at__lt=stale_before,
-    ).order_by('updated_at')[:max(1, int(max_batch))]
+    # UNAVAILABLE rows (transient broker failure / queue down at report time)
+    # get a longer cool-down but are never orphaned forever.
+    unavailable_before = dj_timezone.now() - timedelta(seconds=max(1800, int(min_age_seconds) * 3))
+    rows = list(
+        PlaybackSubtitleGap.objects.filter(
+            status__in=[PlaybackSubtitleGap.Status.OPEN, PlaybackSubtitleGap.Status.QUEUED],
+            updated_at__lt=stale_before,
+        ).order_by('updated_at')[:max(1, int(max_batch))]
+    )
+    remaining = max(1, int(max_batch)) - len(rows)
+    if remaining > 0:
+        rows.extend(
+            PlaybackSubtitleGap.objects.filter(
+                status=PlaybackSubtitleGap.Status.UNAVAILABLE,
+                updated_at__lt=unavailable_before,
+            ).order_by('updated_at')[:remaining]
+        )
 
     stats = {'processed': 0, 'enqueued': 0, 're_enqueued': 0, 'resolved': 0, 'skipped': 0}
     for gap in rows:

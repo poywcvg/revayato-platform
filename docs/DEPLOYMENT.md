@@ -65,11 +65,12 @@ chmod +x ops/deploy.sh ops/backup-db.sh
 
 The backend container applies database migrations and collects static assets before starting Daphne/ASGI. Caddy automatically provisions and renews HTTPS certificates and proxies WebSocket upgrades.
 
-The `catalog-crawler` service is permanent but low priority. It performs a
-Film2Media new-title-only sweep, fills missing download sizes, and then sleeps
-for `MYF2M_CRAWL_INTERVAL_SECONDS` (six hours by default). Its default hard CPU
-limit is 0.15 core; tune the interval/delay instead of raising that limit on a
-busy host. Check it with:
+The `catalog-crawler` service is permanent but low priority. Each round imports
+Film2Media titles missing from the catalog, re-crawls existing series for new
+episodes and existing movies for new qualities, fills missing download sizes,
+and then sleeps for `MYF2M_CRAWL_INTERVAL_SECONDS` (30 minutes in the current
+production environment). Its default hard CPU limit is 0.15 core; tune the
+interval/delay instead of raising that limit on a busy host. Check it with:
 
 ```sh
 docker compose --env-file .env.production -f compose.production.yaml ps catalog-crawler

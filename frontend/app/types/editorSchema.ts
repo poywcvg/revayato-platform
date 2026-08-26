@@ -3,6 +3,7 @@ import type {
   AdminGenre,
   AdminMovie,
   AdminSeries,
+  ProviderImportJob,
   TMDBImportResponse,
 } from '~/types'
 
@@ -79,6 +80,8 @@ export interface AdminItemApiLike {
     id: number,
     options: { page_url?: string; replace?: boolean },
   ): Promise<{ imported_count: number; movie?: AdminMovie; series?: AdminSeries; has_subtitle?: boolean; is_dubbed?: boolean }>
+  /** Queue a provider-import discover job for this title. */
+  discoverProvider?(id: number, options?: { force?: boolean }): Promise<ProviderImportJob>
   bumpPublicCatalog(): void
   sync?(id: number, options: { dry_run?: boolean; overwrite_manual?: boolean }): Promise<TMDBImportResponse>
 }

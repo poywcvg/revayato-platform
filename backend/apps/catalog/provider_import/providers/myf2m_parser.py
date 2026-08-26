@@ -19,6 +19,7 @@ from urllib.parse import urlsplit, urlunsplit
 
 from .cdn_link_parse import (
     _episode_from_url as _shared_episode_from_url,
+    _quality_from as _shared_quality_from,
     season_number_from_label,
     stamp_season_episode,
 )
@@ -163,7 +164,11 @@ def _row_for_url(
     from apps.catalog.subtitle_extract import apply_kind_label, canonicalize_download_link
 
     kind, subtitle_type = _kind_from_section(section_kind, url)
-    quality = (quality or _quality_from_li(surrounding, url))[:40]
+    # Merge the page badge with filename evidence. The badge often says only
+    # 1080p, while the direct URL also identifies WEB-DL/BluRay, HDR and codec.
+    quality = _shared_quality_from(
+        url, quality or _quality_from_li(surrounding, url) or surrounding,
+    )[:40]
     season_number, episode_number = _shared_episode_from_url(
         url, surrounding=surrounding, season_hint=season_hint,
     )

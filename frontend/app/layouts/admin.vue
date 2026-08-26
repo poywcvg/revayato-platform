@@ -4,6 +4,7 @@ import ExternalLink from '~icons/lucide/external-link'
 import Film from '~icons/lucide/film'
 import HardDrive from '~icons/lucide/hard-drive'
 import Inbox from '~icons/lucide/inbox'
+import Layers from '~icons/lucide/layers'
 import LayoutDashboard from '~icons/lucide/layout-dashboard'
 import LogOut from '~icons/lucide/log-out'
 import Menu from '~icons/lucide/menu'
@@ -28,12 +29,16 @@ const drawerFocusable = 'a[href], button:not([disabled]), [tabindex]:not([tabind
 const catalogNav: NavItem[] = [
   { label: 'مدیریت فیلم‌ها', href: '/admin/movies', icon: Film, hint: 'جستجو، فیلتر و ویرایش' },
   { label: 'مدیریت سریال‌ها', href: '/admin/series', icon: Tv, hint: 'دانلود، دوبله و زیرنویس' },
-  { label: 'افزودن دستی', href: '/admin/movies/new', icon: Plus, hint: 'ثبت عنوان بدون TMDB' },
+  { label: 'طبقه‌بندی‌ها', href: '/admin/taxonomy', icon: Layers, hint: 'ژانر، کشور، برچسب، بازیگر و کارگردان' },
+  { label: 'افزودن فیلم دستی', href: '/admin/movies/new', icon: Plus, hint: 'ثبت فیلم بدون TMDB' },
+  { label: 'افزودن سریال دستی', href: '/admin/series/new', icon: Plus, hint: 'ثبت سریال بدون TMDB' },
   { label: 'افزودن از TMDB', href: '/admin/movies?tmdb=1', icon: Sparkles, hint: 'ورود با شناسه رسمی' },
 ]
 
 const overviewNav: NavItem[] = [
   { label: 'داشبورد و آنالیتیکس', href: '/dashboard', icon: LayoutDashboard, hint: 'KPI، نمودار، سلامت کاتالوگ و خروجی CSV' },
+  { label: 'آمار کاربران', href: '/dashboard/users', icon: Users, hint: 'ثبت‌نام، فعالیت و کاربران برتر' },
+  { label: 'آمار محتوا', href: '/dashboard/content', icon: Film, hint: 'تماشا، جستجو و نرخ تکمیل' },
   { label: 'صندوق هم‌صدا', href: '/admin/inbox', icon: Inbox, hint: 'درخواست و پشتیبانی کاربران' },
   { label: 'دیدگاه‌ها', href: '/admin/reviews', icon: MessageSquare, hint: 'مدیریت نظرات فیلم و سریال' },
 ]
@@ -59,14 +64,18 @@ const lineSidebarHrefs = computed(() => adminNavGroups.flatMap(group => group.it
 
 function lineSidebarItemActive(href: string) {
   const [path, queryString = ''] = href.split('?')
-  if (path === '/dashboard') return route.path.startsWith('/dashboard') || route.path === '/admin'
+  if (path === '/dashboard') return route.path === '/dashboard' || route.path === '/admin'
+  if (path === '/dashboard/users') return route.path.startsWith('/dashboard/users')
+  if (path === '/dashboard/content') return route.path.startsWith('/dashboard/content')
   if (path === '/admin/movies/new') return route.path === '/admin/movies/new'
+  if (path === '/admin/series/new') return route.path === '/admin/series/new'
   if (path === '/admin/movies' && queryString.includes('tmdb=1')) {
     return route.path === '/admin/movies' && String(route.query.tmdb) === '1'
   }
   if (path === '/admin/movies') {
     return (route.path === '/admin/movies' && String(route.query.tmdb) !== '1') || /^\/admin\/movies\/\d+/.test(route.path)
   }
+  if (path === '/admin/taxonomy') return route.path.startsWith('/admin/taxonomy')
   if (path === '/admin/users') return route.path.startsWith('/admin/users')
   if (path === '/admin/inbox') return route.path.startsWith('/admin/inbox')
   if (path === '/admin/reviews') return route.path.startsWith('/admin/reviews')
@@ -92,6 +101,7 @@ function groupForCurrentRoute() {
   if (route.path.startsWith('/dashboard') || route.path === '/admin') return 'overview'
   if (route.path.startsWith('/admin/users')) return 'people'
   if (route.path.startsWith('/admin/provider-import') || route.path.startsWith('/admin/catalog-sync')) return 'automation'
+  if (route.path === '/admin/taxonomy') return 'catalog'
   if (route.path.startsWith('/admin/movies') || route.path.startsWith('/admin/series')) return 'catalog'
   return 'overview'
 }
@@ -151,6 +161,7 @@ const pageTitle = computed(() => {
   if (route.path.startsWith('/admin/inbox')) return 'صندوق هم‌صدا'
   if (route.path.startsWith('/admin/reviews')) return 'مدیریت دیدگاه‌ها'
   if (route.path.startsWith('/admin/users')) return 'مدیریت کاربران'
+  if (route.path.startsWith('/admin/taxonomy')) return 'طبقه‌بندی‌ها'
   if (route.path.startsWith('/admin/provider-import')) return 'ارائه‌دهنده مجاز'
   if (route.path.startsWith('/admin/catalog-sync')) return 'ورود خودکار'
   if (route.path === '/admin/series/new') return 'افزودن سریال'

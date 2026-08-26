@@ -57,6 +57,38 @@ function toggleSidebar() {
   sidebarOpen.value = !sidebarOpen.value
   if (sidebarOpen.value) searchOpen.value = false
 }
+
+// Edge-swipe to open: a touch starting at the leading edge (right in RTL) that
+// drags inward past a threshold commits to opening the sidebar. The strip is
+// only live when the drawer is closed and we're on a phone width.
+const SWIPE_EDGE = 28
+const SWIPE_THRESHOLD = 42
+let swipeStartX: number | null = null
+
+function handleSwipeStart(event: TouchEvent) {
+  if (sidebarOpen.value || isDesktop.value) return
+  const touch = event.touches[0]
+  if (!touch || touch.clientX < window.innerWidth - SWIPE_EDGE) return
+  swipeStartX = touch.clientX
+}
+
+function handleSwipeMove(event: TouchEvent) {
+  if (swipeStartX == null) return
+  const touch = event.touches[0]
+  if (!touch) return
+  const dx = swipeStartX - touch.clientX
+  if (dx > SWIPE_THRESHOLD) {
+    swipeStartX = null
+    sidebarOpen.value = true
+    searchOpen.value = false
+  } else if (dx < -10) {
+    swipeStartX = null
+  }
+}
+
+function handleSwipeEnd() {
+  swipeStartX = null
+}
 </script>
 
 <template>
@@ -164,6 +196,20 @@ function toggleSidebar() {
         v-model:open="sidebarOpen"
       />
     </ClientOnly>
+
+    <!-- Invisible leading-edge swipe strip to open the sidebar on touch. -->
+    <button
+      v-if="!isDesktop"
+      type="button"
+      class="mobile-edge-swipe"
+      aria-hidden="true"
+      tabindex="-1"
+      :class="{ 'mobile-edge-swipe--active': !sidebarOpen }"
+      @touchstart.passive="handleSwipeStart"
+      @touchmove.passive="handleSwipeMove"
+      @touchend.passive="handleSwipeEnd"
+      @touchcancel.passive="handleSwipeEnd"
+    />
   </div>
 </template>
 
@@ -378,5 +424,24 @@ function toggleSidebar() {
   .search-drop-leave-active {
     transition: none;
   }
+}
+
+/* Leading-edge (right in RTL) invisible strip that captures the open swipe. */
+.mobile-edge-swipe {
+  position: fixed;
+  inset-block: 0;
+  inset-inline-end: 0;
+  z-index: 55;
+  width: 1.75rem;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  cursor: ew-resize;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.mobile-edge-swipe--active {
+  pointer-events: auto;
 }
 </style>

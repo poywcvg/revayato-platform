@@ -509,6 +509,29 @@ export function useContentEditor(config: AdminEditorConfig, itemId?: number) {
     }
   }
 
+  const providerDiscoverLoading = ref(false)
+
+  /** Queue a provider-import discovery job for this title (Film2Media/Dornatv/…). */
+  async function queueProviderDiscover() {
+    if (!itemId) return
+    if (!api.discoverProvider) {
+      notifications.warning('در دسترس نیست', 'این عملیات برای این نوع محتوا فعال نشده است.')
+      return
+    }
+    providerDiscoverLoading.value = true
+    try {
+      await api.discoverProvider(itemId)
+      notifications.success(
+        'جوی کاوش در صف قرار گرفت',
+        'پس از تکمیل، فایل‌های یافت‌شده را در «ارائه‌دهنده مجاز» بررسی و تأیید کنید.',
+      )
+    } catch (cause) {
+      notifications.notifyError(cause, 'ثبت جوی کاوش انجام نشد')
+    } finally {
+      providerDiscoverLoading.value = false
+    }
+  }
+
   function beforeUnloadHandler(event: BeforeUnloadEvent) {
     if (isDirty.value) event.preventDefault()
   }
@@ -534,6 +557,7 @@ export function useContentEditor(config: AdminEditorConfig, itemId?: number) {
     buildPayload, save, selectImage,
     syncOpen, syncLoading, syncPreview, syncOverwrite, prepareSync, confirmSync,
     f2mPageUrl, f2mCrawlLoading, crawlFilm2MediaDownloads,
+    providerDiscoverLoading, queueProviderDiscover,
     inputClass, textareaClass, afterSave,
   }
 }

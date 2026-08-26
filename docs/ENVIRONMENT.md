@@ -53,6 +53,14 @@ python manage.py reconcile_myf2m_catalog
 | `MYF2M_RATE_LIMIT_PER_MINUTE` | Client rate ceiling | No |
 | `MYF2M_VERIFY_SSL` | TLS verify (must be True in production) | No |
 | `MYF2M_AUTO_CRAWL_ON_PUBLISH` | Auto enqueue crawl on publish | No (default True) |
+| `MYF2M_CRAWL_INTERVAL_SECONDS` | Sleep between `catalog-crawler` rounds | No (default 21600) |
+| `MYF2M_BULK_CRAWL_DELAY_SECONDS` | Delay between per-title detail fetches | No (default 3.0) |
+| `MYF2M_REFRESH_DELAY_SECONDS` | Delay between refresh re-crawls per title | No (default 0.7) |
+| `MYF2M_SERIES_REFRESH_LIMIT` | Series re-crawled per round for new episodes | No (default 150) |
+| `MYF2M_SERIES_REFRESH_YEAR_MIN` | Skip series older than this year during refresh | No (default 2023, 0 = all) |
+| `MYF2M_MOVIE_REFRESH_LIMIT` | Movies re-crawled per round for new qualities | No (default 200) |
+| `MYF2M_MOVIE_REFRESH_ORDER` | Movie refresh selection: `stale` or `popular` | No (default `stale`) |
+| `MYF2M_SIZE_WORKERS` / `MYF2M_SIZE_TIMEOUT_SECONDS` / `MYF2M_SIZE_PROBE_BATCH` / `MYF2M_SIZE_LIMIT` | Download-size backfill probes | No |
 | `CATALOG_EXCLUDE_IRANIAN` | Skip/purge Iranian cinema/TV | No (default True) |
 | `CATALOG_DELETE_WHEN_PROVIDER_MISSING` | Delete titles not found on crawler | No (default True) |
 

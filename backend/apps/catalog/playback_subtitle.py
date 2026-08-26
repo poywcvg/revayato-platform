@@ -219,13 +219,19 @@ def _attach_open_episode_subtitlestar(series, episode, *, timeout_seconds: int) 
     if not matches:
         return False
 
+    # Accuracy guard: only bind cues that provably belong to this exact
+    # season/episode. A "closest" match from the provider would play with the
+    # wrong timing, which is worse than a short wait — the worker lane re-probes
+    # with release matching and the beat drain guarantees an eventual retry.
     match = next(
         (
             row for row in matches
             if int(row.season_number) == season_no and int(row.episode_number) == ep_no
         ),
-        matches[0],
+        None,
     )
+    if match is None:
+        return False
     payload = normalize_subtitle_payload(match.payload, filename=match.filename)
     if not _is_usable_persian_webvtt(payload):
         return False
@@ -411,11 +417,17 @@ def ensure_playback_subtitles(
                 _clear_subtitlestar_miss_for_movie(movie)
                 from apps.catalog.subzone import clear_subzone_miss_for_movie
                 clear_subzone_miss_for_movie(movie)
-            queued = enqueue_movie_softsub_urgent(
-                movie.pk,
-                force=True,
-                preferred_source_url=preferred_source_url,
-            )
+            try:
+                queued = enqueue_movie_softsub_urgent(
+                    movie.pk,
+                    force=True,
+                    preferred_source_url=preferred_source_url,
+                )
+            except Exception:
+                # Broker hiccup: never dead-end the viewer — the beat drain
+                # re-enqueues this gap on its next pass.
+                logger.warning('urgent softsub enqueue failed movie=%s', movie.pk, exc_info=True)
+                queued = False
 
             attached = False
             if sync:
@@ -445,19 +457,22 @@ def ensure_playback_subtitles(
                     'message': 'attached' if attached else 'ready',
                 }
 
-            _mark_gap(
-                gap,
-                status=PlaybackSubtitleGap.Status.QUEUED if queued else PlaybackSubtitleGap.Status.UNAVAILABLE,
-                last_result='burned_in_queued' if queued else 'burned_in',
-            )
-            return {
-                'status': 'queued' if queued else 'burned_in',
-                'reported': True,
-                'queued': queued,
-                'has_subtitle_tracks': False,
-                'report_id': gap.pk,
-                'message': 'loading' if queued else 'hardsub_burned_in',
-            }
+        # A held worker queue-lock (enqueue False) means extraction is already
+        # in flight; a broker error is retried by the beat drain. Either way the
+        # open player must keep waiting instead of seeing a dead-end.
+        _mark_gap(
+            gap,
+            status=PlaybackSubtitleGap.Status.QUEUED,
+            last_result='burned_in_queued' if queued else 'burned_in_pending',
+        )
+        return {
+            'status': 'queued',
+            'reported': True,
+            'queued': True,
+            'has_subtitle_tracks': False,
+            'report_id': gap.pk,
+            'message': 'loading',
+        }
 
         # Rate-limited repeats only report the gap — do not clear Star caches or
         # re-stampede the urgent SoftSub queue (that blocked online playback).
@@ -479,11 +494,17 @@ def ensure_playback_subtitles(
             _clear_subtitlestar_miss_for_movie(movie)
             from apps.catalog.subzone import clear_subzone_miss_for_movie
             clear_subzone_miss_for_movie(movie)
-        queued = enqueue_movie_softsub_urgent(
-            movie.pk,
-            force=True,
-            preferred_source_url=preferred_source_url,
-        )
+        try:
+            queued = enqueue_movie_softsub_urgent(
+                movie.pk,
+                force=True,
+                preferred_source_url=preferred_source_url,
+            )
+        except Exception:
+            # Broker hiccup: never dead-end the viewer — the beat drain
+            # re-enqueues this gap on its next pass.
+            logger.warning('urgent softsub enqueue failed movie=%s', movie.pk, exc_info=True)
+            queued = False
 
         attached = False
         if sync:
@@ -514,20 +535,23 @@ def ensure_playback_subtitles(
                 'message': 'attached' if attached else 'ready',
             }
 
+        # A held worker queue-lock (enqueue False) means extraction is already
+        # in flight; a broker error is retried by the beat drain. Either way the
+        # open player must keep waiting instead of seeing a dead-end.
         _mark_gap(
             gap,
-            status=PlaybackSubtitleGap.Status.QUEUED if queued else PlaybackSubtitleGap.Status.UNAVAILABLE,
-            last_result='queued' if queued else 'unavailable',
+            status=PlaybackSubtitleGap.Status.QUEUED,
+            last_result='queued' if queued else 'pending_enqueue',
         )
         return {
-            'status': 'queued' if queued else 'unavailable',
+            'status': 'queued',
             'reported': True,
-            'queued': queued,
+            'queued': True,
             'has_subtitle_tracks': False,
             'report_id': gap.pk,
             'message': (
                 'extracting_embedded' if queued and prefer_embedded
-                else ('loading' if queued else 'no_source')
+                else 'loading'
             ),
         }
 
@@ -621,13 +645,19 @@ def ensure_playback_subtitles(
             _clear_subtitlestar_miss_for_series(series)
             from apps.catalog.subzone import clear_subzone_miss_for_series
             clear_subzone_miss_for_series(series)
-        queued = enqueue_series_softsub_urgent(
-            series.pk,
-            force=True,
-            episode_limit=8 if ep_id else 24,
-            episode_id=ep_id,
-            preferred_source_url=preferred_source_url,
-        )
+        try:
+            queued = enqueue_series_softsub_urgent(
+                series.pk,
+                force=True,
+                episode_limit=8 if ep_id else 24,
+                episode_id=ep_id,
+                preferred_source_url=preferred_source_url,
+            )
+        except Exception:
+            # Broker hiccup: never dead-end the viewer — the beat drain
+            # re-enqueues this gap on its next pass.
+            logger.warning('urgent softsub enqueue failed series=%s', series.pk, exc_info=True)
+            queued = False
         attached_eps = 0
         if sync and episode is not None:
             sync_budget = min(14, max(8, int(timeout_seconds or 12)))
@@ -652,17 +682,17 @@ def ensure_playback_subtitles(
                 }
         _mark_gap(
             gap,
-            status=PlaybackSubtitleGap.Status.QUEUED if queued else PlaybackSubtitleGap.Status.UNAVAILABLE,
-            last_result='burned_in_queued' if queued else 'burned_in',
+            status=PlaybackSubtitleGap.Status.QUEUED,
+            last_result='burned_in_queued' if queued else 'burned_in_pending',
         )
         return {
-            'status': 'queued' if queued else 'burned_in',
+            'status': 'queued',
             'reported': True,
-            'queued': queued,
+            'queued': True,
             'has_subtitle_tracks': False,
             'episode_id': ep_id or None,
             'report_id': gap.pk,
-            'message': 'loading' if queued else 'hardsub_burned_in',
+            'message': 'loading',
         }
 
     if not first_hit:
@@ -683,13 +713,19 @@ def ensure_playback_subtitles(
         from apps.catalog.subzone import clear_subzone_miss_for_series
         clear_subzone_miss_for_series(series)
     # Prefer a small urgent batch so the open episode is covered quickly.
-    queued = enqueue_series_softsub_urgent(
-        series.pk,
-        force=True,
-        episode_limit=8 if ep_id else 24,
-        episode_id=ep_id,
-        preferred_source_url=preferred_source_url,
-    )
+    try:
+        queued = enqueue_series_softsub_urgent(
+            series.pk,
+            force=True,
+            episode_limit=8 if ep_id else 24,
+            episode_id=ep_id,
+            preferred_source_url=preferred_source_url,
+        )
+    except Exception:
+        # Broker hiccup: never dead-end the viewer — the beat drain
+        # re-enqueues this gap on its next pass.
+        logger.warning('urgent softsub enqueue failed series=%s', series.pk, exc_info=True)
+        queued = False
 
     attached_eps = 0
     if sync:
@@ -748,19 +784,19 @@ def ensure_playback_subtitles(
 
     _mark_gap(
         gap,
-        status=PlaybackSubtitleGap.Status.QUEUED if queued else PlaybackSubtitleGap.Status.UNAVAILABLE,
-        last_result='queued' if queued else 'unavailable',
+        status=PlaybackSubtitleGap.Status.QUEUED,
+        last_result='queued' if queued else 'pending_enqueue',
     )
     return {
-        'status': 'queued' if queued else 'unavailable',
+        'status': 'queued',
         'reported': True,
-        'queued': queued,
+        'queued': True,
         'has_subtitle_tracks': False,
         'episode_id': ep_id or None,
         'report_id': gap.pk,
         'message': (
             'extracting_embedded' if queued and prefer_embedded
-            else ('loading' if queued else 'no_source')
+            else 'loading'
         ),
     }
 
@@ -837,6 +873,23 @@ def _build_status_payload(*, kind: str, slug: str, episode_id: int, report_id: i
                 'report_id': gap.pk if gap else None,
                 'message': 'title_not_found',
             }
+        if gap is None:
+            gap = PlaybackSubtitleGap.objects.filter(
+                content_type=PlaybackSubtitleGap.ContentType.MOVIE,
+                object_id=movie.pk,
+                episode_id=0,
+            ).first()
+        if gap and (
+            gap.content_type != PlaybackSubtitleGap.ContentType.MOVIE
+            or gap.object_id != movie.pk
+            or gap.episode_id != 0
+        ):
+            return {
+                'status': 'invalid_report',
+                'has_subtitle_tracks': False,
+                'report_id': report_id,
+                'message': 'report_target_mismatch',
+            }
         tracks = movie.subtitle_tracks or []
         ready = _has_tracks(tracks)
         return {
@@ -856,6 +909,26 @@ def _build_status_payload(*, kind: str, slug: str, episode_id: int, report_id: i
             'has_subtitle_tracks': False,
             'report_id': gap.pk if gap else None,
             'message': 'title_not_found',
+        }
+
+    if gap is None:
+        gap = PlaybackSubtitleGap.objects.filter(
+            content_type=PlaybackSubtitleGap.ContentType.SERIES,
+            object_id=series.pk,
+            episode_id=ep_id,
+        ).first()
+
+    if gap and (
+        gap.content_type != PlaybackSubtitleGap.ContentType.SERIES
+        or gap.object_id != series.pk
+        or gap.episode_id != ep_id
+    ):
+        return {
+            'status': 'invalid_report',
+            'has_subtitle_tracks': False,
+            'episode_id': ep_id or None,
+            'report_id': report_id,
+            'message': 'report_target_mismatch',
         }
 
     if ep_id:

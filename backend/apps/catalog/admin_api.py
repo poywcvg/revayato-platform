@@ -531,6 +531,7 @@ def movie_sync_tmdb(request, movie_id):
         'skipped_manual_fields': skipped,
         'overwrite_manual': overwrite_manual,
         'tmdb_id': movie.tmdb_id,
+        'metadata_gaps': getattr(synced, '_metadata_gaps', None) or synced.metadata_structure_gaps,
     }
     if dry_run:
         payload['preview'] = {
@@ -582,6 +583,7 @@ def series_sync_tmdb(request, series_id):
         'dry_run': dry_run,
         'created': created,
         'tmdb_id': series.tmdb_id,
+        'metadata_gaps': getattr(synced, '_metadata_gaps', None) or synced.metadata_structure_gaps,
     }
     if dry_run:
         payload['preview'] = {

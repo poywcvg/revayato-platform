@@ -23,7 +23,9 @@ const {
   posterPreview, backdropPreview, isDirty, pageTitle, form,
   initialize, save, validate, addDownloadLink, removeDownloadLink, derivedAvailability,
   selectImage, prepareSync, syncOpen, syncLoading, syncPreview, syncOverwrite, confirmSync,
-  f2mPageUrl, f2mCrawlLoading, crawlFilm2MediaDownloads, inputClass, textareaClass,
+  f2mPageUrl, f2mCrawlLoading, crawlFilm2MediaDownloads,
+  providerDiscoverLoading, queueProviderDiscover,
+  inputClass, textareaClass,
 } = editor
 
 function bind(spec: AdminFieldSpec) {
@@ -297,6 +299,12 @@ const publishedSlug = computed(() => form.slug || (item.value as AdminMovie | Ad
                     </div>
                   </div>
                   <p v-if="isDirty" class="mt-3 text-xs text-amber-800">قبل از برداشت لینک، تغییرات را ذخیره کنید.</p>
+                  <div class="mt-3 flex flex-wrap items-center gap-2 border-t border-[var(--admin-border)] pt-3">
+                    <AdminButton type="button" variant="secondary" size="sm" :loading="providerDiscoverLoading" :disabled="providerDiscoverLoading" @click="queueProviderDiscover">
+                      کاوش ارائه‌دهنده‌ها (واچ‌پارتی/دانلود)
+                    </AdminButton>
+                    <span class="text-[11px] leading-5 text-[var(--admin-muted)]">یک جوی کاوش در صف می‌گذارد؛ نتیجه در «ارائه‌دهنده مجاز» قابل تأیید است.</span>
+                  </div>
                 </div>
 
                 <!-- TMDB sync -->

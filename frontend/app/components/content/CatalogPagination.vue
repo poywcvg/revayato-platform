@@ -42,30 +42,30 @@ function go(page: number) {
 <template>
   <nav
     v-if="totalPages > 1"
-    class="catalog-pagination ui-surface mt-6 flex flex-wrap items-center justify-between gap-3 px-3 py-3 sm:px-4"
+    class="catalog-pagination mt-6 flex flex-wrap items-center justify-between gap-3 px-1 py-2"
     :aria-label="label"
   >
     <p class="text-[11px] font-bold text-muted">
       صفحه {{ page.toLocaleString('fa-IR') }} از {{ totalPages.toLocaleString('fa-IR') }}
       <span v-if="total" class="text-secondary"> · {{ total.toLocaleString('fa-IR') }} مورد</span>
     </p>
-    <div class="flex flex-wrap items-center gap-1.5">
+    <div class="flex flex-wrap items-center gap-1 sm:gap-1.5">
       <button
         type="button"
-        class="catalog-pagination__btn"
+        class="catalog-pagination__arrow"
         :disabled="pending || page <= 1"
         aria-label="صفحه قبل"
         @click="go(page - 1)"
       >
-        <CinematicIcon name="chevron-right" class="size-4" />
+        <CinematicIcon name="chevron-right" class="size-5" />
       </button>
       <template v-for="segment in segments" :key="segment.type === 'gap' ? segment.key : `page-${segment.page}`">
-        <span v-if="segment.type === 'gap'" class="px-1 text-xs font-black text-muted" aria-hidden="true">…</span>
+        <span v-if="segment.type === 'gap'" class="px-0.5 text-xs font-black text-muted" aria-hidden="true">…</span>
         <button
           v-else
           type="button"
-          class="catalog-pagination__btn catalog-pagination__btn--page"
-          :class="segment.page === page && 'is-active'"
+          class="catalog-pagination__page"
+          :class="{ 'is-active': segment.page === page }"
           :aria-current="segment.page === page ? 'page' : undefined"
           :disabled="pending"
           :aria-label="`صفحه ${segment.page}`"
@@ -76,45 +76,81 @@ function go(page: number) {
       </template>
       <button
         type="button"
-        class="catalog-pagination__btn"
+        class="catalog-pagination__arrow"
         :disabled="pending || page >= totalPages"
         aria-label="صفحه بعد"
         @click="go(page + 1)"
       >
-        <CinematicIcon name="chevron-left" class="size-4" />
+        <CinematicIcon name="chevron-left" class="size-5" />
       </button>
     </div>
   </nav>
 </template>
 
 <style scoped>
-.catalog-pagination__btn {
+/* Numbered pagination: round prev/next arrows, square page numbers,
+   active page becomes a ringed pill (harmonized with theme tokens). */
+.catalog-pagination__arrow {
   display: inline-grid;
-  min-width: 2.5rem;
-  min-height: 2.5rem;
+  width: 2.5rem;
+  height: 2.5rem;
   place-items: center;
-  border-radius: 0.85rem;
-  background: rgb(var(--surface-elevated-rgb, 20 24 33) / 1);
-  color: var(--color-secondary, #9aa3b5);
-  box-shadow: inset 0 0 0 1px rgb(var(--line-rgb, 255 255 255) / 12%);
-  font-size: 0.75rem;
-  font-weight: 800;
-  transition: color 160ms ease, background 160ms ease, box-shadow 160ms ease;
+  border-radius: 9999px;
+  background: color-mix(in srgb, var(--theme-bg-elevated) 72%, transparent);
+  color: var(--theme-text-secondary);
+  transition: background-color 160ms ease, color 160ms ease;
 }
 
-.catalog-pagination__btn:hover:not(:disabled) {
-  color: var(--color-brand, #e8c27a);
-  box-shadow: inset 0 0 0 1px rgb(var(--palette-sand-rgb, 232 194 122) / 35%);
+@media (hover: hover) and (pointer: fine) {
+  .catalog-pagination__arrow:hover:not(:disabled) {
+    background: color-mix(in srgb, var(--theme-accent-primary) 14%, transparent);
+    color: var(--theme-accent-primary);
+  }
 }
 
-.catalog-pagination__btn:disabled {
-  opacity: 0.4;
+.catalog-pagination__page {
+  display: inline-grid;
+  width: 2.25rem;
+  height: 2.25rem;
+  place-items: center;
+  border: 1px solid transparent;
+  border-radius: .55rem;
+  color: var(--theme-text-secondary);
+  font-size: .8rem;
+  font-weight: 600;
+  font-feature-settings: 'ss01';
+  transition: background-color 160ms ease, color 160ms ease, border-color 160ms ease, border-radius 160ms ease;
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .catalog-pagination__page:hover:not(:disabled):not(.is-active) {
+    background: color-mix(in srgb, var(--theme-bg-elevated) 72%, transparent);
+    color: var(--theme-text-primary);
+  }
+}
+
+.catalog-pagination__page.is-active {
+  border-color: color-mix(in srgb, var(--theme-accent-primary) 45%, transparent);
+  border-radius: 9999px;
+  background: color-mix(in srgb, var(--theme-accent-primary) 12%, transparent);
+  color: var(--theme-accent-primary);
+}
+
+.catalog-pagination__arrow:disabled,
+.catalog-pagination__page:disabled {
+  opacity: .4;
   cursor: not-allowed;
 }
 
-.catalog-pagination__btn--page.is-active {
-  background: rgb(var(--palette-sand-rgb, 232 194 122) / 18%);
-  color: var(--color-brand, #e8c27a);
-  box-shadow: inset 0 0 0 1px rgb(var(--palette-sand-rgb, 232 194 122) / 40%);
+@media (max-width: 400px) {
+  .catalog-pagination__arrow {
+    width: 2.25rem;
+    height: 2.25rem;
+  }
+
+  .catalog-pagination__page {
+    width: 2rem;
+    height: 2rem;
+  }
 }
 </style>

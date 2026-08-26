@@ -10,6 +10,18 @@ MOVIE_DETAILS = {
     'title': 'Automated Release',
     'original_title': 'Automated Release',
     'overview': 'A complete licensed catalog ingestion test movie.',
+    'translations': {
+        'translations': [
+            {
+                'iso_639_1': 'fa',
+                'data': {
+                    'title': 'انتشار خودکار',
+                    'overview': 'فیلمی کامل برای آزمون فرآیند درون‌ریزی کاتالوگ.',
+                    'tagline': '',
+                },
+            },
+        ],
+    },
     'release_date': '2026-07-01',
     'runtime': 112,
     'original_language': 'en',
@@ -93,10 +105,12 @@ class CatalogIngestionTests(TestCase):
         self.assertFalse(movie.auto_publish)
         self.assertEqual(movie.publication_status, Movie.PublicationStatus.DRAFT)
 
-    def test_manifest_rejects_full_media_urls(self):
+    def test_manifest_accepts_absolute_cdn_urls_but_rejects_malformed_values(self):
         movie = Movie(title='Unsafe', slug='unsafe')
+        apply_media_manifest(movie, {'hls_key': 'https://cdn.example/movie.m3u8'})
+        self.assertEqual(movie.video_url, 'https://cdn.example/movie.m3u8')
         with self.assertRaises(ValidationError):
-            apply_media_manifest(movie, {'hls_key': 'https://unauthorized.example/movie.m3u8'})
+            apply_media_manifest(movie, {'hls_key': 'https:///broken.m3u8'})
 
     def test_explicitly_cleared_manual_field_is_not_refilled(self):
         movie, _created, _published, _skipped = upsert_tmdb_movie(MOVIE_DETAILS)

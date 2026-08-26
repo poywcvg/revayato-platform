@@ -1,122 +1,65 @@
-# روایتو — اپ اندروید (موبایل + Android TV)
+# روایتو — اپ Native اندروید
 
-React Native app (single codebase) on the **react-native-tvos** fork (0.76.9-0).
-The same APK runs on phones and Android TV: UI touches/DPAD-focus are unified,
-layout switches via `Platform.isTV`.
+اپ مستقل Android Native که مستقیماً به API روایتو متصل می‌شود و رابط کاتالوگ، جستجو، جزئیات، ورود، دانلود و پلیر Media3 را ارائه می‌کند.
+بدونِ هیچ تغییری در کد وب، تمام امکانات سایت درون اپ کار می‌کند:
 
-Scope (v1): **browse + playback**. No auth yet — the data layer models a future
-`Authorization: Bearer` seam. The app talks only to the existing Django backend;
-all media URLs (poster/backdrop/video_url/subtitle src) are already **absolute**
-from the API — the app never prefixes a CDN base.
+- مرور کاتالوگ، جستجو، جزئیات فیلم/سریال
+- پخش آنلاین (HLS + MP4) با دکمه تمام‌صفحه که مثل مرورگر گوشی، افقی قفل می‌شود
+- ورود و ثبت‌نام (کوکی‌های JWT — با پاک نشدن داده اپ، ورود پس از بستن و بازکردن باقی می‌ماند)
+- زیرنویس، دوبله، دسته‌بندی‌ها
+- تماشای گروهی (watch-party) با WebSocket زنده (`wss://revayato.com/ws`)
+- دانلود فایل‌ها **داخل خود اپ** با نوتیفیکیشن پیشرفت و ذخیره در `Downloads/Revayato/`
+- داشبورد و پنل مدیریت (برای حساب‌های با سطح دسترسی staff)
 
-## Prerequisites
+سایت مقصد به‌صورت ثابت `https://revayato.com/` است؛ لینک‌های دیگر دامنه‌ها
+(مثلاً تلگرام، TMDB) در مرورگر سیستمی باز می‌شوند.
 
-- Node.js 18+ and **pnpm** (root workspace uses pnpm 11.x).
-- **JDK 17+** (e.g. Temurin 17) and **Android SDK** with `compileSdk 35`,
-  `minSdk 24`, build-tools. Set `ANDROID_HOME` and add `platform-tools` to PATH.
-  From the repo root:
-  ```powershell
-  $env:ANDROID_HOME = "$env:LOCALAPPDATA\Android\Sdk"
-  @($env:ANDROID_HOME, "$env:ANDROID_HOME\platform-tools") | % { if ($_ -notin $env:Path -split ';') { $env:Path = "$_;$env:Path" } }
-  ```
-- An Android emulator (AVD, API 24–35) or a device/TV reachable via `adb`.
+## ساخت APK
 
-## Install
+پیش‌نیازها: JDK 17+ و Android SDK (پروژه با `local.properties` به
+`sdk.dir=C:\Android` اشاره می‌کند؛ نسخه 35). Gradle نسخه 8.10.2 از قبل در کش
+wrapper است؛ این پروژه هیچ وابستگی خارجی ندارد (فقط platform Android).
 
-```bash
-cd ../..            # repo root
-pnpm install        # installs backend, frontend, and android-app together
-```
-
-## Run
-
-Three terminals (Metro must serve the JS bundle while the app runs):
-
-**1 — Backend (Django):**
 ```powershell
-docker compose up -d redis
-cd backend
-.\.venv\Scripts\python.exe manage.py migrate
-.\.venv\Scripts\python.exe manage.py runserver 0.0.0.0:8000
+# از ریشه ریپو (جایی که پوشه‌های frontend/ backend/ android-app/ هستند):
+    powershell -ExecutionPolicy Bypass -File tools/build-android-apk.ps1
+
+# خروجی: android-app/dist/revayato-native-v5.0.0.apk
 ```
 
-**2 — Web (optional, for API parity):**
+امضا با همان `debug.keystore` (کلید CURRENT APK های قدیمی) انجام می‌شود،
+پس روی همان دستگاه‌ها جایگزین/نصب می‌شود. برای فروشگاه/انتشار واقعی، یک
+keystore اختصاصی بسازید و در `android-app/app/build.gradle` به‌جای
+`signingConfigs.debug` قرار دهید (بخش `signingConfigs`).
+
+## بررسی روی دستگاه
+
 ```powershell
-cd frontend
-pnpm dev
+# نصب مستقیم (adb در platform-tools SDK)
+& "$env:LOCALAPPDATA\..\..\Android\platform-tools\adb.exe" install -r android-app/dist/revayato-android-v2.0.0.apk
 ```
 
-**3 — App:**
-```powershell
-# Metro bundle server
-pnpm app:start
+نکته: برای تست در محیط توسعه که می‌خواهید به سرور محلی/LAN اشاره کنید،
+مقدار `APP_URL` در `MainActivity.java` را موقتاً تغییر دهید و دوباره بسازید
+(در این حالت برای HTTP باید `cleartextTraffic` را در manifest فعال کنید).
 
-# a new terminal, then install+launch on a running emulator / connected device
-pnpm app:android
-```
-
-> **API base URL**: the dev default is `http://10.0.2.2:8000/api` (emulator's
-> loopback to the host). On a physical device/TV set `API_BASE_URL` to your
-> machine's LAN IP before building, e.g.
-> `$env:API_BASE_URL = "http://192.168.1.20:8000/api"; pnpm app:android`.
-> Cleartext HTTP is enabled for **debug builds only**.
-
-## Scripts (all from repo root)
-
-| command            | what it does                                        |
-| ------------------ | --------------------------------------------------- |
-| `pnpm app:start`   | Metro dev server for the app                        |
-| `pnpm app:android` | build + install on the connected emulator/device    |
-| `pnpm app:typecheck` | `tsc --noEmit` against the app                      |
-| `pnpm app:lint`    | ESLint over `src` (0 errors expected)               |
-| `pnpm app:test`    | Jest unit tests for the data layer (node env)       |
-| `pnpm app:assets`  | re-link bundled fonts via `react-native-asset`      |
-
-## How to point the app at a running backend
-
-1. Backend up on host port 8000 (see above).
-2. `$env:API_BASE_URL = "http://<HOST_IP>:8000/api"` — `<HOST_IP>` is
-   `10.0.2.2` for the Android emulator, your LAN IP for a physical device/TV.
-3. `pnpm app:android`.
-
-Env values are read at bundle time — restart Metro after changing them.
-
-## Project layout
+## ساختار
 
 ```
-src/
-  config/        API base + cache/flags          (react-native-free, unit-testable)
-  api/           fetch client, DTO types, endpoints, cache
-  data/          catalogAdapter (API → AppMedia), translations (fa-IR)
-  screens/       Home / Browse / Search / Detail / Genres / GenreBrowse / Countries
-  components/    ui/ (AppText, Chip, PosterCard…) + list/ + detail/
-  player/        VideoSurface (sole react-native-video user), PlayerShell,
-                 Player/Episode players, resume, subtitle tracks
-  navigation/    Phone (bottom tabs) vs TV (single stack) chosen via Platform.isTV
-  hooks/         useApiGet (SWR), useTVLayout, …
-  utils/         fa-IR format, media-URL normalize, resume keys
-  theme/         dark palette + Vazirmatn
-  assets/fonts/  Vazirmatn TTFs (bundled by react-native-asset)
+android-app/
+├─ app/src/main/java/com/revayato/app/
+│   ├─ MainActivity.java       # کاتالوگ، جزئیات، جستجو، امتیازها، دانلود
+│   ├─ PlayerActivity.java     # پلیر Media3 (HLS/MP4/MKV، زیرنویس، قفل، PiP)
+│   ├─ WatchPartyActivity.java # لابی تماشای گروهی
+│   ├─ AuthActivity.java       # ورود / ثبت‌نام / بازیابی رمز
+│   └─ ImageLoader.java        # بارگذاری و کش تصاویر
+├─ app/src/main/AndroidManifest.xml
+├─ app/src/main/res/           # تم تیره #050807، اسپلش، آیکون از سایت
+├─ app/build.gradle            # applicationId com.revayato.app, minSdk 24
+└─ dist/                       # خروجی‌های build (آخرین: revayato-native-v5.0.0.apk)
 ```
 
-## TV-specific details
-
-- Manifest: `android:uses-feature android.hardware.touchscreen required=false`,
-  `android.hardware.leanback`. The same APK ships both `LAUNCHER` and
-  `LEANBACK_LAUNCHER` intents; a 320×180 TV banner is bundled.
-- DPAD: playback overlay sleeps and wakes on any key; Play/Pause on center,
-  ±10 s seek on left/right. Grid rails use `hasTVPreferredFocus` (first tile)
-  and auto-scroll on focus.
-- `Platform.isTV` is the official fork field — never sniff `Platform.OS`.
-
-## Verification (no Android toolchain needed)
-
-```bash
-pnpm app:typecheck   # strict TS, 0 errors
-pnpm app:lint        # 0 errors
-pnpm app:test        # data-adapter units against real serializer payloads
-```
-
-Manual runbook once a device is available: home rails, search, series detail
-(episode switching with no refetch), HLS playback + subtitles, resume after
-app-kill, and cold-start offline state.
+رابط همه صفحات با تم تیره یکپارچه #050807 ساخته شده و متن‌ها و ردیف‌ها
+با بزرگی فونت سیستم (Accessibility) اسکیل می‌شوند؛ پلیر در صورت
+پاسخ‌ندادن منبع، همان منبع را یک‌بار دوباره امتحان می‌کند و سپس
+هوشمندانه به منبع بعدی سوییچ می‌کند.

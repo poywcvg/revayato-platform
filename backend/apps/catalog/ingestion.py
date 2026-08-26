@@ -20,10 +20,12 @@ from .models import (
     Actor, CatalogSyncRun, ContentFormat, Country, Director, Genre,
     MediaStatus, Movie, MovieActor, Season, Series, SeriesActor,
 )
+from .completeness import metadata_gaps
 from .countries import persian_country_name
 from .genres import GENRE_TITLE_BY_SLUG
 from .imdb import enrich_imdb_rating
 from .importer_config import get_importer_settings
+from .localization import ensure_persian_metadata
 from .tmdb import TMDBClient, configured_tmdb_client  # noqa: F401 — re-export for callers
 
 logger = logging.getLogger(__name__)
@@ -679,6 +681,20 @@ def ensure_local_backdrop_from_poster(instance):
     return changed
 
 
+def enforce_import_structure(details, *, content_type):
+    """Guarantee the catalog structure on any inbound TMDB payload.
+
+    Every import — regardless of caller — must carry a Persian title,
+    an English/Latin original title and a Persian overview. Payloads already
+    localized by ``TMDBClient.movie_details``/``tv_details`` are detected via
+    their provenance markers and left untouched (keeps source labels intact).
+    """
+    # Title provenance is not proof that the overview was localized. Some
+    # provider importers attach this marker while retaining an English plot.
+    # Normalization is idempotent, so run it for every inbound payload.
+    return ensure_persian_metadata(details, content_type=content_type)
+
+
 def build_tmdb_defaults(details, *, movie=None, importer=None):
     tmdb_id = int(details['id'])
     title = (details.get('title') or details.get('original_title') or f'Movie {tmdb_id}').strip()
@@ -787,6 +803,7 @@ def upsert_tmdb_movie(
         client=imdb_client,
         enabled=bool(importer.fetch_imdb_ratings),
     )
+    enforce_import_structure(details, content_type='movie')
     tmdb_id = int(details['id'])
     movie = Movie.objects.filter(tmdb_id=tmdb_id).first()
     defaults = build_tmdb_defaults(details, movie=movie, importer=importer)
@@ -881,6 +898,12 @@ def upsert_tmdb_movie(
     published = maybe_auto_publish(movie, enabled=auto_publish)
     if published:
         movie.save(update_fields=['is_published', 'publication_status', 'updated_at'])
+    movie._metadata_gaps = metadata_gaps(movie)
+    if movie._metadata_gaps:
+        logger.warning(
+            'catalog_structure_incomplete type=movie tmdb_id=%s slug=%s gaps=%s',
+            tmdb_id, movie.slug, movie._metadata_gaps,
+        )
     movie._tmdb_changed_fields = sorted(set(changed_fields))
     return movie, created, published, skipped_fields
 
@@ -1040,6 +1063,7 @@ def upsert_tmdb_series(details, *, dry_run=False, imdb_client=None, importer=Non
         client=imdb_client,
         enabled=bool(importer.fetch_imdb_ratings),
     )
+    enforce_import_structure(details, content_type='tv')
     tmdb_id = int(details['id'])
     series = Series.objects.filter(tmdb_id=tmdb_id).first()
     defaults = build_tmdb_series_defaults(details, series=series)
@@ -1073,6 +1097,12 @@ def upsert_tmdb_series(details, *, dry_run=False, imdb_client=None, importer=Non
         cast_limit=getattr(importer, 'cast_import_limit', 15),
     )
     _upsert_seasons(series, details)
+    series._metadata_gaps = metadata_gaps(series)
+    if series._metadata_gaps:
+        logger.warning(
+            'catalog_structure_incomplete type=series tmdb_id=%s slug=%s gaps=%s',
+            tmdb_id, series.slug, series._metadata_gaps,
+        )
     return series, created
 
 

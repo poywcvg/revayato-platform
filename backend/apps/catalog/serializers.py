@@ -503,12 +503,21 @@ class EpisodeSerializer(PublicMediaSerializer):
     public_media_fields = ('poster', 'video_url', 'trailer_url')
     public_download_fields = {'download_url': 'download_key'}
     download_url = serializers.CharField(source='download_key', read_only=True)
+    stream_links = serializers.SerializerMethodField()
+
+    def get_stream_links(self, obj):
+        # Keep the Android/web player on the same episode-scoped source resolver
+        # used by Watch Party. It includes parent-series mirrors and filters out
+        # subtitle sidecars, so clients can fail over instead of showing an
+        # unsupported-player error after the first dead/unsupported URL.
+        from apps.watchparty.services import resolve_stream_links
+        return resolve_stream_links(obj)
 
     class Meta:
         model = Episode
         fields = [
             'id', 'title', 'episode_number', 'description',
-            'duration_minutes', 'poster', 'video_url', 'trailer_url', 'download_url', 'subtitle_tracks', 'air_date',
+            'duration_minutes', 'poster', 'video_url', 'trailer_url', 'download_url', 'stream_links', 'subtitle_tracks', 'air_date',
             'is_published', 'view_count',
             'created_at',
         ]

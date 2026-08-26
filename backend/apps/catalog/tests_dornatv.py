@@ -89,6 +89,14 @@ class DornatvParserTests(SimpleTestCase):
         self.assertEqual(kinds, ['dubbed', 'hardsub'])
         self.assertTrue(all(not str(row['url']).endswith('.mka') for row in parsed['available_links']))
 
+    def test_download_quality_preserves_release_details(self):
+        html = '''
+        <h1>دانلود فیلم تست Test Movie 2026</h1>
+        <a class="download" href="https://cdn.example/Test.2026.2160p.BluRay.DV.10bit.HEVC.mkv">دانلود</a>
+        '''
+        row = parse_download_links(html, page_path='/test-2026/')['available_links'][0]
+        self.assertEqual(row['quality'], 'BluRay 2160p Dolby Vision 10bit x265')
+
     def test_trailers_and_short_t_files_are_not_download_qualities(self):
         html = '''
         <html><body>

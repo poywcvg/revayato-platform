@@ -780,48 +780,149 @@ def home_rails(request):
     return _cached_response(request, namespace, 'home', build)
 
 
+def _country_options_payload():
+    """Published-country options with per-type counts.
+
+    Two grouped scans beat per-country filtered Count(distinct) on large
+    M2M tables — the same pattern as genre_list.
+    """
+    movie_map = {
+        int(row['countries']): int(row['c'])
+        for row in (
+            Movie.objects.filter(is_published=True, countries__isnull=False)
+            .values('countries')
+            .annotate(c=Count('id', distinct=True))
+        )
+        if row.get('countries') is not None
+    }
+    series_map = {
+        int(row['countries']): int(row['c'])
+        for row in (
+            Series.objects.filter(is_published=True, countries__isnull=False)
+            .values('countries')
+            .annotate(c=Count('id', distinct=True))
+        )
+        if row.get('countries') is not None
+    }
+    payload = []
+    for country in Country.objects.all().order_by('name').only(
+        'id', 'name', 'code',
+    ):
+        movie_count = movie_map.get(country.id, 0)
+        series_count = series_map.get(country.id, 0)
+        if not (movie_count or series_count):
+            continue
+        payload.append({
+            'id': country.id,
+            'name': persian_country_name(country.code, country.name),
+            'code': country.code,
+            'movie_count': movie_count,
+            'series_count': series_count,
+        })
+    return payload
+
+
+def _trending_search_payload(limit=8, min_hits=2):
+    """Most-repeated public queries of the last two weeks for search hints."""
+    from datetime import timedelta
+
+    from django.db.models import Count, Max
+    from django.utils import timezone
+
+    from apps.recommendations.models import SearchLog
+
+    since = timezone.now() - timedelta(days=14)
+    # Aggregate latest hit separately so created_at never leaks into GROUP BY
+    # (which would split identical queries into single-hit groups).
+    rows = (
+        SearchLog.objects.filter(created_at__gte=since)
+        .values('query')
+        .annotate(hits=Count('id'), latest=Max('created_at'))
+        .filter(hits__gte=min_hits)
+        .order_by('-hits', '-latest')[: limit * 4]
+    )
+    seen = set()
+    payload = []
+    for row in rows:
+        query = str(row['query'] or '').strip()
+        key = normalize_search_text(query)
+        if len(key) < 3 or key in seen:
+            continue
+        seen.add(key)
+        payload.append({'query': query, 'hits': row['hits']})
+        if len(payload) >= limit:
+            break
+    return payload
+
+
 @api_view(['GET'])
 @throttle_classes([CatalogReadThrottle])
 def country_list(request):
-    def build():
-        # Two grouped scans beat per-country filtered Count(distinct) on large
-        # M2M tables — the same pattern as genre_list.
-        movie_map = {
-            int(row['countries']): int(row['c'])
-            for row in (
-                Movie.objects.filter(is_published=True, countries__isnull=False)
-                .values('countries')
-                .annotate(c=Count('id', distinct=True))
-            )
-            if row.get('countries') is not None
-        }
-        series_map = {
-            int(row['countries']): int(row['c'])
-            for row in (
-                Series.objects.filter(is_published=True, countries__isnull=False)
-                .values('countries')
-                .annotate(c=Count('id', distinct=True))
-            )
-            if row.get('countries') is not None
-        }
-        payload = []
-        for country in Country.objects.all().order_by('name').only(
-            'id', 'name', 'code',
-        ):
-            movie_count = movie_map.get(country.id, 0)
-            series_count = series_map.get(country.id, 0)
-            if not (movie_count or series_count):
-                continue
-            payload.append({
-                'id': country.id,
-                'name': persian_country_name(country.code, country.name),
-                'code': country.code,
-                'movie_count': movie_count,
-                'series_count': series_count,
-            })
-        return payload
+    return _cached_response(request, 'countries', 'genres', _country_options_payload)
 
-    return _cached_response(request, 'countries', 'genres', build)
+
+@api_view(['GET'])
+@throttle_classes([CatalogReadThrottle])
+def catalog_filters(request):
+    """One-shot filter options so browse pages never render empty dropdowns."""
+
+    def build():
+        movie_years = (
+            Movie.objects.filter(is_published=True, release_year__isnull=False)
+            .values_list('release_year', flat=True)
+            .distinct()
+        )
+        series_years = (
+            Series.objects.filter(is_published=True, start_year__isnull=False)
+            .values_list('start_year', flat=True)
+            .distinct()
+        )
+
+        language_values = set()
+        raw_languages = list(
+            Movie.objects.filter(is_published=True)
+            .exclude(language='')
+            .values_list('language', flat=True)
+            .distinct()
+        ) + list(
+            Series.objects.filter(is_published=True)
+            .exclude(language='')
+            .values_list('language', flat=True)
+            .distinct()
+        )
+        for value in raw_languages:
+            for token in str(value).split('،'):
+                token = token.strip()
+                if token:
+                    language_values.add(token)
+
+        age_ratings = sorted(
+            {
+                *Movie.objects.filter(is_published=True)
+                .exclude(age_rating='')
+                .values_list('age_rating', flat=True)
+                .distinct(),
+                *Series.objects.filter(is_published=True)
+                .exclude(age_rating='')
+                .values_list('age_rating', flat=True)
+                .distinct(),
+            }
+        )
+
+        try:
+            trending_queries = _trending_search_payload()
+        except Exception:
+            trending_queries = []
+
+        return {
+            'years': sorted({int(y) for y in [*movie_years, *series_years]}, reverse=True),
+            'languages': sorted(language_values),
+            'age_ratings': age_ratings,
+            'trending_queries': trending_queries,
+            'countries': _country_options_payload(),
+        }
+
+    return _cached_response(request, 'catalog-filters', 'genres', build)
 
 
 @api_view(['GET'])

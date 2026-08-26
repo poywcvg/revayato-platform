@@ -58,7 +58,7 @@ const kpiMeta: Record<string, { icon: Component, tone: 'green' | 'blue' | 'amber
   new_signups_today: { icon: Users, tone: 'amber' },
   total_content: { icon: Film, tone: 'blue' },
   watch_hours: { icon: Clapperboard, tone: 'violet' },
-  revenue: { icon: Activity, tone: 'slate' },
+  likes_total: { icon: Heart, tone: 'rose' },
 }
 
 const registrationLabels = computed(() =>
@@ -67,7 +67,7 @@ const registrationLabels = computed(() =>
 const registrationValues = computed(() => users.value?.registrations.points.map(point => point.value) || [])
 const weekdayLabels = computed(() => users.value?.active_by_weekday.map(item => item.label) || [])
 const weekdayValues = computed(() => users.value?.active_by_weekday.map(item => item.value) || [])
-const deviceSlices = computed(() => users.value?.devices.map(item => ({ label: item.label, value: item.value })) || [])
+const deviceSlices = computed(() => users.value?.action_breakdown?.map(item => ({ label: item.label, value: item.value })) || [])
 const topWatchedLabels = computed(() => (content.value?.top_watched || []).slice().reverse().map(item => truncate(item.title, 22)))
 const topWatchedValues = computed(() => (content.value?.top_watched || []).slice().reverse().map(item => item.activity))
 const sessionLabels = computed(() => (content.value?.sessions_over_time || []).map(point => formatShortDate(point.date)))
@@ -425,8 +425,8 @@ onMounted(() => {
           />
         </div>
         <AnalyticsDonutChart
-          title="تفکیک دستگاه"
-          subtitle="از رویدادهای ترکینگ (در صورت وجود)"
+          title="تفکیک نوع رویداد"
+          subtitle="ترکیب فعالیت‌های ثبت‌شده کاربران"
           :slices="deviceSlices"
           :loading="store.loading.users && !users"
         />

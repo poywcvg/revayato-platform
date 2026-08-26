@@ -18,7 +18,7 @@ from users.analytics_api import (
 )
 from users.dashboard_api import admin_dashboard
 from apps.catalog.api import (
-    recent_catalog,
+    catalog_filters, recent_catalog,
     actor_detail, actor_list, country_list, director_detail, director_list,
     genre_list, home_rails, movie_detail, movie_list, movie_similar,
     playback_subtitle_ensure, playback_subtitle_status, search_content, series_detail, series_list, series_similar,
@@ -32,6 +32,13 @@ from apps.catalog.admin_api import (
     movie_sync_tmdb, series_sync_tmdb,
     tmdb_movie_import, tmdb_movie_preview, tmdb_search,
     tmdb_series_import, tmdb_series_preview,
+)
+from apps.catalog.taxonomy_api import (
+    admin_actor_detail, admin_actor_list_create,
+    admin_country_detail, admin_country_list_create,
+    admin_director_detail, admin_director_list_create,
+    admin_genre_detail, admin_genre_list_create,
+    admin_tag_detail, admin_tag_list_create,
 )
 from apps.catalog.archive_api import (
     archive_asset_delete, archive_asset_download_url, archive_asset_status,
@@ -65,6 +72,7 @@ from apps.engagement.admin_api import (
     admin_review_detail, admin_reviews_list, admin_support_inbox, admin_support_ticket_detail,
 )
 from apps.recommendations.api import recommendations
+from apps.assistant.api import assistant_chat, assistant_insight
 from apps.watchparty.api import (
     create_room, end_room, get_room, join_room, leave_room, recent_messages,
 )
@@ -81,6 +89,8 @@ urlpatterns = [
     path('api/auth/password-reset/confirm/', confirm_password_reset, name='auth_password_reset_confirm'),
     path('api/accounts/me/', me, name='accounts_me'),
     path('api/recommendations/', recommendations, name='recommendations'),
+    path('api/assistant/chat/', assistant_chat, name='assistant_chat'),
+    path('api/assistant/insight/', assistant_insight, name='assistant_insight'),
     path('api/watch-party/rooms/', create_room, name='watchparty_create_room'),
     path('api/watch-party/rooms/<str:invite_code>/', get_room, name='watchparty_room'),
     path('api/watch-party/rooms/<str:invite_code>/join/', join_room, name='watchparty_join'),
@@ -88,6 +98,7 @@ urlpatterns = [
     path('api/watch-party/rooms/<str:invite_code>/messages/', recent_messages, name='watchparty_messages'),
     path('api/watch-party/rooms/<str:invite_code>/end/', end_room, name='watchparty_end'),
     path('api/catalog/recent/', recent_catalog, name='catalog_recent'),
+    path('api/catalog/filters/', catalog_filters, name='catalog_filters'),
     path('api/catalog/playback-subtitle-ensure/', playback_subtitle_ensure, name='playback_subtitle_ensure'),
     path('api/catalog/playback-subtitle-status/', playback_subtitle_status, name='playback_subtitle_status'),
     path('api/movies/', movie_list, name='movie_list'),
@@ -104,6 +115,16 @@ urlpatterns = [
     path('api/admin/series/<int:series_id>/sync-tmdb/', series_sync_tmdb, name='admin_series_sync_tmdb'),
     path('api/admin/series/', admin_series_list_create, name='admin_series_list_create'),
     path('api/admin/series/<int:series_id>/', admin_series_detail, name='admin_series_detail'),
+    path('api/admin/genres/', admin_genre_list_create, name='admin_genre_list_create'),
+    path('api/admin/genres/<int:pk>/', admin_genre_detail, name='admin_genre_detail'),
+    path('api/admin/countries/', admin_country_list_create, name='admin_country_list_create'),
+    path('api/admin/countries/<int:pk>/', admin_country_detail, name='admin_country_detail'),
+    path('api/admin/tags/', admin_tag_list_create, name='admin_tag_list_create'),
+    path('api/admin/tags/<int:pk>/', admin_tag_detail, name='admin_tag_detail'),
+    path('api/admin/actors/', admin_actor_list_create, name='admin_actor_list_create'),
+    path('api/admin/actors/<int:pk>/', admin_actor_detail, name='admin_actor_detail'),
+    path('api/admin/directors/', admin_director_list_create, name='admin_director_list_create'),
+    path('api/admin/directors/<int:pk>/', admin_director_detail, name='admin_director_detail'),
     path('api/admin/users/', admin_user_list_create, name='admin_user_list_create'),
     path('api/admin/users/<int:user_id>/', admin_user_detail, name='admin_user_detail'),
     path('api/admin/dashboard/', admin_dashboard, name='admin_dashboard'),
