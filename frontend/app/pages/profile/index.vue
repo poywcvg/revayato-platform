@@ -46,12 +46,19 @@ const watchTimeLabel = computed(() => {
   return `${hours.toLocaleString('fa-IR')}س ${minutes.toLocaleString('fa-IR')}د`
 })
 const profileCompletion = computed(() => {
-  let value = 35
-  if (authStore.user?.profile.avatar) value += 25
+  // Honest completion: every real, persisted profile field earns its share.
+  let value = 20
+  if (authStore.user?.profile.avatar) value += 20
   if (authStore.user?.profile.bio?.trim()) value += 25
-  if (isVerified.value) value += 15
+  if (isVerified.value) value += 20
+  if (authStore.user?.profile.preferred_language) value += 15
   return Math.min(100, value)
 })
+
+const languageOptions = [
+  { value: 'fa', label: 'فارسی' },
+  { value: 'en', label: 'English' },
+] as const
 
 const stats = computed<Array<{ label: string; value: string; icon: CinematicIconName; to: string }>>(() => [
   { label: 'زمان تماشا', value: watchTimeLabel.value, icon: 'clock', to: '#watch-time' },
@@ -65,6 +72,7 @@ const quickLinks: Array<{ label: string; description: string; icon: CinematicIco
   { label: 'لیست من', description: 'عنوان‌های ذخیره‌شده', icon: 'bookmark', to: '/watchlist' },
   { label: 'پسندیده‌ها', description: 'انتخاب‌های موردعلاقه', icon: 'heart', to: '/profile/favorites' },
   { label: 'سلیقه و پیشنهادها', description: 'تنظیم پیشنهادهای شخصی', icon: 'sliders', to: '#personalization' },
+  { label: 'تحلیل هوشمند', description: 'شناخت رفتار و پیشنهاد AI', icon: 'sparkles', to: '#behavior-insight' },
 ]
 
 const profileSections = [
@@ -72,6 +80,7 @@ const profileSections = [
   { label: 'ادامه تماشا', target: 'continue' },
   { label: 'آمار تماشا', target: 'watch-time' },
   { label: 'پیشنهادهای من', target: 'personalization' },
+  { label: 'تحلیل هوشمند', target: 'behavior-insight' },
 ] as const
 const sectionItems = profileSections.map(section => section.label)
 
@@ -152,7 +161,7 @@ async function saveProfile() {
     } else {
       const payload = new FormData()
       payload.append('bio', bio)
-      payload.append('preferred_language', languageDraft.value)
+      payload.append('preferred_language', languageDraft.value || 'fa')
       if (avatarFile.value) payload.append('avatar', avatarFile.value)
       await authStore.updateProfile(payload)
     }
@@ -160,6 +169,7 @@ async function saveProfile() {
     closeEditor()
   } catch (error) {
     formError.value = getAppError(error, 'ذخیره تغییرات پروفایل ممکن نشد.').reason
+      || 'ذخیره تغییرات پروفایل ممکن نشد.'
   }
 }
 
@@ -223,11 +233,12 @@ useSeoMeta({ title: 'پروفایل من', description: 'مدیریت پروفا
           </NuxtLink>
         </div>
 
-        <nav class="profile-anchor-nav soft-scrollbar" aria-label="بخش‌های پروفایل">
+        <nav class="profile-anchor-nav soft-scrollbar lg:hidden" aria-label="بخش‌های پروفایل">
           <a href="#overview">نمای کلی</a>
           <a href="#continue">ادامه تماشا</a>
           <a href="#watch-time">آمار تماشا</a>
           <a href="#personalization">پیشنهادهای من</a>
+          <a href="#behavior-insight">تحلیل هوشمند</a>
         </nav>
 
         <Transition name="profile-editor">
@@ -265,6 +276,18 @@ useSeoMeta({ title: 'پروفایل من', description: 'مدیریت پروفا
                   <span>این متن در پروفایل تو نمایش داده می‌شود.</span>
                   <span class="font-latin tabular-nums">{{ bioDraft.length.toLocaleString('fa-IR') }}/۵۰۰</span>
                 </div>
+
+                <span class="mt-4 block text-xs font-bold text-secondary">زبان ترجیحی رابط</span>
+                <div class="mt-2 max-w-44">
+                  <UiSelect
+                    v-model="languageDraft"
+                    :options="languageOptions"
+                    label="زبان ترجیحی رابط"
+                    icon="globe"
+                    compact
+                  />
+                </div>
+                <p class="mt-1.5 text-[10px] leading-5 text-muted">زبان نمایش منوها و پیشنهادها را تعیین می‌کند.</p>
 
                 <div v-if="formError" class="mt-3 flex items-start gap-2 rounded-xl bg-red-500/10 p-3 text-xs leading-6 text-red-300 ring-1 ring-red-500/25" role="alert">
                   <CinematicIcon name="info" class="mt-0.5 size-4 shrink-0" />{{ formError }}
@@ -377,6 +400,8 @@ useSeoMeta({ title: 'پروفایل من', description: 'مدیریت پروفا
     />
 
     <LazyPersonalizationSettings :hydrate-on-visible="visibilityHydration" />
+
+    <LazyBehaviorInsight :hydrate-on-visible="visibilityHydration" />
   </div>
 </template>
 
