@@ -29,5 +29,12 @@ useHead({
     { property: 'og:url', content: () => `${siteUrl.value}${route.path}` },
     { property: 'og:type', content: 'website' },
   ],
+  // Belt-and-suspenders: if JS is disabled entirely, the scroll-reveal attribute
+  // gate never applies, but this guarantees no .reveal node can stay hidden.
+  noscript: [
+    {
+      innerHTML: '<style>.reveal{opacity:1!important;transform:none!important}</style>',
+    },
+  ],
 })
 </script>

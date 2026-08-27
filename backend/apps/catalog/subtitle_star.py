@@ -1345,7 +1345,6 @@ def find_series_episode_subtitles(
             if not _has_exact_identity(html, imdb_id=imdb_id, title=title, year=year):
                 continue
 
-            collected: list[tuple[str, bytes, str]] = []
             for download_url in _download_links_for_seasons(
                 html,
                 page.url,
@@ -1368,36 +1367,40 @@ def find_series_episode_subtitles(
                 if fetched is None:
                     continue
                 response, final_download_url = fetched
-                for filename, payload in _response_members(
+                # Process each season pack immediately.  The old implementation
+                # downloaded every candidate archive first (often six 90+ MiB
+                # packs) even when the first preferred pack covered every
+                # requested episode.  Incremental matching both bounds memory
+                # and lets a complete pack end the lookup immediately.
+                archive_members = _response_members(
                     response,
                     max_members=max_members,
                     keep_relative_path=True,
-                ):
-                    collected.append((filename, payload, final_download_url))
-
-            if not collected:
-                continue
-            members = [(filename, payload) for filename, payload, _ in collected]
-            origin_by_name = {filename: download_url for filename, _, download_url in collected}
-            for season_number, episode_number, filename, payload, source_urls in _choose_episode_releases(
-                members,
-                episode_videos=remaining,
-            ):
-                key = (season_number, episode_number)
-                if key in matched_keys:
+                )
+                if not archive_members:
                     continue
-                matched_keys.add(key)
-                matches.append(SubtitleStarEpisodeMatch(
-                    season_number=season_number,
-                    episode_number=episode_number,
-                    payload=payload,
-                    filename=PurePosixPath(filename).name,
-                    page_url=page.url,
-                    download_url=origin_by_name.get(filename, page.url),
-                    release_name=PurePosixPath(filename).name,
-                    source_urls=source_urls,
-                    imdb_id=imdb_id,
-                ))
+                remaining = {key: urls for key, urls in needed.items() if key not in matched_keys}
+                for season_number, episode_number, filename, payload, source_urls in _choose_episode_releases(
+                    archive_members,
+                    episode_videos=remaining,
+                ):
+                    key = (season_number, episode_number)
+                    if key in matched_keys:
+                        continue
+                    matched_keys.add(key)
+                    matches.append(SubtitleStarEpisodeMatch(
+                        season_number=season_number,
+                        episode_number=episode_number,
+                        payload=payload,
+                        filename=PurePosixPath(filename).name,
+                        page_url=page.url,
+                        download_url=final_download_url,
+                        release_name=PurePosixPath(filename).name,
+                        source_urls=source_urls,
+                        imdb_id=imdb_id,
+                    ))
+                if len(matched_keys) >= len(needed):
+                    break
             if len(matched_keys) >= len(needed):
                 break
     except SubtitleStarBlocked as exc:
@@ -1414,4 +1417,3 @@ def find_series_episode_subtitles(
         negative_ttl = max(300, int(getattr(settings, 'SUBTITLESTAR_NEGATIVE_CACHE_SECONDS', 24 * 60 * 60)))
         cache.set(miss_key, True, timeout=negative_ttl)
     return matches
-

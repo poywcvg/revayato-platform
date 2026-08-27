@@ -1,9 +1,15 @@
 <script setup lang="ts">
 const route = useRoute()
 const authStore = useAuthStore()
-const isDesktop = useMediaQuery('(min-width: 768px)')
+// Mobile chrome (compact header + bottom nav + drawer) owns phone *and* tablet
+// widths; the desktop header only takes over from lg (1024px) up. Without this,
+// tablets were stranded with no main nav links at all.
+const isDesktop = useMediaQuery('(min-width: 1024px)')
 
 const sidebarOpen = ref(false)
+// The drawer is only mounted once the user actually reaches for it, so its gsap
+// entrance never costs a visit that stays on the page it landed on.
+const sidebarEverOpened = ref(false)
 const searchOpen = ref(false)
 const searchRoot = useTemplateRef<HTMLElement>('searchRoot')
 
@@ -54,6 +60,7 @@ function toggleSearch() {
 }
 
 function toggleSidebar() {
+  if (!sidebarOpen.value) sidebarEverOpened.value = true
   sidebarOpen.value = !sidebarOpen.value
   if (sidebarOpen.value) searchOpen.value = false
 }
@@ -79,6 +86,7 @@ function handleSwipeMove(event: TouchEvent) {
   const dx = swipeStartX - touch.clientX
   if (dx > SWIPE_THRESHOLD) {
     swipeStartX = null
+    sidebarEverOpened.value = true
     sidebarOpen.value = true
     searchOpen.value = false
   } else if (dx < -10) {
@@ -93,7 +101,7 @@ function handleSwipeEnd() {
 
 <template>
   <div class="site-header-root" dir="rtl">
-    <header ref="searchRoot" class="site-header sticky top-0 z-[60] md:hidden" :class="searchOpen && 'site-header--search-open'">
+    <header ref="searchRoot" class="site-header sticky top-0 z-[60] lg:hidden" :class="searchOpen && 'site-header--search-open'">
       <a href="#main-content" class="site-header__skip-link">پرش به محتوای اصلی</a>
 
       <div class="site-header__bar">
@@ -143,7 +151,7 @@ function handleSwipeEnd() {
       </Transition>
     </header>
 
-    <DesktopHeader class="hidden md:block" />
+    <DesktopHeader class="hidden lg:block" />
 
     <nav class="mobile-bottom-nav" aria-label="ناوبری اصلی موبایل">
       <NuxtLink
@@ -191,8 +199,11 @@ function handleSwipeEnd() {
     </nav>
 
     <ClientOnly>
-      <MobileSidebar
-        v-if="!isDesktop"
+      <!-- Lazy on purpose: the drawer pulls in gsap (~27 kB gzip). Statically
+           imported here it landed in the entry chunk and every page paid for a
+           menu most visits never open. -->
+      <LazyMobileSidebar
+        v-if="!isDesktop && sidebarEverOpened"
         v-model:open="sidebarOpen"
       />
     </ClientOnly>
@@ -270,7 +281,7 @@ function handleSwipeEnd() {
   background: rgb(255 255 255 / 3%);
   color: #fff;
   box-shadow: inset 0 1px 0 rgb(255 255 255 / 5%);
-  transition: color 140ms ease, background-color 140ms ease;
+  transition: color var(--motion-fast) var(--ease-out), background-color var(--motion-fast) var(--ease-out);
   -webkit-tap-highlight-color: transparent;
 }
 
@@ -292,7 +303,7 @@ function handleSwipeEnd() {
   background: rgb(255 255 255 / 3%);
   color: #fff;
   box-shadow: inset 0 1px 0 rgb(255 255 255 / 5%);
-  transition: color 140ms ease, background-color 140ms ease;
+  transition: color var(--motion-fast) var(--ease-out), background-color var(--motion-fast) var(--ease-out);
   -webkit-tap-highlight-color: transparent;
 }
 
@@ -315,7 +326,7 @@ function handleSwipeEnd() {
   color: #181006;
   font-size: .75rem;
   font-weight: 800;
-  transition: transform 140ms ease;
+  transition: transform var(--motion-fast) var(--ease-out);
 }
 
 .site-header__skip-link:focus {
@@ -363,8 +374,6 @@ function handleSwipeEnd() {
   border-top: 1px solid var(--stream-border);
   background: var(--stream-chrome);
   box-shadow: 0 -10px 28px rgb(0 0 0 / 24%);
-  -webkit-backdrop-filter: blur(14px) saturate(110%);
-  backdrop-filter: blur(14px) saturate(110%);
 }
 
 .mobile-bottom-nav__item {
@@ -380,7 +389,7 @@ function handleSwipeEnd() {
   font-size: .65rem;
   font-weight: 650;
   line-height: 1.15;
-  transition: color 140ms ease;
+  transition: color var(--motion-fast) var(--ease-out);
   -webkit-tap-highlight-color: transparent;
 }
 
@@ -400,7 +409,7 @@ function handleSwipeEnd() {
 
 .search-drop-enter-active,
 .search-drop-leave-active {
-  transition: opacity 150ms ease, transform 170ms cubic-bezier(.22, 1, .36, 1);
+  transition: opacity var(--motion-fast) var(--ease-out), transform var(--motion-base) var(--ease-emphasized);
 }
 
 .search-drop-enter-from,
@@ -409,7 +418,7 @@ function handleSwipeEnd() {
   transform: translateY(-.35rem) scale(.985);
 }
 
-@media (min-width: 768px) {
+@media (min-width: 1024px) {
   .mobile-bottom-nav {
     display: none;
   }

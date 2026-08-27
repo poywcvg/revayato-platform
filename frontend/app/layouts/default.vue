@@ -21,7 +21,7 @@
   padding-bottom: calc(var(--mobile-bottom-nav-height) + env(safe-area-inset-bottom, 0px));
 }
 
-@media (min-width: 768px) {
+@media (min-width: 1024px) {
   .cinematic-app {
     padding-bottom: 0;
   }

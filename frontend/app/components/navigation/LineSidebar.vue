@@ -36,6 +36,8 @@ const props = withDefaults(
     magneticPill?: boolean
     /** Pill color (defaults to accentColor). */
     pillColor?: string
+    /** Optional section labels rendered above the item at the matching index. */
+    headers?: Record<number, string>
   }>(),
   {
     items: () => [
@@ -73,6 +75,7 @@ const props = withDefaults(
     className: '',
     magneticPill: false,
     pillColor: '',
+    headers: () => ({}),
   },
 )
 
@@ -281,24 +284,27 @@ onBeforeUnmount(() => {
         class="line-sidebar__magnet-pill"
         aria-hidden="true"
       />
-      <li
-        v-for="(label, index) in items"
-        :key="`${label}-${index}`"
-        :ref="el => setItemRef(el, index)"
-        class="line-sidebar__item"
-        @click="handleClick(index, label, $event)"
-      >
-        <span v-if="showMarker" class="line-sidebar__marker" aria-hidden="true" />
-        <button type="button" class="line-sidebar__control" :aria-current="activeIndex === index ? 'true' : undefined">
-          <span class="line-sidebar__label">
-            <span v-if="icons[index]" class="line-sidebar__icon" aria-hidden="true">
-              <CinematicIcon :name="icons[index] || 'home'" />
+      <template v-for="(label, index) in items" :key="`${label}-${index}`">
+        <li v-if="headers?.[index]" class="line-sidebar__group-header" aria-hidden="true">
+          {{ headers[index] }}
+        </li>
+        <li
+          :ref="el => setItemRef(el, index)"
+          class="line-sidebar__item"
+          @click="handleClick(index, label, $event)"
+        >
+          <span v-if="showMarker" class="line-sidebar__marker" aria-hidden="true" />
+          <button type="button" class="line-sidebar__control" :aria-current="activeIndex === index ? 'true' : undefined">
+            <span class="line-sidebar__label">
+              <span v-if="icons[index]" class="line-sidebar__icon" aria-hidden="true">
+                <CinematicIcon :name="icons[index] || 'home'" />
+              </span>
+              <span v-if="showIndex" class="line-sidebar__index">{{ String(index + 1).padStart(2, '0') }}</span>
+              <span class="line-sidebar__text">{{ label }}</span>
             </span>
-            <span v-if="showIndex" class="line-sidebar__index">{{ String(index + 1).padStart(2, '0') }}</span>
-            <span class="line-sidebar__text">{{ label }}</span>
-          </span>
-        </button>
-      </li>
+          </button>
+        </li>
+      </template>
     </ul>
   </nav>
 </template>
@@ -341,6 +347,21 @@ onBeforeUnmount(() => {
   gap: var(--item-gap);
 }
 
+/* Section label rendered above the item at the matching index (see `headers`). */
+.line-sidebar__group-header {
+  margin-block-start: calc(var(--item-gap) * 1.25);
+  padding-inline: .55rem;
+  font-size: .62rem;
+  font-weight: 900;
+  letter-spacing: .06em;
+  color: color-mix(in srgb, var(--text-color) 72%, transparent);
+  user-select: none;
+}
+
+.line-sidebar__group-header:first-child {
+  margin-block-start: 0;
+}
+
 /* --effect (0..1) is driven per item by a rAF lerp in JS, so every derived
    property below reads the same continuously-animating value and stays in
    step, with no CSS transitions to stagger. */
@@ -367,11 +388,15 @@ onBeforeUnmount(() => {
   box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent-color) 65%, transparent);
 }
 
-/* Widen the pointer target so items react a touch before the cursor arrives */
+/* Widen the pointer target so items react a touch before the cursor arrives.
+   pointer-events:none keeps clicks on page content within 48px of the rail
+   from being swallowed by the menu item's hit box (the proximity glow is
+   driven by pointermove on the <ul>, not this pseudo-element). */
 .line-sidebar__item::before {
   content: '';
   position: absolute;
   inset: -6px -48px;
+  pointer-events: none;
 }
 
 .line-sidebar__label {

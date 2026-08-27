@@ -84,6 +84,15 @@
   /* Vazirmatn is the single UI face for Persian chrome and form controls. */
   --font-sans: "Vazirmatn", Tahoma, system-ui, sans-serif;
   --font-latin: "Plus Jakarta Sans", "Vazirmatn", Tahoma, system-ui, sans-serif;
+  /* Motion Design: Tailwind v4 theme mirror so `duration-motion-base`,
+     `ease-out`, `ease-in-out`, `ease-spring` utilities resolve. */
+  --duration-motion-fast: 120ms;
+  --duration-motion-base: 160ms;
+  --duration-motion-slow: 280ms;
+  --ease-out: cubic-bezier(.2,.8,.2,1);
+  --ease-in-out: cubic-bezier(.4,0,.2,1);
+  --ease-spring: cubic-bezier(.34,1.56,.64,1);
+
 }
 
 /* Toasts follow the site alert kit: icon + title/description row + inline close button.
@@ -369,6 +378,20 @@
   --shadow-card: var(--theme-shadow-card);
   --transition-ui: 160ms ease;
 
+  /* Motion Design tokens — single source of truth for duration + easing.
+     Mirrored into Tailwind @theme below so utilities like duration-motion-base resolve.
+     Android (Theme.java) keeps identical durations for cross-platform coherence. */
+  --motion-fast: 120ms;
+  --motion-base: 160ms;
+  --motion-slow: 280ms;
+  --motion-stagger: 40ms;
+  --ease-out: cubic-bezier(.2,.8,.2,1);
+  --ease-in-out: cubic-bezier(.4,0,.2,1);
+  --ease-spring: cubic-bezier(.34,1.56,.64,1);
+  --ease-emphasized: cubic-bezier(.22,1,.36,1);
+  /* Pre-composed shorthand for the most common case. */
+  --motion-ui: var(--motion-base) var(--ease-out);
+
   /* Body layout tokens (myf2m-style foundation, responsive). */
   --gutter: clamp(1rem, 2.4vw, 1.5rem);
   --s-space: .5rem;
@@ -402,7 +425,9 @@
   --rail-card-width: calc((100% - (var(--rail-gap) * (var(--rail-columns) - 1))) / var(--rail-columns));
 }
 
-@media (min-width: 768px) {
+/* Desktop header (68px) renders from lg up; phones and tablets share the
+   compact 3.5rem mobile chrome. */
+@media (min-width: 1024px) {
   :root {
     --header-height: 4.25rem;
   }
@@ -1935,7 +1960,7 @@ html[data-theme="light"] .cinematic-card__synopsis p {
   box-shadow: none;
 }
 
-@media (max-width: 767px) {
+@media (max-width: 1023px) {
   .scroll-top-button {
     bottom: calc(var(--mobile-bottom-nav-height) + .75rem + env(safe-area-inset-bottom));
   }

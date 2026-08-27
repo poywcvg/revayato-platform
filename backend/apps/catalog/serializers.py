@@ -6,8 +6,8 @@ from config.public_urls import media_url, normalize_download_links, object_key, 
 from .countries import persian_country_name
 from .localization import contains_persian, is_latin_text, secondary_title_for
 from .models import (
-    Actor, CatalogImporterSettings, Country, Director, Episode, Genre, Movie,
-    MovieActor, Season, Series, SeriesActor, Tag,
+    Actor, CatalogImporterSettings, Collection, Country, Director, Episode, Genre,
+    Movie, MovieActor, Season, Series, SeriesActor, Tag,
 )
 
 
@@ -788,3 +788,28 @@ class AdminSeriesSerializer(serializers.ModelSerializer):
         if clear_countries and 'countries' not in validated_data:
             validated_data['countries'] = []
         return super().update(instance, validated_data)
+
+
+class CollectionListSerializer(PublicMediaSerializer):
+    public_media_fields = ('poster', 'backdrop')
+
+    class Meta:
+        model = Collection
+        fields = [
+            'id', 'title', 'original_title', 'slug', 'description',
+            'poster', 'backdrop', 'is_published', 'created_at', 'updated_at',
+        ]
+
+
+class CollectionDetailSerializer(PublicMediaSerializer):
+    public_media_fields = ('poster', 'backdrop')
+    movies = MovieListSerializer(many=True, read_only=True)
+    series = SeriesListSerializer(many=True, read_only=True)
+
+    class Meta:
+        model = Collection
+        fields = [
+            'id', 'title', 'original_title', 'slug', 'description',
+            'poster', 'backdrop', 'movies', 'series',
+            'is_published', 'created_at', 'updated_at',
+        ]

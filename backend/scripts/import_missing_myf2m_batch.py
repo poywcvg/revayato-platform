@@ -10,6 +10,7 @@ SubtitleStar extraction for online playback.
 from __future__ import annotations
 
 import argparse
+from difflib import SequenceMatcher
 import html
 import json
 import os
@@ -51,6 +52,62 @@ def _clean_html(value: str) -> str:
     for _ in range(2):
         text = html.unescape(text)
     return re.sub(r'\s+', ' ', text).strip()
+
+
+def _identity_title(value: object) -> str:
+    """Comparable Latin title used only for conservative TMDB fallback matching."""
+    text = html.unescape(str(value or '')).casefold().replace('&', ' and ')
+    text = re.sub(r'\b(?:19|20)\d{2}\b', ' ', text)
+    return ' '.join(re.findall(r'[a-z0-9]+', text))
+
+
+def _select_tmdb_result(results, *, titles: list[str], year: int | None, content_type: str):
+    """Return a strong title/year match; never trust TMDB's first fuzzy hit.
+
+    Provider pages without IMDb are the dangerous path: a loose TMDB search can
+    otherwise attach an unrelated catalog row to a provider page permanently.
+    """
+    wanted = [value for value in (_identity_title(title) for title in titles) if value]
+    if not wanted:
+        return None
+    name_fields = ('name', 'original_name') if content_type == 'series' else ('title', 'original_title')
+    date_field = 'first_air_date' if content_type == 'series' else 'release_date'
+    best = None
+    best_score = 0.0
+    for row in list(results or [])[:12]:
+        if not isinstance(row, dict) or not row.get('id'):
+            continue
+        candidate_year = str(row.get(date_field) or '')[:4]
+        if year and candidate_year.isdigit() and abs(int(candidate_year) - int(year)) > 1:
+            continue
+        candidate_names = [
+            value for value in (_identity_title(row.get(field)) for field in name_fields) if value
+        ]
+        for left in wanted:
+            left_tokens = set(left.split())
+            for right in candidate_names:
+                right_tokens = set(right.split())
+                if left == right:
+                    score = 1.0
+                else:
+                    ratio = SequenceMatcher(None, left, right).ratio()
+                    overlap = len(left_tokens & right_tokens) / max(1, len(left_tokens | right_tokens))
+                    score = max(ratio, overlap)
+                if score > best_score:
+                    best, best_score = row, score
+    # High threshold is intentional: an unmatched title is safer than corrupt
+    # metadata/download bindings. IMDb-resolved rows bypass this fallback.
+    return best if best_score >= 0.86 else None
+
+
+def _has_exact_tmdb_artwork(details: object) -> bool:
+    """Require artwork returned by the matched TMDB record itself."""
+    if not isinstance(details, dict):
+        return False
+    return bool(
+        str(details.get('poster_path') or '').strip()
+        and str(details.get('backdrop_path') or '').strip()
+    )
 
 
 def _coverage_ok(links, *, require_both: bool) -> tuple[bool, dict]:
@@ -195,6 +252,7 @@ def main() -> int:
     django.setup()
 
     from django.conf import settings
+    from django.core.cache import cache
     from django.db import transaction
 
     from apps.catalog.ingestion import upsert_tmdb_movie, upsert_tmdb_series
@@ -206,6 +264,7 @@ def main() -> int:
     )
     from apps.catalog.provider_import.exceptions import ProviderImportError, ProviderRateLimited
     from apps.catalog.provider_import.registry import get_connector
+    from apps.catalog.provider_import.providers.myf2m_parser import parse_download_links
     from apps.catalog.subtitle_extract import (
         apply_availability_flags,
         coalesce_download_links,
@@ -332,6 +391,12 @@ def main() -> int:
     probe_sizes = bool(args.probe_sizes)
     checkpoint_path = (args.checkpoint or '').strip() or None
     resume = bool(args.resume)
+    tmdb_miss_ttl = max(3600, int(os.environ.get('MYF2M_TMDB_MISS_CACHE_SECONDS', str(7 * 86400))))
+
+    def _tmdb_miss_key(content_type: str, page_path: str) -> str:
+        import hashlib
+        digest = hashlib.sha1(page_path.encode('utf-8')).hexdigest()
+        return f'catalog:myf2m:tmdb-miss:{content_type}:{digest}'
 
     # --- resume / checkpoint state -------------------------------------
     check_state = {
@@ -524,6 +589,7 @@ def main() -> int:
         'skipped_existing': 0,
         'skipped_tmdb_miss': 0,
         'skipped_no_av': 0,
+        'skipped_missing_artwork': 0,
         'no_links': 0,
         'iranian': 0,
         'errors': 0,
@@ -637,12 +703,14 @@ def main() -> int:
     def iter_series_slugs():
         seen: set[str] = set()
         empty_streak = 0
-        first_page = max(1, int(args.start_series_page))
+        first_page = max(1, int(check_state['series_page']), int(args.start_series_page))
         for page in range(first_page, max(first_page, int(args.max_series_pages)) + 1):
             path = '/series/' if page == 1 else f'/series/page/{page}/'
             response = _listing_get(path, label='series', page=page)
             if response is None:
                 empty_streak += 1
+                stats['last_series_page'] = page
+                _save_checkpoint()
                 if empty_streak >= 5:
                     print(f'series listing abort after {empty_streak} consecutive failures', flush=True)
                     break
@@ -657,6 +725,8 @@ def main() -> int:
                 found += 1
                 yield slug
             print(f'series listing page={page} items={found} unique_total={len(seen)}', flush=True)
+            stats['last_series_page'] = page
+            _save_checkpoint()
             if found == 0 and page > 1:
                 empty_streak += 1
                 if empty_streak >= 3:
@@ -684,6 +754,10 @@ def main() -> int:
                         break
                     if page_path in existing_movie_paths:
                         stats['skipped_existing'] += 1
+                        continue
+                    miss_key = _tmdb_miss_key('movie', page_path)
+                    if cache.get(miss_key):
+                        stats['skipped_tmdb_miss'] += 1
                         continue
 
                     stats['movies_tried'] += 1
@@ -769,6 +843,21 @@ def main() -> int:
                                     time.sleep(delay)
                                 continue
 
+                    # Cheap provider preflight before any TMDB search/details,
+                    # translation or artwork work. Dead/archive-only pages are
+                    # common in old listing pages and must not consume the
+                    # expensive metadata lane.
+                    crawled = parse_download_links(html, page_path=page_path)
+                    available = crawled.get('available_links') or []
+                    if not available:
+                        stats['no_links'] += 1
+                        print('  -> preflight skip: no playable provider links', flush=True)
+                        continue
+                    if require_playback and not _prefer_streamable_download(list(available)):
+                        stats['skipped_no_av'] += 1
+                        print('  -> preflight skip: no direct online playback URL', flush=True)
+                        continue
+
                     tmdb_summary = None
                     if imdb_id:
                         tmdb_summary = client.resolve_imdb_to_tmdb(imdb_id, content_type='movie')
@@ -780,15 +869,12 @@ def main() -> int:
                             payload = {}
                         results = payload.get('results') if isinstance(payload, dict) else (payload or [])
                         results = list(results or [])
-                        for row in results[:8]:
-                            if year and str(row.get('release_date') or '')[:4] not in {
-                                '', str(year), str(year - 1), str(year + 1),
-                            }:
-                                continue
-                            tmdb_summary = row
-                            break
-                        if tmdb_summary is None and results:
-                            tmdb_summary = results[0]
+                        tmdb_summary = _select_tmdb_result(
+                            results,
+                            titles=[query, slug.replace('-', ' ')],
+                            year=year,
+                            content_type='movie',
+                        )
                         if tmdb_summary is None:
                             slug_query = re.sub(r'\s+', ' ', slug.replace('-', ' ')).strip()
                             if slug_query and slug_query.lower() != query.lower():
@@ -799,10 +885,16 @@ def main() -> int:
                                 slug_results = (
                                     payload.get('results') if isinstance(payload, dict) else (payload or [])
                                 )
-                                tmdb_summary = next(iter(slug_results or []), None)
+                                tmdb_summary = _select_tmdb_result(
+                                    slug_results,
+                                    titles=[slug_query, query],
+                                    year=year,
+                                    content_type='movie',
+                                )
 
                     if not tmdb_summary or not tmdb_summary.get('id'):
                         stats['skipped_tmdb_miss'] += 1
+                        cache.set(miss_key, True, timeout=tmdb_miss_ttl)
                         print(f'  -> tmdb miss title={page_title!r} imdb={imdb_id}', flush=True)
                         if delay:
                             time.sleep(delay)
@@ -817,18 +909,6 @@ def main() -> int:
                             time.sleep(delay)
                         continue
                     movie = Movie.objects.filter(tmdb_id=tmdb_id).first()
-                    from apps.catalog.provider_import.providers.myf2m_parser import parse_download_links
-
-                    crawled = parse_download_links(html, page_path=page_path)
-                    available = crawled.get('available_links') or []
-
-                    if require_playback and not _prefer_streamable_download(list(available)):
-                        stats['skipped_no_av'] += 1
-                        print('  -> skip: no direct online playback URL', flush=True)
-                        if delay:
-                            time.sleep(delay)
-                        continue
-
                     # Already on site: merge any Film2Media qualities we don't have yet.
                     if movie and movie.is_published and _has_download_links(movie):
                         if available:
@@ -907,6 +987,10 @@ def main() -> int:
                             lambda: client.movie_details(tmdb_id),
                             label=f'movie/{tmdb_id}',
                         )
+                        if not _has_exact_tmdb_artwork(details):
+                            stats['skipped_missing_artwork'] += 1
+                            print('  -> skip: matched TMDB record has no poster/backdrop', flush=True)
+                            continue
                         if is_iranian_tmdb_details(details):
                             stats['iranian'] += 1
                             print('  -> skip iranian', flush=True)
@@ -1045,6 +1129,10 @@ def main() -> int:
                     if page_path in existing_series_paths:
                         stats['skipped_existing'] += 1
                         continue
+                    miss_key = _tmdb_miss_key('series', page_path)
+                    if cache.get(miss_key):
+                        stats['skipped_tmdb_miss'] += 1
+                        continue
 
                     stats['series_tried'] += 1
                     print(
@@ -1111,6 +1199,20 @@ def main() -> int:
                                 time.sleep(delay)
                             continue
 
+                    # Reject empty/dead series pages before TMDB resolution and
+                    # Persian localization. This is the dominant cost on deep
+                    # historical sweeps and has no effect on import accuracy.
+                    preflight = parse_download_links(html, page_path=page_path)
+                    preflight_links = preflight.get('available_links') or []
+                    if not preflight_links:
+                        stats['no_links'] += 1
+                        print('  -> preflight skip: no provider episode links', flush=True)
+                        continue
+                    if require_playback and not _prefer_streamable_download(list(preflight_links)):
+                        stats['skipped_no_av'] += 1
+                        print('  -> preflight skip: no directly playable episodes', flush=True)
+                        continue
+
                     title_tag = re.search(r'<title>([^<]+)</title>', html, re.I)
                     series_alias_queries: list[str] = []
                     page_title = slug.replace('-', ' ')
@@ -1154,7 +1256,13 @@ def main() -> int:
                         except Exception:
                             payload = {}
                         results = list(payload.get('results') or [])
-                        tmdb_summary = results[0] if results else None
+                        identity_titles = [series_query, slug.replace('-', ' '), *series_alias_queries]
+                        tmdb_summary = _select_tmdb_result(
+                            results,
+                            titles=identity_titles,
+                            year=year,
+                            content_type='series',
+                        )
                         if tmdb_summary is None:
                             simple = re.sub(r'[^A-Za-z0-9 ]+', ' ', series_query)
                             simple = re.sub(r'\s+', ' ', simple).strip()
@@ -1166,7 +1274,12 @@ def main() -> int:
                                         language='en-US',
                                     )
                                     results = list(payload.get('results') or [])
-                                    tmdb_summary = results[0] if results else None
+                                    tmdb_summary = _select_tmdb_result(
+                                        results,
+                                        titles=[simple, *identity_titles],
+                                        year=year,
+                                        content_type='series',
+                                    )
                                 except Exception:
                                     tmdb_summary = None
                         if tmdb_summary is None:
@@ -1187,7 +1300,12 @@ def main() -> int:
                                         language='en-US',
                                     )
                                     results = list(payload.get('results') or [])
-                                    tmdb_summary = results[0] if results else None
+                                    tmdb_summary = _select_tmdb_result(
+                                        results,
+                                        titles=[alias_query, *identity_titles],
+                                        year=year,
+                                        content_type='series',
+                                    )
                                 except Exception:
                                     tmdb_summary = None
                                 if tmdb_summary is not None:
@@ -1207,12 +1325,18 @@ def main() -> int:
                                         language='en-US',
                                     )
                                     results = list(payload.get('results') or [])
-                                    tmdb_summary = results[0] if results else None
+                                    tmdb_summary = _select_tmdb_result(
+                                        results,
+                                        titles=[slug_query, *identity_titles],
+                                        year=year,
+                                        content_type='series',
+                                    )
                                 except Exception:
                                     tmdb_summary = None
 
                     if not tmdb_summary or not tmdb_summary.get('id'):
                         stats['skipped_tmdb_miss'] += 1
+                        cache.set(miss_key, True, timeout=tmdb_miss_ttl)
                         print(f'  -> tmdb miss title={page_title!r} imdb={imdb_id}', flush=True)
                         if delay:
                             time.sleep(delay)
@@ -1281,6 +1405,10 @@ def main() -> int:
                             lambda: client.tv_details(tmdb_id),
                             label=f'tv/{tmdb_id}',
                         )
+                        if not _has_exact_tmdb_artwork(details):
+                            stats['skipped_missing_artwork'] += 1
+                            print('  -> skip: matched TMDB record has no poster/backdrop', flush=True)
+                            continue
                         if is_iranian_tmdb_details(details):
                             stats['iranian'] += 1
                             print('  -> skip iranian', flush=True)

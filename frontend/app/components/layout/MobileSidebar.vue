@@ -71,6 +71,13 @@ const navItems = computed<LiquidNavItem[]>(() => [
     : []),
 ])
 
+// Section labels above the nav rail: کاوش (0) / جامعه (5) / کتابخانه من (8).
+const navGroupHeaders = computed<Record<number, string>>(() => ({
+  0: 'کاوش',
+  5: 'جامعه',
+  8: 'کتابخانه من',
+}))
+
 const lineSidebarItems = computed(() => navItems.value.map(item => item.label))
 const lineSidebarIcons = computed(() => navItems.value.map(item => item.icon))
 
@@ -102,6 +109,39 @@ const activeLineIndex = computed(() => {
 
 function close() {
   open.value = false
+}
+
+// Swipe-to-close: the drawer lives on the trailing edge (right side in RTL),
+// so a horizontal drag toward that edge dismisses it. The |dx| > |dy| gate
+// keeps vertical scrolling of the nav rail untouched.
+const SWIPE_CLOSE_THRESHOLD = 56
+let closeSwipeStartX: number | null = null
+let closeSwipeStartY: number | null = null
+
+function handleCloseSwipeStart(event: TouchEvent) {
+  if (event.touches.length !== 1) return
+  const touch = event.touches[0]
+  if (!touch) return
+  closeSwipeStartX = touch.clientX
+  closeSwipeStartY = touch.clientY
+}
+
+function handleCloseSwipeMove(event: TouchEvent) {
+  if (closeSwipeStartX == null || closeSwipeStartY == null) return
+  const touch = event.touches[0]
+  if (!touch) return
+  const dx = touch.clientX - closeSwipeStartX
+  const dy = touch.clientY - closeSwipeStartY
+  if (Math.abs(dx) > Math.abs(dy) && dx > SWIPE_CLOSE_THRESHOLD) {
+    closeSwipeStartX = null
+    closeSwipeStartY = null
+    close()
+  }
+}
+
+function handleCloseSwipeEnd() {
+  closeSwipeStartX = null
+  closeSwipeStartY = null
 }
 
 function handleLineSidebarClick(index: number, _label: string, event?: PointerEvent | MouseEvent) {
@@ -150,7 +190,7 @@ function trapSidebarFocus(event: KeyboardEvent) {
 function playOpen() {
   if (!import.meta.client || reduceMotion.value || !sidebar.value) return
   const panel = sidebar.value
-  const items = panel.querySelectorAll<HTMLElement>('.line-sidebar__item, .mobile-sidebar__foot > *')
+  const items = panel.querySelectorAll<HTMLElement>('.line-sidebar__item, .line-sidebar__group-header, .mobile-sidebar__foot > *')
   const pill = panel.querySelector<HTMLElement>('.line-sidebar__magnet-pill')
   gsap.killTweensOf([...items, pill].filter(Boolean))
   gsap.set(items, { autoAlpha: 0, y: 10 })
@@ -159,7 +199,7 @@ function playOpen() {
   if (pill) gsap.to(pill, { autoAlpha: 1, duration: 0.4, delay: 0.34 })
 }
 
-watch(open, async (value) => {
+async function applyOpenState(value: boolean) {
   if (!import.meta.client) return
   document.documentElement.style.overflow = value ? 'hidden' : ''
   if (value) {
@@ -177,7 +217,9 @@ watch(open, async (value) => {
     previouslyFocused?.focus()
     previouslyFocused = null
   }
-})
+}
+
+watch(open, applyOpenState)
 
 onBeforeUnmount(() => {
   if (import.meta.client) {
@@ -190,6 +232,9 @@ onMounted(() => {
   if (import.meta.client) {
     reduceMotion.value = window.matchMedia('(prefers-reduced-motion: reduce)').matches
   }
+  // The host mounts this component lazily on the first open, so the watcher
+  // above may never see the transition into `true`. Run the same sequence.
+  if (open.value) void applyOpenState(true)
 })
 </script>
 
@@ -216,6 +261,10 @@ onMounted(() => {
         aria-label="منوی اصلی"
         dir="rtl"
         @keydown="trapSidebarFocus"
+        @touchstart.passive="handleCloseSwipeStart"
+        @touchmove.passive="handleCloseSwipeMove"
+        @touchend.passive="handleCloseSwipeEnd"
+        @touchcancel.passive="handleCloseSwipeEnd"
       >
         <header class="mobile-sidebar__head">
           <AppLogo :compact-on-mobile="false" @click="close" />
@@ -242,6 +291,7 @@ onMounted(() => {
           <LineSidebar
             :items="lineSidebarItems"
             :icons="lineSidebarIcons"
+            :headers="navGroupHeaders"
             direction="rtl"
             aria-label="ناوبری اصلی موبایل"
             accent-color="var(--theme-accent-primary)"
@@ -340,7 +390,9 @@ onMounted(() => {
 
 <style scoped>
 .mobile-sidebar-backdrop {
-  background: rgb(5 8 7 / 48%);
+  background: rgb(5 8 7 / 52%);
+  -webkit-backdrop-filter: blur(4px) saturate(115%);
+  backdrop-filter: blur(4px) saturate(115%);
 }
 
 :global(html[data-theme="light"] .mobile-sidebar-backdrop) {
@@ -365,7 +417,7 @@ onMounted(() => {
   background: radial-gradient(circle, color-mix(in srgb, var(--theme-accent-primary) 42%, transparent), color-mix(in srgb, var(--theme-accent-primary) 12%, transparent) 60%, transparent 72%);
   pointer-events: none;
   display: block;
-  animation: mobile-sidebar-ripple 520ms cubic-bezier(.22, .61, .36, 1) forwards;
+  animation: mobile-sidebar-ripple 520ms var(--ease-emphasized) forwards;
   will-change: transform, opacity;
 }
 
@@ -376,13 +428,20 @@ onMounted(() => {
 
 .mobile-sidebar {
   inset-inline-start: 0;
-  width: min(20rem, calc(100dvw - .75rem));
+  width: min(20.5rem, calc(100dvw - .75rem));
   padding-top: env(safe-area-inset-top, 0);
   padding-bottom: env(safe-area-inset-bottom, 0);
   border-inline-start: 1px solid color-mix(in srgb, var(--theme-border) 55%, transparent);
   background:
     linear-gradient(180deg, color-mix(in srgb, var(--theme-accent-primary) 7%, var(--theme-bg-surface)), var(--theme-bg-surface) 8rem);
   box-shadow: -12px 0 40px rgb(0 0 0 / 28%);
+}
+
+/* Tablets get a slightly roomier drawer while it stays one-hand friendly. */
+@media (min-width: 768px) {
+  .mobile-sidebar {
+    width: min(22.5rem, calc(100dvw - 1.5rem));
+  }
 }
 
 :global(html[data-theme="light"] .mobile-sidebar) {
@@ -410,7 +469,7 @@ onMounted(() => {
   border-radius: 1rem;
   background: color-mix(in srgb, var(--theme-bg-elevated) 72%, transparent);
   padding: .65rem .75rem;
-  transition: border-color 150ms ease, background-color 150ms ease;
+  transition: border-color var(--motion-fast) var(--ease-out), background-color var(--motion-fast) var(--ease-out);
 }
 
 .mobile-sidebar__account:hover,
@@ -473,7 +532,7 @@ onMounted(() => {
   place-items: center;
   border-radius: .7rem;
   color: var(--theme-text-muted);
-  transition: color 140ms ease, background-color 140ms ease;
+  transition: color var(--motion-fast) var(--ease-out), background-color var(--motion-fast) var(--ease-out);
 }
 
 .mobile-sidebar__footer-icon:hover,
@@ -490,7 +549,7 @@ onMounted(() => {
   place-items: center;
   border-radius: .7rem;
   color: var(--theme-text-muted);
-  transition: color 140ms ease, background-color 140ms ease;
+  transition: color var(--motion-fast) var(--ease-out), background-color var(--motion-fast) var(--ease-out);
 }
 
 .mobile-sidebar__close:hover {
@@ -517,7 +576,7 @@ onMounted(() => {
   margin-block: -.25rem;
   pointer-events: none;
   opacity: 0;
-  transition: opacity 180ms ease;
+  transition: opacity var(--motion-base) var(--ease-out);
 }
 
 .mobile-sidebar__fade--top {
@@ -547,7 +606,7 @@ onMounted(() => {
   background: color-mix(in srgb, var(--theme-border) 60%, transparent);
   overflow: hidden;
   opacity: 0;
-  transition: opacity 200ms ease;
+  transition: opacity var(--motion-base) var(--ease-out);
 }
 
 .mobile-sidebar__progress.is-active { opacity: 1; }
@@ -580,7 +639,7 @@ onMounted(() => {
   padding: .7rem;
   color: var(--theme-text-primary);
   box-shadow: inset 0 1px 0 rgb(255 255 255 / 7%), 0 .65rem 1.8rem color-mix(in srgb, var(--theme-accent-primary) 8%, transparent);
-  transition: transform 160ms ease, border-color 160ms ease, box-shadow 160ms ease;
+  transition: transform var(--motion-base) var(--ease-out), border-color var(--motion-base) var(--ease-out), box-shadow var(--motion-base) var(--ease-out);
 }
 .mobile-sidebar__request:hover, .mobile-sidebar__request:focus-visible { border-color: color-mix(in srgb, var(--theme-accent-primary) 72%, transparent); box-shadow: inset 0 1px 0 rgb(255 255 255 / 10%), 0 .75rem 2rem color-mix(in srgb, var(--theme-accent-primary) 15%, transparent); transform: translateY(-1px); }
 .mobile-sidebar__request:active { transform: scale(.985); }
@@ -591,7 +650,7 @@ onMounted(() => {
 .mobile-sidebar__request-copy { display: block; margin-top: .2rem; color: var(--theme-text-muted); font-size: .65rem; }
 .mobile-sidebar__request-arrow { display: grid; width: 2rem; height: 2rem; flex: none; place-items: center; border-radius: .65rem; background: color-mix(in srgb, var(--theme-bg-surface) 45%, transparent); color: var(--theme-accent-primary); }
 .mobile-sidebar__help-actions { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: .5rem; }
-.mobile-sidebar__help-action { display: flex; min-width: 0; min-height: 3.4rem; align-items: center; gap: .55rem; border: 1px solid color-mix(in srgb, var(--theme-border) 70%, transparent); border-radius: .95rem; background: color-mix(in srgb, var(--theme-bg-elevated) 68%, transparent); padding: .5rem; color: var(--theme-text-secondary); text-align: start; transition: border-color 150ms ease, background-color 150ms ease, transform 150ms ease; }
+.mobile-sidebar__help-action { display: flex; min-width: 0; min-height: 3.4rem; align-items: center; gap: .55rem; border: 1px solid color-mix(in srgb, var(--theme-border) 70%, transparent); border-radius: .95rem; background: color-mix(in srgb, var(--theme-bg-elevated) 68%, transparent); padding: .5rem; color: var(--theme-text-secondary); text-align: start; transition: border-color var(--motion-fast) var(--ease-out), background-color var(--motion-fast) var(--ease-out), transform var(--motion-fast) var(--ease-out); }
 .mobile-sidebar__help-action:hover, .mobile-sidebar__help-action:focus-visible { border-color: color-mix(in srgb, var(--theme-accent-primary) 32%, var(--theme-border)); background: var(--theme-bg-elevated); transform: translateY(-1px); }
 .mobile-sidebar__help-action strong { display: block; color: var(--theme-text-primary); font-size: .7rem; font-weight: 850; white-space: nowrap; }
 .mobile-sidebar__help-action small { display: block; margin-top: .12rem; color: var(--theme-text-muted); font-size: .58rem; white-space: nowrap; }
@@ -607,6 +666,16 @@ onMounted(() => {
 .mobile-sidebar__line-nav :deep(.line-sidebar__list) {
   width: 100%;
   padding: .45rem 0 .75rem;
+}
+
+.mobile-sidebar__line-nav :deep(.line-sidebar__group-header) {
+  margin-block-start: 1rem;
+  padding-inline: .75rem .8rem;
+  color: var(--theme-text-muted);
+}
+
+.mobile-sidebar__line-nav :deep(.line-sidebar__group-header:first-child) {
+  margin-block-start: 0;
 }
 
 .mobile-sidebar__line-nav :deep(.line-sidebar__item) {
@@ -701,14 +770,14 @@ onMounted(() => {
 }
 
 .sidebar-fade-enter-active,
-.sidebar-fade-leave-active { transition: opacity 180ms ease; }
+.sidebar-fade-leave-active { transition: opacity var(--motion-base) var(--ease-out); }
 .sidebar-fade-enter-from,
 .sidebar-fade-leave-to { opacity: 0; }
 
 /* Panel slides in with a springy overshoot, slides straight out on close.
    GSAP owns the inner item stagger + pill (independent of this transform). */
-.sidebar-slide-enter-active { transition: transform 360ms cubic-bezier(.34, 1.56, .64, 1); }
-.sidebar-slide-leave-active { transition: transform 260ms cubic-bezier(.4, 0, .2, 1); }
+.sidebar-slide-enter-active { transition: transform 360ms var(--ease-spring); }
+.sidebar-slide-leave-active { transition: transform 260ms var(--ease-in-out); }
 .sidebar-slide-enter-from { transform: translateX(106%); }
 .sidebar-slide-leave-to { transform: translateX(100%); }
 

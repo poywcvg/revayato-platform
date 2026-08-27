@@ -99,4 +99,9 @@ final class ImageLoader {
     }
 
     private ImageLoader() {}
+
+    /** Drop every cached bitmap — used by Settings → "پاکسازی حافظه تصاویر". */
+    static void clear() {
+        MEMORY.evictAll();
+    }
 }

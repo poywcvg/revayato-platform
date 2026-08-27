@@ -330,7 +330,7 @@ function onKeydown(event: KeyboardEvent) {
 }
 
 function focusFromShortcut(event: KeyboardEvent) {
-  if (window.matchMedia('(max-width: 767px)').matches) return
+  if (window.matchMedia('(max-width: 1023px)').matches) return
   const target = event.target as HTMLElement | null
   if (target?.matches('input, textarea, select, [contenteditable="true"]')) return
   event.preventDefault()
@@ -662,7 +662,7 @@ watch(() => props.autofocus, async (value) => {
   -webkit-tap-highlight-color: transparent;
 }
 
-@media (max-width: 767px) {
+@media (max-width: 1023px) {
   .header-search {
     height: 2.75rem;
     padding-inline: .7rem .45rem;

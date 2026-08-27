@@ -330,7 +330,16 @@
   backdrop-filter: blur(6px);
 }
 
-@media (min-width: 640px) {
+/* Mobile scroll repaint: drop the per-frame composite of backdrop-filter.
+   Match the existing <767px glass-disable rule in main.css. */
+@media (max-width: 767px) {
+  .media-summary {
+    backdrop-filter: none;
+    background: rgb(5 8 7 / 88%);
+  }
+}
+
+@media (min-width: 768px) {
   .media-summary {
     padding: 0;
     background: transparent;
@@ -807,6 +816,13 @@
   box-shadow: inset 0 1px 0 rgb(255 255 255 / 6%);
 }
 
+/* Mobile scroll repaint: drop the per-frame composite of backdrop-filter. */
+@media (max-width: 767px) {
+  .media-rating-card {
+    backdrop-filter: none;
+  }
+}
+
 .media-rating-card__label {
   font-size: .65rem;
   font-weight: 800;
@@ -837,8 +853,9 @@
   top: var(--sticky-offset);
   z-index: 30;
   border-block: 1px solid var(--border-color);
-  background: rgb(5 8 7 / 94%);
-  backdrop-filter: blur(16px);
+  /* Opaque-ish bg already; backdrop-filter blur forced a per-frame composite
+     over the scrolling content below (scroll jank). Drop it. */
+  background: rgb(5 8 7 / 97%);
   box-shadow: 0 -10px 22px rgb(5 8 7 / 55%);
 }
 
@@ -968,28 +985,159 @@
   }
 }
 
-.media-info-grid > div {
-  display: flex;
-  flex-direction: column;
-  gap: .2rem;
-  padding-block: .85rem;
-  border-block-end: 1px solid var(--border-color);
-  padding-inline-end: .75rem;
+/* Column gutters on multi-column layouts: the divider rides the inline-start
+   edge of non-leading-column cells, so it lands between columns in RTL too.
+   Every grid child is a .media-info-cell, so plain nth-child is safe. */
+@media (min-width: 640px) {
+  .media-info-cell:nth-child(2n) {
+    padding-inline-start: .85rem;
+    border-inline-start: 1px solid var(--border-color);
+  }
 }
 
-.media-info-grid dt {
+@media (min-width: 1100px) {
+  .media-info-cell:nth-child(2n) {
+    padding-inline-start: 0;
+    border-inline-start: 0;
+  }
+
+  .media-info-cell:not(:nth-child(3n + 1)) {
+    padding-inline-start: .85rem;
+    border-inline-start: 1px solid var(--border-color);
+  }
+}
+
+.media-info-cell {
+  display: flex;
+  align-items: flex-start;
+  gap: .7rem;
+  padding-block: .9rem;
+  border-block-end: 1px solid var(--border-color);
+}
+
+.media-info-icon {
+  display: grid;
+  width: 2.35rem;
+  height: 2.35rem;
+  flex: none;
+  place-items: center;
+  border-radius: .75rem;
+  color: var(--media-accent);
+  background: rgb(var(--media-accent-rgb) / 12%);
+  box-shadow: inset 0 0 0 1px rgb(var(--media-accent-rgb) / 16%);
+}
+
+.media-info-cell dt {
   margin: 0;
   font-size: .68rem;
   font-weight: 800;
   color: var(--text-muted);
 }
 
-.media-info-grid dd {
-  margin: 0;
+.media-info-cell dd {
+  margin: .25rem 0 0;
   font-size: .85rem;
   font-weight: 700;
   color: var(--text-primary);
-  line-height: 1.55;
+  line-height: 1.6;
+}
+
+.media-info-link {
+  color: var(--accent-primary);
+  transition: color .15s ease;
+}
+
+.media-info-link:hover {
+  text-decoration: underline;
+  text-underline-offset: .3em;
+}
+
+/* IMDb Top 250 gold pill — mirrors the aside "در یک نگاه" treatment. */
+.media-info-imdb {
+  display: inline-flex;
+  align-items: center;
+  gap: .35rem;
+  padding: .25rem .6rem;
+  border-radius: .55rem;
+  background: linear-gradient(135deg, #f5c518, #e2b00f);
+  color: #1a1408;
+  font-size: .75rem;
+  font-weight: 900;
+  font-variant-numeric: tabular-nums;
+  transition: filter .15s ease, transform .15s ease;
+}
+
+.media-info-imdb:hover {
+  filter: brightness(1.05);
+  transform: translateY(-1px);
+}
+
+.media-info-imdb__scale {
+  opacity: .65;
+  font-weight: 800;
+}
+
+/* People / genre chips */
+.media-info-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: .35rem;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.media-info-chip {
+  display: inline-flex;
+  max-width: 100%;
+  align-items: center;
+  padding: .28rem .6rem;
+  border-radius: .55rem;
+  background: rgb(255 255 255 / 5%);
+  border: 1px solid var(--border-color);
+  color: var(--text-secondary);
+  font-size: .72rem;
+  font-weight: 750;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+
+.media-info-chip--link {
+  color: var(--text-primary);
+  background: rgb(var(--media-accent-rgb) / 10%);
+  border-color: rgb(var(--media-accent-rgb) / 20%);
+  transition: border-color .15s ease, background-color .15s ease, color .15s ease;
+}
+
+.media-info-chip--link:hover,
+.media-info-chip--link:focus-visible {
+  border-color: rgb(var(--media-accent-rgb) / 55%);
+  background: rgb(var(--media-accent-rgb) / 18%);
+  color: var(--media-accent);
+}
+
+/* Light theme: chips and icons ride the pine accent for readable contrast. */
+html[data-theme="light"] .media-info-chip {
+  background: rgb(23 50 38 / 4%);
+  border-color: var(--theme-border);
+  color: var(--theme-text-secondary);
+}
+
+html[data-theme="light"] .media-info-chip--link {
+  color: var(--theme-text-primary);
+  background: rgb(23 107 80 / 8%);
+  border-color: rgb(23 107 80 / 18%);
+}
+
+html[data-theme="light"] .media-info-chip--link:hover,
+html[data-theme="light"] .media-info-chip--link:focus-visible {
+  background: rgb(23 107 80 / 14%);
+  border-color: rgb(23 107 80 / 40%);
+  color: var(--theme-accent-primary);
+}
+
+html[data-theme="light"] .media-info-link {
+  color: var(--theme-accent-primary);
 }
 
 /* —— Cast carousel —— */

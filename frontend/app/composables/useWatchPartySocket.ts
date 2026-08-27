@@ -8,6 +8,7 @@ import type {
   WatchPartySocketError,
   WatchRoom,
 } from '~/types'
+import { accessTokenNeedsRefresh } from '~/utils/jwtSession'
 
 interface SocketPayload {
   type: string
@@ -35,7 +36,9 @@ const PLAYBACK_EVENTS = new Set<WatchPartyPlaybackEventType>([
 export function useWatchPartySocket(inviteCode: MaybeRef<string>) {
   const config = useRuntimeConfig()
   const { refreshAccessToken } = useApi()
-  const accessToken = useCookie<string | null>('access_token')
+  // Shared composable so this ref carries the same persistence options as every
+  // other reader; a bare useCookie() here would re-stamp it without them.
+  const { accessToken } = useAuthCookies()
   const room = shallowRef<WatchRoom | null>(null)
   const members = ref<WatchPartyMember[]>([])
   const messages = ref<WatchPartyMessage[]>([])
@@ -218,6 +221,12 @@ export function useWatchPartySocket(inviteCode: MaybeRef<string>) {
       || socket?.readyState === WebSocket.CONNECTING
       || socket?.readyState === WebSocket.OPEN
     ) return
+    // The handshake is refused outright for an expired token, which would burn a
+    // reconnect attempt. Rotate first and let the recovery path reconnect.
+    if (accessTokenNeedsRefresh(accessToken.value)) {
+      void recoverAfterAuthExpiry()
+      return
+    }
     manualDisconnect = false
     socketError.value = null
     connectionStatus.value = reconnectAttempts ? 'reconnecting' : 'connecting'

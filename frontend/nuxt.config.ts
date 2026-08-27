@@ -150,7 +150,11 @@ export default defineNuxtConfig({
     storage: {
       'data:swr': {
         driver: 'memory',
-        max: 100 /* max number of cached entries */,
+        // Sized against the container's 1Gi limit / 768M heap. Detail routes are
+        // cached too now, so the LRU needs room for more than the handful of
+        // list pages — but not so much that a long tail of rendered HTML can
+        // crowd out the SSR heap itself.
+        max: 220 /* max number of cached entries */,
         ttl: 600 /* seconds; overridden per-route by swr below */,
       },
     },
@@ -160,6 +164,25 @@ export default defineNuxtConfig({
     '/movies': { swr: 180 },
     '/series': { swr: 180 },
     '/new': { swr: 120 },
+    // Detail pages are the deepest render in the app (full cast, seasons, links)
+    // and their API payloads are built without a request user, so the HTML is the
+    // same for everyone. Only the header's profile icon differs, and hydration
+    // fixes that on the client — the same trade the list routes above already
+    // make. Traffic here is power-law, so even the small LRU below absorbs most
+    // of it.
+    '/movies/**': { swr: 300 },
+    '/series/**': { swr: 300 },
+    '/actors/**': { swr: 600 },
+    '/collections/**': { swr: 600 },
+    '/countries': { swr: 600 },
+    // Content-free pages: no API call, no store read, so a build-time render is
+    // byte-identical to a per-request one. Baking them means these routes never
+    // occupy a Nitro worker and are served straight off disk/CDN.
+    '/about': { prerender: true },
+    '/privacy': { prerender: true },
+    '/terms': { prerender: true },
+    '/welcome': { prerender: true },
+    '/app': { prerender: true },
     '/_nuxt/**': { headers: { 'cache-control': 'public, max-age=31536000, immutable' } },
     '/_ipx/**': { headers: { 'cache-control': 'public, max-age=2592000, stale-while-revalidate=86400' } },
     '/media/**': { headers: { 'cache-control': 'public, max-age=2592000, stale-while-revalidate=86400' } },

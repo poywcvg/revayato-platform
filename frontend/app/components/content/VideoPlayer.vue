@@ -10,6 +10,7 @@ const props = withDefaults(defineProps<{
   title?: string
   autoplay?: boolean
   startAtPercent?: number
+  startAtSeconds?: number
   quality?: PlaybackQuality
   sourceQuality?: string
   availableQualities?: PlaybackQuality[]
@@ -28,6 +29,7 @@ const props = withDefaults(defineProps<{
   title: 'ویدیو',
   autoplay: false,
   startAtPercent: 0,
+  startAtSeconds: 0,
   quality: 'auto',
   sourceQuality: '',
   availableQualities: () => [],
@@ -48,6 +50,7 @@ const emit = defineEmits<{
   pause: [progressPercent: number]
   progress: [progressPercent: number]
   position: [progressPercent: number]
+  positionSnapshot: [snapshot: PlaybackSnapshot]
   complete: [progressPercent: number]
   ready: [durationSeconds: number]
   playbackPlay: [snapshot: PlaybackSnapshot]
@@ -100,6 +103,7 @@ let hlsMediaRecoveryDone = false
 let trackingReady = false
 let lastProgressBucket = 0
 let lastPosition = -1
+let lastSnapshotSecond = -1
 let resumeApplied = false
 let readyEmitted = false
 let applyingRemotePlayback = false
@@ -382,6 +386,11 @@ function handleTimeUpdate() {
     lastPosition = progress
     emit('position', progress)
   }
+  const snapshotSecond = Math.floor(element.currentTime / 10) * 10
+  if (snapshotSecond >= 10 && snapshotSecond !== lastSnapshotSecond) {
+    lastSnapshotSecond = snapshotSecond
+    emit('positionSnapshot', getPlaybackSnapshot())
+  }
   const bucket = Math.floor(progress / 10) * 10
   if (bucket >= 10 && bucket > lastProgressBucket && bucket < 100) {
     lastProgressBucket = bucket
@@ -408,6 +417,11 @@ function setReady() {
     element.currentTime = Math.min(resumeAfterSourceSeconds, Math.max(0, duration.value - 0.25))
     resumeAfterSourceSeconds = null
     resumeApplied = true
+  } else if (!resumeApplied && props.startAtSeconds > 0 && duration.value > 0) {
+    const resumeSeconds = Math.min(props.startAtSeconds, Math.max(0, duration.value - 2))
+    element.currentTime = resumeSeconds
+    resumeApplied = true
+    lastPosition = Math.round(resumeSeconds / duration.value * 100)
   } else if (!resumeApplied && props.startAtPercent > 0 && duration.value > 0) {
     const resumePercent = Math.min(95, Math.max(0, props.startAtPercent))
     element.currentTime = duration.value * resumePercent / 100

@@ -416,7 +416,7 @@ onMounted(() => {
 
       <div class="mt-5 grid gap-4 xl:grid-cols-3">
         <div class="xl:col-span-2">
-          <AnalyticsLineChart
+          <LazyAnalyticsLineChart
             title="نشست‌های تماشا در طول زمان"
             subtitle="اتاق واچ‌پارتی + رویدادهای پخش"
             :labels="sessionLabels"
@@ -424,7 +424,7 @@ onMounted(() => {
             :loading="store.loading.content && !content"
           />
         </div>
-        <AnalyticsDonutChart
+        <LazyAnalyticsDonutChart
           title="تفکیک نوع رویداد"
           subtitle="ترکیب فعالیت‌های ثبت‌شده کاربران"
           :slices="deviceSlices"
@@ -433,7 +433,7 @@ onMounted(() => {
       </div>
 
       <div class="mt-5 grid gap-4 xl:grid-cols-2">
-        <AnalyticsBarChart
+        <LazyAnalyticsBarChart
           title="۱۰ عنوان پربازدید"
           subtitle="رتبه‌بندی از واچ‌پارتی و شمارنده‌های واقعی"
           horizontal
@@ -441,7 +441,7 @@ onMounted(() => {
           :values="topWatchedValues"
           :loading="store.loading.content && !content"
         />
-        <AnalyticsBarChart
+        <LazyAnalyticsBarChart
           title="جستجوهای پرتکرار"
           subtitle="عبارت‌های ثبت‌شده در بازه"
           horizontal
@@ -453,14 +453,14 @@ onMounted(() => {
       </div>
 
       <div class="mt-5 grid gap-4 xl:grid-cols-2">
-        <AnalyticsLineChart
+        <LazyAnalyticsLineChart
           title="عضویت‌های جدید"
           subtitle="بر اساس date_joined کاربران"
           :labels="registrationLabels"
           :values="registrationValues"
           :loading="store.loading.users && !users"
         />
-        <AnalyticsBarChart
+        <LazyAnalyticsBarChart
           title="کاربران فعال در روزهای هفته"
           subtitle="بر اساس last_login"
           :labels="weekdayLabels"
@@ -516,7 +516,7 @@ onMounted(() => {
       </div>
 
       <div class="mt-5">
-        <AnalyticsHeatmapChart
+        <LazyAnalyticsHeatmapChart
           title="نقشه حرارتی فعالیت"
           subtitle="ساعت × روز هفته · واچ‌پارتی، لاگین و رویدادها"
           :weekdays="content?.heatmap.weekdays || []"

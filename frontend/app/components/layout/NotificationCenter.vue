@@ -20,7 +20,7 @@ function openItem(id: string) {
     </button>
 
     <Transition enter-active-class="transition duration-150" enter-from-class="translate-y-1 scale-[.98] opacity-0" leave-active-class="transition duration-100" leave-to-class="translate-y-1 scale-[.98] opacity-0">
-      <section v-if="open" id="notification-panel" class="fixed inset-x-3 top-[calc(var(--sticky-offset)+.5rem)] z-[90] max-h-[min(68dvh,520px)] overflow-hidden rounded-2xl border border-line bg-surface/98 md:absolute md:inset-x-auto md:end-0 md:top-14 md:w-[min(380px,calc(100vw-1.5rem))] md:max-h-[min(72dvh,520px)]" aria-label="مرکز اعلان‌ها">
+      <section v-if="open" id="notification-panel" class="fixed inset-x-3 top-[calc(var(--sticky-offset)+.5rem)] z-[90] max-h-[min(68dvh,520px)] overflow-hidden rounded-2xl border border-line bg-surface/98 md:absolute md:inset-x-auto md:end-0 md:top-[calc(var(--header-height)+.5rem)] md:w-[min(380px,calc(100vw-1.5rem))] md:max-h-[min(72dvh,520px)]" aria-label="مرکز اعلان‌ها">
         <header class="flex items-center justify-between gap-3 border-b border-line p-4">
           <div>
             <h2 class="text-sm font-black text-ink">اعلان‌ها</h2>

@@ -17,8 +17,8 @@ from .cache import (
 )
 from .countries import country_code_for_name, persian_country_name
 from .models import (
-    Actor, Country, Director, Episode, Genre, Movie, MovieActor, Season, Series,
-    SeriesActor,
+    Actor, Collection, Country, Director, Episode, Genre, Movie, MovieActor, Season,
+    Series, SeriesActor,
 )
 from .search import (
     normalize_search_text,
@@ -30,7 +30,8 @@ from .search import (
     title_search_q,
 )
 from .serializers import (
-    ActorDetailSerializer, ActorListSerializer, CountrySerializer, DirectorListSerializer,
+    ActorDetailSerializer, ActorListSerializer, CollectionDetailSerializer,
+    CollectionListSerializer, CountrySerializer, DirectorListSerializer,
     GenreListSerializer, GenreSerializer, MovieDetailSerializer, MovieListSerializer,
     SeriesDetailSerializer, SeriesListSerializer,
 )
@@ -965,6 +966,28 @@ def director_detail(request, slug):
     def build():
         director = get_object_or_404(Director.objects.all(), slug=slug)
         return DirectorListSerializer(director).data
+
+    return _cached_response(request, f'director:{slug}', 'detail', build)
+
+
+@api_view(['GET'])
+@throttle_classes([CatalogReadThrottle])
+def collection_list(request):
+    queryset = Collection.objects.filter(is_published=True).order_by('title')
+    return _paginated_cached_response(request, 'collections', queryset, CollectionListSerializer, kind='collections')
+
+
+@api_view(['GET'])
+@throttle_classes([CatalogReadThrottle])
+def collection_detail(request, slug):
+    def build():
+        collection = get_object_or_404(
+            Collection.objects.filter(is_published=True).prefetch_related('movies', 'series'), slug=slug,
+        )
+        return CollectionDetailSerializer(collection, context={'request': request}).data
+
+    return _cached_response(request, f'collection:{slug}', 'detail', build)
+
 
     return _cached_response(request, f'director:{slug}', 'detail', build)
 

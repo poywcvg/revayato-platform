@@ -259,6 +259,10 @@ const resumeProgress = computed(() => {
     ?? 0
   return Math.min(95, Math.max(0, local || fromItem))
 })
+const resumeSeconds = computed(() => {
+  if (mode.value === 'trailer' || !item.value) return 0
+  return watchProgress.resumeFor(item.value.id, item.value.type, currentEpisode.value?.id)?.position_seconds || 0
+})
 const selectedQuality = ref<PlaybackQuality>('auto')
 const playerToast = ref<(PlayerToastMeta & { id: number, message: string }) | null>(null)
 const softsubBanner = ref<{ tone: SoftsubBannerTone, title: string, detail: string } | null>(null)
@@ -596,6 +600,18 @@ function handlePlaybackProgress(progress: number) {
     trackWatchProgress(item.value, progress, 'progress')
     watchProgress.upsert(item.value, progress, currentEpisode.value?.id)
   }
+}
+
+function handlePlaybackPosition(snapshot: { position_seconds: number, duration_seconds: number }) {
+  if (!item.value || mode.value !== 'full' || snapshot.duration_seconds <= 0) return
+  const progress = snapshot.position_seconds / snapshot.duration_seconds * 100
+  watchProgress.upsert(
+    item.value,
+    progress,
+    currentEpisode.value?.id,
+    snapshot.position_seconds,
+    snapshot.duration_seconds,
+  )
 }
 
 function handlePlaybackComplete(progress: number) {
@@ -976,6 +992,7 @@ useSeoMeta({
           :poster="currentEpisode?.thumbnail_url || item.playback?.poster_url || item.backdrop_url"
           :title="currentEpisode ? `${item.title} · فصل ${(currentEpisode.season_number || 1).toLocaleString('fa-IR')} · ${currentEpisode.title}` : item.title"
           :start-at-percent="resumeProgress"
+          :start-at-seconds="resumeSeconds"
           :quality="selectedQuality"
           :source-quality="playerSourceQuality"
           :available-qualities="playerQualities"
@@ -988,6 +1005,7 @@ useSeoMeta({
           @play="handlePlaybackStart"
           @pause="handlePlaybackPause"
           @progress="handlePlaybackProgress"
+          @position-snapshot="handlePlaybackPosition"
           @complete="handlePlaybackComplete"
           @buffer-health="handleBufferHealth"
           @quality-request="selectQuality"

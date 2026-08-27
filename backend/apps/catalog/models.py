@@ -337,6 +337,64 @@ class Tag(models.Model):
         return self.name
 
 
+class Collection(models.Model):
+    """A curated grouping of movies and series (e.g. a franchise or theme)."""
+
+    title = models.CharField(_('Title'), max_length=200, db_index=True)
+    original_title = models.CharField(_('Original title'), max_length=200, blank=True)
+    slug = models.SlugField(_('Slug'), max_length=220, unique=True, allow_unicode=True)
+    description = models.TextField(_('Description'), blank=True)
+    poster = models.ImageField(_('Poster'), upload_to='catalog/collections/posters/', null=True, blank=True)
+    backdrop = models.ImageField(_('Backdrop'), upload_to='catalog/collections/backdrops/', null=True, blank=True)
+    movies = models.ManyToManyField(
+        'Movie', related_name='collections', blank=True,
+        through='CollectionMovie', through_fields=('collection', 'movie'),
+    )
+    series = models.ManyToManyField(
+        'Series', related_name='collections', blank=True,
+        through='CollectionSeries', through_fields=('collection', 'series'),
+    )
+    is_published = models.BooleanField(_('Published'), default=True, db_index=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        verbose_name = _('Collection')
+        verbose_name_plural = _('Collections')
+        ordering = ['title']
+
+    def __str__(self):
+        return self.title
+
+
+class CollectionMovie(models.Model):
+    collection = models.ForeignKey(
+        Collection, on_delete=models.CASCADE, related_name='collection_movies',
+    )
+    movie = models.ForeignKey(
+        'Movie', on_delete=models.CASCADE, related_name='collection_movies',
+    )
+    order = models.PositiveIntegerField(default=0)
+
+    class Meta:
+        ordering = ['order']
+        unique_together = [('collection', 'movie')]
+
+
+class CollectionSeries(models.Model):
+    collection = models.ForeignKey(
+        Collection, on_delete=models.CASCADE, related_name='collection_series',
+    )
+    series = models.ForeignKey(
+        'Series', on_delete=models.CASCADE, related_name='collection_series',
+    )
+    order = models.PositiveIntegerField(default=0)
+
+    class Meta:
+        ordering = ['order']
+        unique_together = [('collection', 'series')]
+
+
 class Movie(models.Model):
     class PublicationStatus(models.TextChoices):
         DRAFT = 'draft', _('Draft')

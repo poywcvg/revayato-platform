@@ -26,6 +26,8 @@ PUBLISH_BLOCKING_GAPS = frozenset({
     'missing_persian_description',
     'missing_cast',
     'missing_genres',
+    'missing_poster',
+    'missing_backdrop',
 })
 
 _CAST_RELATIONS = ('movie_actors', 'series_actors')
@@ -46,6 +48,15 @@ def _has_poster(item) -> bool:
     if (getattr(item, 'poster_external_url', '') or '').strip():
         return True
     return bool((getattr(item, 'poster_path', '') or '').strip())
+
+
+def _has_backdrop(item) -> bool:
+    backdrop = getattr(item, 'backdrop', None)
+    if backdrop is not None and getattr(backdrop, 'name', None):
+        return True
+    if (getattr(item, 'backdrop_external_url', '') or '').strip():
+        return True
+    return bool((getattr(item, 'backdrop_path', '') or '').strip())
 
 
 def metadata_gaps(item) -> list[str]:
@@ -94,6 +105,8 @@ def metadata_gaps(item) -> list[str]:
 
     if not _has_poster(item):
         gaps.append('missing_poster')
+    if not _has_backdrop(item):
+        gaps.append('missing_backdrop')
 
     return gaps
 

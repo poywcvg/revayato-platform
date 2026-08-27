@@ -108,7 +108,7 @@ onMounted(() => { void fetchUsers(true) })
     <template v-else>
       <div class="grid gap-4 xl:grid-cols-3">
         <div class="xl:col-span-2">
-          <AnalyticsLineChart
+          <LazyAnalyticsLineChart
             title="ثبت‌نام‌های جدید"
             :subtitle="`بازه ${periodRangeLabel} · تفکیک ${granularityLabels[store.granularity]}`"
             :labels="(data?.registrations.points || []).map(p => formatShortDate(p.date))"
@@ -116,7 +116,7 @@ onMounted(() => { void fetchUsers(true) })
             :loading="store.loading.users && !data"
           />
         </div>
-        <AnalyticsDonutChart
+        <LazyAnalyticsDonutChart
           title="تفکیک نوع رویداد"
           subtitle="ترکیب فعالیت‌های ثبت‌شده در بازه"
           :slices="(data?.action_breakdown || []).map(d => ({ label: d.label, value: d.value }))"
@@ -125,7 +125,7 @@ onMounted(() => { void fetchUsers(true) })
       </div>
 
       <div class="mt-5">
-        <AnalyticsBarChart
+        <LazyAnalyticsBarChart
           title="کاربران فعال بر اساس روز هفته"
           subtitle="از last_login کاربران"
           :labels="(data?.active_by_weekday || []).map(i => i.label)"

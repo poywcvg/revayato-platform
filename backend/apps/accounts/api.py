@@ -10,9 +10,8 @@ from django.db import transaction
 from django.utils import timezone
 from django.utils.encoding import force_bytes, force_str
 from django.utils.http import urlsafe_base64_decode, urlsafe_base64_encode
-from rest_framework import serializers as drf_serializers, status
+from rest_framework import status
 from rest_framework.decorators import api_view, permission_classes, throttle_classes
-from rest_framework.exceptions import ValidationError
 from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.throttling import SimpleRateThrottle
@@ -44,6 +43,61 @@ LOGIN_LOCK_MINUTES = 15
 AUTH_LOGIN_RATE = os.environ.get('AUTH_LOGIN_RATE', '10/minute')
 AUTH_REGISTER_RATE = os.environ.get('AUTH_REGISTER_RATE', '5/hour')
 AUTH_PASSWORD_RESET_RATE = os.environ.get('AUTH_PASSWORD_RESET_RATE', '5/hour')
+# Token refresh is how a signed-in browser stays signed in: every access token
+# expiry, every cold tab and every returning visit calls it. On the shared
+# anonymous bucket (100/hour) it competed with public traffic from the same CDN
+# egress, so a busy hour answered 429 and clients treated a live session as
+# dead. It gets its own bucket instead, sized like the catalog scope: SSR
+# refreshes arrive through the frontend container, where every visitor shares a
+# single client IP.
+AUTH_TOKEN_REFRESH_RATE = os.environ.get('AUTH_TOKEN_REFRESH_RATE', '600/minute')
+
+# Session cookies the *server* owns.
+#
+# The refresh token used to be written by JavaScript, which Safari's ITP caps at
+# seven days regardless of the Max-Age asked for — so an iOS visitor who stayed
+# away longer than a week came back logged out even though the session had 400
+# days left. A cookie delivered through Set-Cookie is not subject to that cap,
+# so the browser copy of the refresh token is now issued (and rotated) here.
+#
+# HttpOnly is the other half: script on the page can no longer read the one
+# credential that can mint new sessions, so an XSS bug cannot walk away with a
+# 400-day login.
+REFRESH_COOKIE_NAME = 'refresh_token'
+# JS *does* need to know a session exists — the access token expires hourly and
+# the client has to decide whether to rotate or render as a guest. This flag
+# carries no credential, only the answer to "is someone signed in here".
+SESSION_FLAG_COOKIE_NAME = 'has_session'
+# Chromium clamps persistent cookies to 400 days; asking for more is silently
+# truncated, so match it and let rotation push the window forward.
+MAX_BROWSER_COOKIE_DAYS = 400
+
+
+def _session_cookie_max_age():
+    days = min(getattr(settings, 'JWT_REFRESH_TOKEN_DAYS', MAX_BROWSER_COOKIE_DAYS), MAX_BROWSER_COOKIE_DAYS)
+    return days * 24 * 60 * 60
+
+
+def _attach_session_cookies(response, refresh):
+    """Hand the browser a fresh 400-day session, server-side."""
+    shared = {
+        'max_age': _session_cookie_max_age(),
+        'path': '/',
+        'samesite': 'Lax',
+        # Lax already keeps the cookie off cross-site POSTs, which is what makes
+        # a cookie-authorised refresh endpoint safe from CSRF.
+        'secure': not settings.DEBUG,
+    }
+    response.set_cookie(REFRESH_COOKIE_NAME, refresh, httponly=True, **shared)
+    response.set_cookie(SESSION_FLAG_COOKIE_NAME, '1', httponly=False, **shared)
+    return response
+
+
+def _clear_session_cookies(response):
+    for name in (REFRESH_COOKIE_NAME, SESSION_FLAG_COOKIE_NAME):
+        response.delete_cookie(name, path='/', samesite='Lax')
+    return response
+
 
 
 class AuthClientRateThrottle(SimpleRateThrottle):
@@ -86,6 +140,11 @@ class PasswordResetRateThrottle(AuthClientRateThrottle):
     rate = AUTH_PASSWORD_RESET_RATE
 
 
+class TokenRefreshRateThrottle(AuthClientRateThrottle):
+    scope = 'token_refresh'
+    rate = AUTH_TOKEN_REFRESH_RATE
+
+
 def _client_ip(request):
     """Trusted client IP; falls back to REMOTE_ADDR only when unknown."""
     try:
@@ -105,53 +164,122 @@ def _token_payload(user):
     }
 
 
-class _RefreshTokenErrorHelper:
-    """Static helpers so the lenient serializer reads plainly."""
+def _refresh_token_is_rotated(raw):
+    """True when this exact refresh token was already rotated/revoked.
 
-    @staticmethod
-    def _simplejwt_error(exc):
-        """Convert a SimpleJWT exception into DRF error detail for the response."""
-        message = str(exc) or 'Token is invalid or expired'
-        return drf_serializers.ErrorDetail(message, 'token_not_valid')
+    ``BlacklistedToken.token`` is a relation to ``OutstandingToken``, so the JWT
+    has to be matched through it. Matching on ``token__token`` — the previous
+    shape of this helper — compares against an unindexed ``TextField``, i.e. a
+    sequential scan of every token this deployment ever issued. With 400-day
+    rotation that table only grows, and the scan sits on the path a *live*
+    session takes to recover from a lost rotation race. Matching on ``jti``
+    instead hits a unique index.
 
-    @staticmethod
-    def _token_is_blacklisted(raw):
-        """True when this exact refresh token string is blacklisted (rotated)."""
-        try:
-            return BlacklistedToken.objects.filter(token=raw).exists()
-        except Exception:  # noqa: BLE001 - a DB hiccup must not mask the original error
-            return False
+    The ``jti`` is read without verifying the signature: the token is already
+    known to be unusable, and nothing is authorised from this answer. It only
+    tells the client whether a newer refresh token is worth retrying (both
+    outcomes are still 401), so a forged ``jti`` gains an attacker one pointless
+    retry against a token they do not have.
+    """
+    try:
+        jti = RefreshToken(raw, verify=False).payload.get('jti')
+    except Exception:  # noqa: BLE001 - unreadable token is simply not a rotated one
+        return False
+    if not jti:
+        return False
+    try:
+        return BlacklistedToken.objects.filter(token__jti=jti).exists()
+    except Exception:  # noqa: BLE001 - a DB hiccup must not mask the original error
+        return False
 
 
-class LenientRefreshSerializer(TokenRefreshSerializer):
-    """Refresh serializer that tolerates the rotation race across tabs.
+class ResilientTokenRefreshSerializer(TokenRefreshSerializer):
+    """Refresh serializer that always answers 401 for an unusable token.
 
-    SimpleJWT rotation blacklists a refresh token the moment it is used. A user
-    with two browser tabs (or an SSR cold-start racing an open tab) can therefore
-    send the SAME token twice: the first request rotates it, the second receives
-    "Token is blacklisted" (plain TokenError). That 400 must not end a session
-    that is very much alive — the second request simply raced the first. We
-    degrade that single specific error to an empty rotation (no new token) and
-    let the client fall back to the refresh token a sibling tab already rotated
-    to. Everything else (expired, wrong type, bad signature) is a real session
-    failure and is still surfaced so the client clears cookies.
+    Every refresh failure must look the same to a client: HTTP 401. SimpleJWT
+    only converts ``TokenError`` itself, so ``TokenBackendError`` (bad signature)
+    and ``TypeError`` (garbage payload) escaped as 500, and a locally raised
+    ``ValidationError`` answered 400. Clients then either retried a dead session
+    forever or dropped a live one, depending on which shape they got.
+
+    The ``code`` distinguishes the two reasons a token can be refused so the
+    client can react instead of guessing:
+
+    * ``refresh_token_rotated`` — this token was already exchanged (a sibling
+      tab, or a retried request, won the race). A newer refresh token exists in
+      the cookie jar, so the client retries with that one and the session lives.
+    * ``token_not_valid`` — expired, revoked or forged. The session is over.
     """
 
     def validate(self, attrs):
         try:
             return super().validate(attrs)
         except (TokenError, TokenBackendError, TypeError) as exc:
-            if _RefreshTokenErrorHelper._token_is_blacklisted(attrs.get('refresh')):
-                return {}
-            raise ValidationError({'detail': _RefreshTokenErrorHelper._simplejwt_error(exc)}) from exc
+            rotated = _refresh_token_is_rotated(attrs.get('refresh'))
+            raise InvalidToken({
+                'detail': str(exc) or 'Token is invalid or expired',
+                'code': 'refresh_token_rotated' if rotated else 'token_not_valid',
+            }) from exc
 
 
-# The lenient serializer is wired on ASGI/uvicorn at the URL layer (config.urls)
-# so DRF's request lifecycle runs exactly once — nesting the second APIView inside
-# the @api_view handler would re-enter dispatch with a DRF Request and blow up.
-lenient_token_refresh = TokenRefreshView.as_view(
-    serializer_class=LenientRefreshSerializer,
-)
+class SessionTokenRefreshView(TokenRefreshView):
+    """Rotating refresh endpoint that keeps a signed-in client signed in.
+
+    Two kinds of caller share it:
+
+    * A browser sends nothing and is authorised by the HttpOnly cookie. The
+      rotated token goes straight back into that cookie and never touches the
+      response body, so page scripts cannot read it.
+    * The native app (and any non-browser client) still posts ``{"refresh": …}``
+      and still gets the rotated token in the body, exactly as before.
+
+    Wired at the URL layer (config.urls) so DRF's request lifecycle runs exactly
+    once — nesting an APIView inside an @api_view handler would re-enter dispatch
+    with a DRF Request and blow up.
+    """
+
+    serializer_class = ResilientTokenRefreshSerializer
+    throttle_classes = [TokenRefreshRateThrottle]
+
+    def post(self, request, *args, **kwargs):
+        presented = request.data.get('refresh') if hasattr(request.data, 'get') else None
+        from_cookie = False
+        if not presented:
+            presented = request.COOKIES.get(REFRESH_COOKIE_NAME)
+            from_cookie = bool(presented)
+
+        if not presented:
+            # No token anywhere: there is no session to keep alive. Same 401 the
+            # invalid case gets, so a client needs only one code path.
+            return Response(
+                {'detail': 'No refresh token was provided.', 'code': 'token_not_valid'},
+                status=status.HTTP_401_UNAUTHORIZED,
+            )
+
+        serializer = self.get_serializer(data={'refresh': presented})
+        try:
+            serializer.is_valid(raise_exception=True)
+        except InvalidToken as exc:
+            detail = exc.detail if isinstance(exc.detail, dict) else {'detail': exc.detail}
+            response = Response(detail, status=status.HTTP_401_UNAUTHORIZED)
+            # A token we know was merely rotated means a newer one is already in
+            # the jar — clearing cookies there would end a live session. Only a
+            # genuinely dead token retires the browser's copy.
+            if from_cookie and detail.get('code') != 'refresh_token_rotated':
+                _clear_session_cookies(response)
+            return response
+
+        data = dict(serializer.validated_data)
+        rotated = data.get('refresh')
+        if from_cookie:
+            data.pop('refresh', None)
+        response = Response(data, status=status.HTTP_200_OK)
+        if rotated:
+            _attach_session_cookies(response, rotated)
+        return response
+
+
+token_refresh = SessionTokenRefreshView.as_view()
 
 
 def _revoke_user_refresh_tokens(user):
@@ -231,7 +359,8 @@ def login_user(request):
     user.last_login_ip = _client_ip(request)
     user.save(update_fields=['failed_login_attempts', 'locked_until', 'last_login_ip'])
     update_last_login(None, user)
-    return Response(_token_payload(user))
+    payload = _token_payload(user)
+    return _attach_session_cookies(Response(payload), payload['refresh'])
 
 
 @api_view(['POST'])
@@ -241,19 +370,26 @@ def register(request):
     serializer = RegisterSerializer(data=request.data)
     serializer.is_valid(raise_exception=True)
     user = serializer.save()
-    return Response(_token_payload(user), status=status.HTTP_201_CREATED)
+    payload = _token_payload(user)
+    return _attach_session_cookies(
+        Response(payload, status=status.HTTP_201_CREATED),
+        payload['refresh'],
+    )
 
 
 @api_view(['POST'])
 @permission_classes([AllowAny])
 def logout_user(request):
-    refresh_token = request.data.get('refresh')
+    # Logging out is the one thing that must always end the session, so accept
+    # the token from wherever the caller keeps it — the browser's HttpOnly cookie
+    # is unreadable to the page script that triggered this.
+    refresh_token = request.data.get('refresh') or request.COOKIES.get(REFRESH_COOKIE_NAME)
     if refresh_token:
         try:
             RefreshToken(refresh_token).blacklist()
         except TokenError:
             pass
-    return Response(status=status.HTTP_204_NO_CONTENT)
+    return _clear_session_cookies(Response(status=status.HTTP_204_NO_CONTENT))
 
 
 @api_view(['POST'])

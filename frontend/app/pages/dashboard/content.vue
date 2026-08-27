@@ -105,7 +105,7 @@ onMounted(() => {
     </div>
 
     <div class="grid gap-4 xl:grid-cols-2">
-      <AnalyticsBarChart
+      <LazyAnalyticsBarChart
         title="۱۰ عنوان پربازدید"
         subtitle="رتبه از واچ‌پارتی و شمارنده‌ها"
         horizontal
@@ -113,7 +113,7 @@ onMounted(() => {
         :values="(content?.top_watched || []).slice().reverse().map(i => i.activity)"
         :loading="store.loading.content && !content"
       />
-      <AnalyticsLineChart
+      <LazyAnalyticsLineChart
         title="نشست‌های تماشا"
         subtitle="اتاق‌های ساخته‌شده + رویداد پخش"
         :labels="(content?.sessions_over_time || []).map(p => formatShortDate(p.date))"
@@ -123,7 +123,7 @@ onMounted(() => {
     </div>
 
     <div class="mt-5">
-      <AnalyticsHeatmapChart
+      <LazyAnalyticsHeatmapChart
         title="فعالیت تماشا (ساعت × روز هفته)"
         subtitle="واچ‌پارتی، لاگین و رویدادهای ترکینگ"
         :weekdays="content?.heatmap.weekdays || []"
@@ -134,7 +134,7 @@ onMounted(() => {
     </div>
 
     <div class="mt-5">
-      <AnalyticsBarChart
+      <LazyAnalyticsBarChart
         title="عبارات جستجو"
         subtitle="Top جستجوهای ثبت‌شده"
         horizontal

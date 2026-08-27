@@ -203,6 +203,17 @@ services:
       - edge
       - data
 
+  # Initialize the durable resume volume for the unprivileged crawler user.
+  # Named volumes are born root-owned, while the backend image runs as uid 999.
+  catalog-crawler-state-init:
+    image: alpine:3.22
+    restart: "no"
+    user: "0:0"
+    command: ["sh", "-c", "chown 999:999 /state && chmod 0750 /state"]
+    volumes:
+      - crawler_state:/state
+    logging: *default-logging
+
   # Permanent low-priority Film2Media delta crawler. Every round imports only
   # new, directly playable titles and backfills their download sizes, then the
   # process sleeps. A hard CPU cap protects public API/frontend latency.
@@ -233,7 +244,8 @@ services:
       CELERY_BROKER_URL: redis://redis-queue:6379/0
       CELERY_RESULT_BACKEND: redis://redis-queue:6379/1
       MYF2M_CRAWL_INTERVAL_SECONDS: ${MYF2M_CRAWL_INTERVAL_SECONDS:-21600}
-      MYF2M_BULK_CRAWL_DELAY_SECONDS: ${MYF2M_BULK_CRAWL_DELAY_SECONDS:-3.0}
+      # 1.4s stays just below the configured 45 requests/minute provider budget.
+      MYF2M_BULK_CRAWL_DELAY_SECONDS: ${MYF2M_BULK_CRAWL_DELAY_SECONDS:-1.4}
       MYF2M_CRAWL_WORKERS: ${MYF2M_CRAWL_WORKERS:-6}
       MYF2M_LISTING_DELAY: ${MYF2M_LISTING_DELAY:-0.08}
       MYF2M_RECENT_MOVIE_PAGES: ${MYF2M_RECENT_MOVIE_PAGES:-16}
@@ -249,8 +261,11 @@ services:
       MYF2M_SERIES_REFRESH_YEAR_MIN: ${MYF2M_SERIES_REFRESH_YEAR_MIN:-2023}
       MYF2M_MOVIE_REFRESH_LIMIT: ${MYF2M_MOVIE_REFRESH_LIMIT:-200}
       MYF2M_MOVIE_REFRESH_ORDER: ${MYF2M_MOVIE_REFRESH_ORDER:-stale}
+      MYF2M_CRAWL_CHECKPOINT: /var/lib/revayato-crawler/myf2m-listings.json
+      MYF2M_TMDB_MISS_CACHE_SECONDS: ${MYF2M_TMDB_MISS_CACHE_SECONDS:-604800}
     volumes:
       - media_data:/app/media
+      - crawler_state:/var/lib/revayato-crawler
       - ${CATALOG_MEDIA_MANIFEST_HOST_PATH:-./backend/catalog-media-manifest.example.json}:/run/catalog-media-manifest.json:ro
       # Keep the operations runner hot-patchable without rebuilding the large
       # backend image; normal future images also contain these scripts.
@@ -261,6 +276,8 @@ services:
       - ./backend/scripts/refresh_movie_download_links.py:/app/scripts/refresh_movie_download_links.py:ro
       - ./backend/apps/catalog/provider_import/providers/cdn_link_parse.py:/app/apps/catalog/provider_import/providers/cdn_link_parse.py:ro
     depends_on:
+      catalog-crawler-state-init:
+        condition: service_completed_successfully
       backend:
         condition: service_healthy
       postgres:
@@ -271,7 +288,7 @@ services:
         condition: service_healthy
     stop_grace_period: 30s
     mem_limit: 384m
-    cpus: ${MYF2M_BULK_CRAWLER_CPUS:-0.15}
+    cpus: ${MYF2M_BULK_CRAWLER_CPUS:-1.25}
     cpu_shares: 64
     logging: *default-logging
     networks:
@@ -463,6 +480,7 @@ volumes:
   caddy_data:
   caddy_config:
   celery_queue_data:
+  crawler_state:
 
 networks:
   edge:

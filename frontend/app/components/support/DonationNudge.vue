@@ -1,9 +1,7 @@
 <script setup lang="ts">
 const route = useRoute()
 const visible = ref(false)
-const suppressed = ref(false)
-const STORAGE_KEY = 'revayato:donation-nudge:dismissed-at'
-const DISMISS_FOR_MS = 14 * 24 * 60 * 60 * 1000
+// Always show on every visit — no long-term suppression after dismiss.
 let showTimer: ReturnType<typeof setTimeout> | undefined
 
 const excludedRoute = computed(() =>
@@ -16,22 +14,9 @@ const excludedRoute = computed(() =>
 
 function dismiss() {
   visible.value = false
-  try {
-    localStorage.setItem(STORAGE_KEY, String(Date.now()))
-  } catch {
-    // Storage can be unavailable in private browsing; dismissal still works now.
-  }
 }
 
 onMounted(() => {
-  let dismissedAt = 0
-  try {
-    dismissedAt = Number(localStorage.getItem(STORAGE_KEY) || 0)
-  } catch {
-    // Show the nudge when storage is unavailable.
-  }
-  suppressed.value = Date.now() - dismissedAt < DISMISS_FOR_MS
-  if (suppressed.value) return
   showTimer = setTimeout(() => {
     showTimer = undefined
     if (!excludedRoute.value) visible.value = true
@@ -40,7 +25,7 @@ onMounted(() => {
 
 watch(excludedRoute, excluded => {
   if (excluded) visible.value = false
-  else if (!suppressed.value && !showTimer) visible.value = true
+  else if (!showTimer) visible.value = true
 })
 
 onBeforeUnmount(() => {

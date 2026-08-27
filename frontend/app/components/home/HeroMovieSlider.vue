@@ -21,6 +21,9 @@ const morphSlider = useTemplateRef<{
   drag: (ndx: number) => void
   endDrag: () => void
   setPointer: (x: number, y: number) => void
+  pause: () => void
+  resume: () => void
+  dispose: () => void
 }>('morphSlider')
 const thumbnailRail = useTemplateRef<HTMLElement>('thumbnailRail')
 const manualAnnouncement = ref('')
@@ -224,8 +227,16 @@ onMounted(() => {
     return
   }
   visibilityObserver = new IntersectionObserver(([entry]) => {
-    if (entry?.isIntersecting) resume('viewport')
-    else pause('viewport')
+    if (entry?.isIntersecting) {
+      resume('viewport')
+      // Resume the WebGL render loop only when the hero is actually visible.
+      morphSlider.value?.resume()
+    }
+    else {
+      pause('viewport')
+      // Stop the perpetual WebGL repaint once scrolled out of view.
+      morphSlider.value?.pause()
+    }
   }, { threshold: 0.12 })
   visibilityObserver.observe(root.value)
 })
@@ -276,7 +287,10 @@ onBeforeUnmount(() => {
         :fallback-label="`تصویر پس‌زمینه ${currentItem.title} در دسترس نیست`"
       />
       <ClientOnly>
-        <MorphSlider
+        <!-- Lazy on purpose: this layer is a WebGL enhancement over the backdrop
+             image above, and it drags in ogl + gsap. Loading it eagerly put both
+             in the shared chunk, so every route paid for the home hero. -->
+        <LazyMorphSlider
           ref="morphSlider"
           class="hero-movie-slider__morph"
           :items="morphItems"

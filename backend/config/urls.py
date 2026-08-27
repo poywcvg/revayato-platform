@@ -5,8 +5,8 @@ from config.converters import UnicodeSlugConverter
 register_converter(UnicodeSlugConverter, 'uslug')
 
 from apps.accounts.api import (
-    LenientRefreshSerializer, TokenRefreshView, confirm_password_reset, login_user,
-    lenient_token_refresh, logout_user, me, register, request_password_reset,
+    confirm_password_reset, login_user, logout_user, me, register,
+    request_password_reset, token_refresh,
 )
 from users.admin_api import admin_user_detail, admin_user_list_create
 from users.analytics_api import (
@@ -18,7 +18,7 @@ from users.analytics_api import (
 )
 from users.dashboard_api import admin_dashboard
 from apps.catalog.api import (
-    catalog_filters, recent_catalog,
+    catalog_filters, collection_detail, collection_list, recent_catalog,
     actor_detail, actor_list, country_list, director_detail, director_list,
     genre_list, home_rails, movie_detail, movie_list, movie_similar,
     playback_subtitle_ensure, playback_subtitle_status, search_content, series_detail, series_list, series_similar,
@@ -83,7 +83,7 @@ urlpatterns = [
     path('api/health/', health_check, name='health_check'),
     path('api/auth/register/', register, name='auth_register'),
     path('api/auth/token/', login_user, name='token_obtain_pair'),
-    path('api/auth/token/refresh/', lenient_token_refresh, name='token_refresh'),
+    path('api/auth/token/refresh/', token_refresh, name='token_refresh'),
     path('api/auth/logout/', logout_user, name='auth_logout'),
     path('api/auth/password-reset/', request_password_reset, name='auth_password_reset'),
     path('api/auth/password-reset/confirm/', confirm_password_reset, name='auth_password_reset_confirm'),
@@ -171,6 +171,8 @@ urlpatterns = [
     path('api/actors/<uslug:slug>/', actor_detail, name='actor_detail'),
     path('api/directors/', director_list, name='director_list'),
     path('api/directors/<uslug:slug>/', director_detail, name='director_detail'),
+    path('api/collections/', collection_list, name='collection_list'),
+    path('api/collections/<uslug:slug>/', collection_detail, name='collection_detail'),
     path('api/search/', search_content, name='search_content'),
     path('api/trending/', trending, name='trending'),
     path('api/events/', create_privacy_safe_event, name='create_privacy_safe_event'),

@@ -134,9 +134,11 @@ const cardRating = computed(() => {
   font-weight: 900;
   letter-spacing: .02em;
   color: rgb(var(--palette-ink-rgb) / 92%);
-  background: color-mix(in srgb, var(--theme-bg-main) 55%, transparent);
-  -webkit-backdrop-filter: blur(8px);
-  backdrop-filter: blur(8px);
+  /* No backdrop-filter here on purpose. This badge repeats once per card, so a
+     catalog grid would ask the compositor for dozens of backdrop reads on every
+     scrolled frame — the single biggest source of mobile scroll jank we found.
+     A near-opaque fill over the poster reads the same at 10px. */
+  background: color-mix(in srgb, var(--theme-bg-main) 86%, transparent);
   box-shadow: inset 0 0 0 1px rgb(var(--palette-ink-rgb) / 10%);
 }
 

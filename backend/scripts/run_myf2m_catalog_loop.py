@@ -86,6 +86,10 @@ def main() -> int:
     recent_movie_pages = _integer('MYF2M_RECENT_MOVIE_PAGES', 16, minimum=1)
     recent_series_pages = _integer('MYF2M_RECENT_SERIES_PAGES', 10, minimum=1)
     deep_sweep_every = _integer('MYF2M_DEEP_SWEEP_EVERY_ROUNDS', 12, minimum=1)
+    checkpoint = Path(os.environ.get(
+        'MYF2M_CRAWL_CHECKPOINT',
+        '/var/lib/revayato-crawler/myf2m-listings.json',
+    ))
 
     def importer(*, deep: bool) -> list[str]:
         return [
@@ -97,10 +101,10 @@ def main() -> int:
             '--delay', str(request_delay),
             '--listing-delay', str(listing_delay),
             '--workers', str(crawl_workers),
+            '--checkpoint', str(checkpoint),
+            '--resume',
             '--new-only',
             '--require-playback',
-            '--no-queue-softsub',
-            '--no-dornatv-enrich',
             *(('--probe-sizes',) if probe_sizes else ()),
         ]
     sizes = [
@@ -116,8 +120,9 @@ def main() -> int:
     series_refresh = [
         sys.executable,
         str(SERIES_REFRESH_SCRIPT),
-        '--delay', str(refresh_delay),
+        '--delay', str(max(refresh_delay, request_delay)),
         '--limit', str(series_refresh_limit),
+        '--workers', str(crawl_workers),
         *(('--year-min', str(series_refresh_year_min)) if series_refresh_year_min else ()),
     ]
     movie_refresh = [
@@ -137,9 +142,18 @@ def main() -> int:
         # initial coverage (deep every round), start the full missing-title
         # sweep immediately; later configurations retain the fast delta lane.
         if deep_round:
-            _run('catalog-deep', importer(deep=True))
+            import_code = _run('catalog-deep', importer(deep=True))
         else:
-            _run('catalog-recent', importer(deep=False))
+            import_code = _run('catalog-recent', importer(deep=False))
+        # A checkpoint is only for an interrupted listing walk. Once a complete
+        # pass succeeds, remove it so the next round starts at the newest pages.
+        # If the process/container dies mid-pass, the durable file survives and
+        # --resume continues from the last completed listing page.
+        if import_code == 0:
+            try:
+                checkpoint.unlink(missing_ok=True)
+            except OSError as exc:
+                print(f'MYF2M_CHECKPOINT_CLEANUP_FAILED {exc}', flush=True)
         if not STOP.is_set():
             _run('series-refresh', series_refresh)
         if not STOP.is_set():
