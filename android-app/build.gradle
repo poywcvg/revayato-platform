@@ -1,5 +1,0 @@
-// Root build for the fully native Revayato Android application.
-// No third-party repositories required beyond the standard google()/mavenCentral().
-plugins {
-    id 'com.android.application' version '8.6.0' apply false
-}

@@ -36,6 +36,9 @@ backups/
 node_modules/
 **/node_modules/
 
+# Android app — not pushed to the remote (local only)
+android-app/
+
 # Android (react-native app)
 **/.gradle/
 **/android/.cxx/
