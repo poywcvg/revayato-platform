@@ -1,0 +1,5 @@
+packages:
+  - .
+
+# Nuxt and its native helpers require lifecycle scripts during the container build.
+dangerouslyAllowAllBuilds: true

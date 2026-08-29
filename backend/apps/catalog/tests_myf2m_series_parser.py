@@ -123,3 +123,16 @@ class MyF2MSeriesParserTests(SimpleTestCase):
         rows = parse_download_links(html, page_path='/123/movie/')['available_links']
         self.assertEqual(len(rows), 1)
         self.assertIn('1080p', rows[0]['quality'])
+
+    def test_quality_keeps_source_hdr_bit_depth_and_codec_and_size(self):
+        html = '''
+        <div class="download-list softsub"><li>
+          <span class="text">1080p</span><span>حجم: ۱.۷ گیگابایت</span>
+          <a href="https://cdn.example/Movie.2026.1080p.WEB-DL.HDR.10bit.x265.SoftSub.mkv">
+            دانلود مستقیم
+          </a>
+        </li></div>
+        '''
+        row = parse_download_links(html, page_path='/123/movie/')['available_links'][0]
+        self.assertEqual(row['quality'], 'WEB-DL 1080p HDR 10bit x265')
+        self.assertEqual(row['size_label'], '1.7 GB')

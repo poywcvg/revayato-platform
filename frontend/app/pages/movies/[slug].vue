@@ -93,12 +93,8 @@ useHead(() => {
   <!-- Single root required for Nuxt pageTransition (out-in); multi-root blanks the page. -->
   <div>
     <CatalogDetail v-if="movie" :item="movie" />
-    <div v-else-if="pending" class="media-detail content-section py-10" aria-busy="true">
-      <div class="mx-auto max-w-6xl space-y-5 px-4">
-        <div class="h-[min(42svh,22rem)] animate-pulse rounded-[1.5rem] bg-[color:var(--surface-2,#0f1916)]" />
-        <div class="h-10 w-1/3 max-w-xs animate-pulse rounded-xl bg-[color:var(--surface-3,#16241f)]" />
-        <div class="h-40 animate-pulse rounded-[1.25rem] bg-[color:var(--surface-2,#0f1916)]" />
-      </div>
+    <div v-else-if="pending" class="media-detail content-section grid min-h-[55svh] place-items-center py-10" aria-busy="true">
+      <LoadingSpinnerA size="large">در حال آماده‌سازی صفحه فیلم…</LoadingSpinnerA>
     </div>
   </div>
 </template>

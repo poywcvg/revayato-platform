@@ -203,6 +203,17 @@ services:
       - edge
       - data
 
+  # Initialize the durable resume volume for the unprivileged crawler user.
+  # Named volumes are born root-owned, while the backend image runs as uid 999.
+  catalog-crawler-state-init:
+    image: alpine:3.22
+    restart: "no"
+    user: "0:0"
+    command: ["sh", "-c", "chown 999:999 /state && chmod 0750 /state"]
+    volumes:
+      - crawler_state:/state
+    logging: *default-logging
+
   # Permanent low-priority Film2Media delta crawler. Every round imports only
   # new, directly playable titles and backfills their download sizes, then the
   # process sleeps. A hard CPU cap protects public API/frontend latency.
@@ -233,20 +244,40 @@ services:
       CELERY_BROKER_URL: redis://redis-queue:6379/0
       CELERY_RESULT_BACKEND: redis://redis-queue:6379/1
       MYF2M_CRAWL_INTERVAL_SECONDS: ${MYF2M_CRAWL_INTERVAL_SECONDS:-21600}
-      MYF2M_BULK_CRAWL_DELAY_SECONDS: ${MYF2M_BULK_CRAWL_DELAY_SECONDS:-3.0}
+      # 1.4s stays just below the configured 45 requests/minute provider budget.
+      MYF2M_BULK_CRAWL_DELAY_SECONDS: ${MYF2M_BULK_CRAWL_DELAY_SECONDS:-1.4}
+      MYF2M_CRAWL_WORKERS: ${MYF2M_CRAWL_WORKERS:-6}
+      MYF2M_LISTING_DELAY: ${MYF2M_LISTING_DELAY:-0.08}
+      MYF2M_RECENT_MOVIE_PAGES: ${MYF2M_RECENT_MOVIE_PAGES:-16}
+      MYF2M_RECENT_SERIES_PAGES: ${MYF2M_RECENT_SERIES_PAGES:-10}
+      # Until provider coverage is complete, run the full missing-title sweep
+      # every round before quality/episode refresh jobs.
+      MYF2M_DEEP_SWEEP_EVERY_ROUNDS: ${MYF2M_DEEP_SWEEP_EVERY_ROUNDS:-1}
       MYF2M_SIZE_WORKERS: ${MYF2M_SIZE_WORKERS:-4}
       MYF2M_SIZE_TIMEOUT_SECONDS: ${MYF2M_SIZE_TIMEOUT_SECONDS:-10}
       MYF2M_CRAWLER_NICE: ${MYF2M_CRAWLER_NICE:-10}
+      MYF2M_REFRESH_DELAY_SECONDS: ${MYF2M_REFRESH_DELAY_SECONDS:-0.7}
+      MYF2M_SERIES_REFRESH_LIMIT: ${MYF2M_SERIES_REFRESH_LIMIT:-150}
+      MYF2M_SERIES_REFRESH_YEAR_MIN: ${MYF2M_SERIES_REFRESH_YEAR_MIN:-2023}
+      MYF2M_MOVIE_REFRESH_LIMIT: ${MYF2M_MOVIE_REFRESH_LIMIT:-200}
+      MYF2M_MOVIE_REFRESH_ORDER: ${MYF2M_MOVIE_REFRESH_ORDER:-stale}
+      MYF2M_CRAWL_CHECKPOINT: /var/lib/revayato-crawler/myf2m-listings.json
+      MYF2M_TMDB_MISS_CACHE_SECONDS: ${MYF2M_TMDB_MISS_CACHE_SECONDS:-604800}
     volumes:
       - media_data:/app/media
+      - crawler_state:/var/lib/revayato-crawler
       - ${CATALOG_MEDIA_MANIFEST_HOST_PATH:-./backend/catalog-media-manifest.example.json}:/run/catalog-media-manifest.json:ro
       # Keep the operations runner hot-patchable without rebuilding the large
       # backend image; normal future images also contain these scripts.
       - ./backend/scripts/run_myf2m_catalog_loop.py:/app/scripts/run_myf2m_catalog_loop.py:ro
       - ./backend/scripts/import_missing_myf2m_batch.py:/app/scripts/import_missing_myf2m_batch.py:ro
       - ./backend/scripts/backfill_download_sizes.py:/app/scripts/backfill_download_sizes.py:ro
+      - ./backend/scripts/refresh_series_new_episodes.py:/app/scripts/refresh_series_new_episodes.py:ro
+      - ./backend/scripts/refresh_movie_download_links.py:/app/scripts/refresh_movie_download_links.py:ro
       - ./backend/apps/catalog/provider_import/providers/cdn_link_parse.py:/app/apps/catalog/provider_import/providers/cdn_link_parse.py:ro
     depends_on:
+      catalog-crawler-state-init:
+        condition: service_completed_successfully
       backend:
         condition: service_healthy
       postgres:
@@ -257,7 +288,7 @@ services:
         condition: service_healthy
     stop_grace_period: 30s
     mem_limit: 384m
-    cpus: ${MYF2M_BULK_CRAWLER_CPUS:-0.15}
+    cpus: ${MYF2M_BULK_CRAWLER_CPUS:-1.25}
     cpu_shares: 64
     logging: *default-logging
     networks:
@@ -441,6 +472,23 @@ services:
     networks:
       - edge
 
+  # One-shot: copy the staged APK(s) from ./downloads into the downloads_data
+  # volume that Caddy serves at /srv/downloads (see ops/Caddyfile /downloads/*).
+  # Nothing else populates that volume, so without this the /app download link
+  # 404s. Run with `docker compose run --rm downloads-seed` (see ops/deploy.sh).
+  # The APK is gitignored, so ops/deploy.sh stages it from android-app/dist/
+  # (or a GitHub Release) onto the host before this runs.
+  downloads-seed:
+    image: busybox:1.36
+    volumes:
+      - downloads_data:/srv/downloads
+      - ./downloads:/seed:ro
+    command: sh -c "cp -f /seed/*.apk /srv/downloads/ 2>/dev/null; echo '--- /srv/downloads ---'; ls -l /srv/downloads"
+    restart: "no"
+    networks:
+      - edge
+    logging: *default-logging
+
 volumes:
   postgres_data:
   static_data:
@@ -449,6 +497,7 @@ volumes:
   caddy_data:
   caddy_config:
   celery_queue_data:
+  crawler_state:
 
 networks:
   edge:

@@ -362,7 +362,17 @@ def canonicalize_download_link(row: dict | None) -> dict:
     if str(out.get('source') or '').strip().lower() == 'myf2m' and provided_quality:
         out['quality'] = provided_quality[:40]
     elif quality:
-        out['quality'] = quality
+        # Public Dornatv labels and selectors group by resolution first. Keep
+        # the richer source tag, but normalize ``WEB-DL 1080p`` to
+        # ``1080p WEB-DL`` so quality sorting/deduplication stays stable.
+        match = re.match(
+            r'^(Remux|BluRay|WEB-DL|WEBRip|HDTV|HDRip|HDTC|CAM)\s+(\d{3,4}p)(.*)$',
+            quality,
+            re.I,
+        )
+        out['quality'] = (
+            f'{match.group(2)} {match.group(1)}{match.group(3)}' if match else quality
+        )[:40]
     return apply_kind_label(out)
 
 

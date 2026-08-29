@@ -18,6 +18,12 @@ function itemActive(href: string) {
   if (path === '/admin/movies/new') {
     return route.path === '/admin/movies/new'
   }
+  if (path === '/admin/series/new') {
+    return route.path === '/admin/series/new'
+  }
+  if (path === '/dashboard') {
+    return route.path === '/dashboard' || route.path === '/admin'
+  }
   if (path === '/admin/movies' && queryString.includes('tmdb=1')) {
     return route.path === '/admin/movies' && String(route.query.tmdb) === '1'
   }
@@ -29,6 +35,9 @@ function itemActive(href: string) {
   }
   if (path === '/admin/users') {
     return route.path.startsWith('/admin/users')
+  }
+  if (path === '/admin/taxonomy') {
+    return route.path.startsWith('/admin/taxonomy')
   }
   if (path === '/admin/inbox') {
     return route.path.startsWith('/admin/inbox')

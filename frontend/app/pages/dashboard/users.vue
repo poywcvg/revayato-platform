@@ -22,6 +22,17 @@ const granularityOptions = [
   { value: 'monthly' as const, label: 'ماهانه' },
 ]
 
+const granularityLabels = { daily: 'روزانه', weekly: 'هفتگی', monthly: 'ماهانه' } as const
+
+const periodRangeLabel = computed(() => {
+  const labels: Record<AnalyticsPeriodKey, string> = {
+    '7d': '۷ روز اخیر',
+    '30d': '۳۰ روز اخیر',
+    '90d': '۹۰ روز اخیر',
+  }
+  return labels[store.period]
+})
+
 const data = computed(() => store.users?.payload.data || null)
 
 async function setGranularity(value: 'daily' | 'weekly' | 'monthly') {
@@ -57,7 +68,7 @@ onMounted(() => { void fetchUsers(true) })
         <p class="text-xs font-black text-[var(--admin-accent)]">بخش کاربران</p>
         <h1 class="mt-1 text-2xl font-black tracking-tight sm:text-3xl">آنالیتیکس کاربران</h1>
         <p class="mt-2 text-sm text-[var(--admin-muted)]">
-          عضویت، فعالیت هفتگی، دستگاه و کاربران پرتلاش — مستقیم از دیتابیس.
+          عضویت، فعالیت هفتگی، ترکیب رویدادها و کاربران پرتلاش — مستقیم از دیتابیس.
           <span v-if="data?.totals" class="block text-xs">
             کل {{ data.totals.users.toLocaleString('fa-IR') }} کاربر ·
             {{ data.totals.new_in_period.toLocaleString('fa-IR') }} عضویت در بازه ·
@@ -97,24 +108,24 @@ onMounted(() => { void fetchUsers(true) })
     <template v-else>
       <div class="grid gap-4 xl:grid-cols-3">
         <div class="xl:col-span-2">
-          <AnalyticsLineChart
+          <LazyAnalyticsLineChart
             title="ثبت‌نام‌های جدید"
-            :subtitle="`بازه ${period} · granularity=${store.granularity}`"
+            :subtitle="`بازه ${periodRangeLabel} · تفکیک ${granularityLabels[store.granularity]}`"
             :labels="(data?.registrations.points || []).map(p => formatShortDate(p.date))"
             :values="(data?.registrations.points || []).map(p => p.value)"
             :loading="store.loading.users && !data"
           />
         </div>
-        <AnalyticsDonutChart
-          title="تفکیک دستگاه"
-          subtitle="در صورت نبود ترکینگ، صفر نمایش داده می‌شود"
-          :slices="(data?.devices || []).map(d => ({ label: d.label, value: d.value }))"
+        <LazyAnalyticsDonutChart
+          title="تفکیک نوع رویداد"
+          subtitle="ترکیب فعالیت‌های ثبت‌شده در بازه"
+          :slices="(data?.action_breakdown || []).map(d => ({ label: d.label, value: d.value }))"
           :loading="store.loading.users && !data"
         />
       </div>
 
       <div class="mt-5">
-        <AnalyticsBarChart
+        <LazyAnalyticsBarChart
           title="کاربران فعال بر اساس روز هفته"
           subtitle="از last_login کاربران"
           :labels="(data?.active_by_weekday || []).map(i => i.label)"

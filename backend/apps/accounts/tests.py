@@ -1,12 +1,19 @@
+from datetime import timedelta
+
 from django.contrib.auth import get_user_model
 from django.contrib.auth.tokens import default_token_generator
 from django.core import mail
 from django.core.cache import cache
 from django.test import override_settings
+from django.utils import timezone
 from django.utils.encoding import force_bytes
 from django.utils.http import urlsafe_base64_encode
 from rest_framework import status
 from rest_framework.test import APITestCase
+from rest_framework_simplejwt.token_blacklist.models import (
+    BlacklistedToken,
+    OutstandingToken,
+)
 from rest_framework_simplejwt.tokens import RefreshToken
 
 from config.client_ip import client_ip
@@ -192,6 +199,225 @@ class AuthenticationApiTests(APITestCase):
         self.assertNotEqual(rotated.data['refresh'], refresh)
 
         replay = self.client.post('/api/auth/token/refresh/', {'refresh': refresh}, format='json')
+        self.assertEqual(replay.status_code, status.HTTP_401_UNAUTHORIZED)
+
+    def test_rotated_refresh_token_is_labelled_for_client_side_retry(self):
+        """A lost rotation race must be distinguishable from a dead session.
+
+        Two tabs (or a retried request) can send the same refresh token; the
+        loser gets 401 even though the winner already stored a newer token. The
+        ``refresh_token_rotated`` code tells the client to retry with that one
+        instead of concluding the user logged out — guessing wrong there is what
+        ended live sessions.
+        """
+        refresh = self.login().data['refresh']
+        rotated = self.client.post('/api/auth/token/refresh/', {'refresh': refresh}, format='json')
+        self.assertEqual(rotated.status_code, status.HTTP_200_OK)
+
+        replay = self.client.post('/api/auth/token/refresh/', {'refresh': refresh}, format='json')
+        self.assertEqual(replay.status_code, status.HTTP_401_UNAUTHORIZED)
+        self.assertEqual(replay.data.get('code'), 'refresh_token_rotated')
+
+        forged = self.client.post('/api/auth/token/refresh/', {'refresh': 'definitely-invalid'}, format='json')
+        self.assertEqual(forged.status_code, status.HTTP_401_UNAUTHORIZED)
+        self.assertEqual(forged.data.get('code'), 'token_not_valid')
+
+    def test_token_refresh_uses_its_own_throttle_bucket(self):
+        """Refresh must not share the anonymous throttle scope.
+
+        Every returning tab refreshes, and SSR refreshes all arrive from the one
+        frontend-container IP. On the shared anon bucket a busy hour answered 429
+        and clients treated a perfectly valid session as dead.
+        """
+        from django.urls import resolve
+
+        from apps.accounts.api import SessionTokenRefreshView, TokenRefreshRateThrottle
+
+        self.assertIs(resolve('/api/auth/token/refresh/').func.cls, SessionTokenRefreshView)
+        self.assertEqual(SessionTokenRefreshView.throttle_classes, [TokenRefreshRateThrottle])
+        self.assertEqual(TokenRefreshRateThrottle.scope, 'token_refresh')
+        throttle = TokenRefreshRateThrottle()
+        self.assertGreater(throttle.num_requests / throttle.duration, 1)
+
+    def test_a_long_chain_of_rotations_keeps_the_session_alive(self):
+        """The session survives far more rotations than one hour's worth.
+
+        A signed-in browser rotates on every access-token expiry, so the chain
+        has to keep answering 200 — one 429 or 401 in the middle is a logout.
+        """
+        refresh = self.login().data['refresh']
+        for step in range(12):
+            response = self.client.post('/api/auth/token/refresh/', {'refresh': refresh}, format='json')
+            self.assertEqual(
+                response.status_code, status.HTTP_200_OK,
+                f'rotation {step} failed with {response.status_code}: {response.data}',
+            )
+            self.assertIn('access', response.data)
+            refresh = response.data['refresh']
+
+    def test_rotation_check_matches_on_the_indexed_jti(self):
+        """The rotated-token lookup must not scan the whole token table.
+
+        Every rotation adds a row and nothing expires for 400 days, so matching
+        the raw JWT against the unindexed ``OutstandingToken.token`` text column
+        turns a live session's race recovery into a sequential scan over every
+        token ever issued. ``jti`` is unique, hence indexed.
+        """
+        from apps.accounts.api import _refresh_token_is_rotated
+
+        refresh = self.login().data['refresh']
+        self.assertFalse(_refresh_token_is_rotated(refresh))
+
+        rotated = self.client.post('/api/auth/token/refresh/', {'refresh': refresh}, format='json')
+        self.assertEqual(rotated.status_code, status.HTTP_200_OK)
+        self.assertTrue(_refresh_token_is_rotated(refresh))
+        self.assertFalse(_refresh_token_is_rotated(rotated.data['refresh']))
+        # Unreadable input is simply "not rotated", never an exception.
+        self.assertFalse(_refresh_token_is_rotated('definitely-invalid'))
+        self.assertFalse(_refresh_token_is_rotated(None))
+
+        with self.assertNumQueries(1):
+            _refresh_token_is_rotated(refresh)
+        query = str(BlacklistedToken.objects.filter(token__jti='x').query)
+        self.assertIn('jti', query)
+
+    def test_expired_tokens_are_flushed_without_touching_live_sessions(self):
+        """Housekeeping must shrink the table but never end a valid session."""
+        from apps.accounts.tasks import flush_expired_tokens_task
+
+        live_refresh = self.login().data['refresh']
+        stale = OutstandingToken.objects.create(
+            user=self.user,
+            jti='expired-jti-for-test',
+            token='expired.token.value',
+            created_at=timezone.now() - timedelta(days=401),
+            expires_at=timezone.now() - timedelta(days=1),
+        )
+        BlacklistedToken.objects.create(token=stale)
+
+        result = flush_expired_tokens_task()
+
+        self.assertEqual(result['deleted'], 1)
+        self.assertFalse(OutstandingToken.objects.filter(pk=stale.pk).exists())
+        # The cascade removes the blacklist row with it.
+        self.assertFalse(BlacklistedToken.objects.filter(token_id=stale.pk).exists())
+        # The live session still refreshes.
+        response = self.client.post('/api/auth/token/refresh/', {'refresh': live_refresh}, format='json')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+
+    def test_expired_token_flush_is_scheduled(self):
+        """Unswept blacklist growth eventually slows every refresh."""
+        from django.conf import settings as django_settings
+
+        entry = django_settings.CELERY_BEAT_SCHEDULE.get('accounts-flush-expired-tokens')
+        self.assertIsNotNone(entry, 'expired-token flush must run on beat')
+        self.assertEqual(entry['task'], 'apps.accounts.tasks.flush_expired_tokens_task')
+
+    def assertSessionCookies(self, response):
+        """The browser's session arrived as Set-Cookie, not as JSON for scripts.
+
+        Safari's ITP caps script-written cookies at seven days regardless of the
+        Max-Age requested, so a refresh token the page wrote itself died after a
+        week and iOS visitors came back logged out with most of the year left.
+        Only a cookie delivered in a response header keeps the full window — and
+        HttpOnly means an XSS bug cannot read the one credential that mints
+        sessions.
+        """
+        refresh_cookie = response.cookies.get('refresh_token')
+        self.assertIsNotNone(refresh_cookie, 'API must issue the refresh cookie itself')
+        self.assertTrue(refresh_cookie['httponly'])
+        self.assertEqual(refresh_cookie['samesite'], 'Lax')
+        self.assertGreaterEqual(int(refresh_cookie['max-age']), 399 * 24 * 60 * 60)
+
+        flag_cookie = response.cookies.get('has_session')
+        self.assertIsNotNone(flag_cookie, 'the page needs a readable "signed in" marker')
+        self.assertFalse(flag_cookie['httponly'])
+        self.assertEqual(flag_cookie.value, '1')
+        self.assertGreaterEqual(int(flag_cookie['max-age']), 399 * 24 * 60 * 60)
+        return refresh_cookie.value
+
+    def test_login_and_register_deliver_the_session_as_cookies(self):
+        cookie_refresh = self.assertSessionCookies(self.login())
+        self.assertEqual(cookie_refresh, self.login().data['refresh'] and cookie_refresh)
+
+        registered = self.client.post('/api/auth/register/', {
+            'email': 'cookie@example.com',
+            'username': 'cookieviewer',
+            'password': 'SafeCinema42!',
+        }, format='json')
+        self.assertEqual(registered.status_code, status.HTTP_201_CREATED)
+        self.assertSessionCookies(registered)
+
+    def test_refresh_works_from_the_cookie_alone(self):
+        """A browser sends no token at all — the HttpOnly cookie authorises it."""
+        self.assertSessionCookies(self.login())
+
+        rotated = self.client.post('/api/auth/token/refresh/', {}, format='json')
+
+        self.assertEqual(rotated.status_code, status.HTTP_200_OK)
+        self.assertIn('access', rotated.data)
+        # The rotated refresh must stay in the cookie: handing it to page scripts
+        # is what the HttpOnly cookie exists to prevent.
+        self.assertNotIn('refresh', rotated.data)
+        self.assertSessionCookies(rotated)
+        # And the session keeps rotating from the cookie, indefinitely.
+        for step in range(5):
+            again = self.client.post('/api/auth/token/refresh/', {}, format='json')
+            self.assertEqual(again.status_code, status.HTTP_200_OK, f'cookie rotation {step} failed')
+
+    def test_refresh_still_serves_body_clients_unchanged(self):
+        """The native app posts the token and still gets one back."""
+        refresh = self.login().data['refresh']
+        self.client.cookies.clear()
+
+        rotated = self.client.post('/api/auth/token/refresh/', {'refresh': refresh}, format='json')
+
+        self.assertEqual(rotated.status_code, status.HTTP_200_OK)
+        self.assertIn('access', rotated.data)
+        self.assertIn('refresh', rotated.data)
+        self.assertNotEqual(rotated.data['refresh'], refresh)
+
+    def test_a_dead_cookie_is_retired_but_a_raced_one_is_not(self):
+        """Clearing cookies on the wrong 401 is what ended live sessions."""
+        first = self.login().data['refresh']
+        self.assertEqual(
+            self.client.post('/api/auth/token/refresh/', {'refresh': first}, format='json').status_code,
+            status.HTTP_200_OK,
+        )
+
+        # The cookie still holds the token another tab already rotated: a race,
+        # not a logout. The browser's cookie must survive so the retry can win.
+        self.client.cookies['refresh_token'] = first
+        raced = self.client.post('/api/auth/token/refresh/', {}, format='json')
+        self.assertEqual(raced.status_code, status.HTTP_401_UNAUTHORIZED)
+        self.assertEqual(raced.data.get('code'), 'refresh_token_rotated')
+        self.assertNotIn('refresh_token', raced.cookies)
+
+        # A forged or long-expired token proves the session is over.
+        self.client.cookies['refresh_token'] = 'definitely-invalid'
+        dead = self.client.post('/api/auth/token/refresh/', {}, format='json')
+        self.assertEqual(dead.status_code, status.HTTP_401_UNAUTHORIZED)
+        self.assertEqual(dead.data.get('code'), 'token_not_valid')
+        self.assertEqual(dead.cookies['refresh_token'].value, '')
+        self.assertEqual(dead.cookies['has_session'].value, '')
+
+    def test_refresh_without_any_token_is_401_not_400(self):
+        """One status for "no usable session", so clients need one code path."""
+        response = self.client.post('/api/auth/token/refresh/', {}, format='json')
+        self.assertEqual(response.status_code, status.HTTP_401_UNAUTHORIZED)
+        self.assertEqual(response.data.get('code'), 'token_not_valid')
+
+    def test_logout_ends_the_cookie_session_without_a_body(self):
+        """The page cannot read the token it needs revoked; the cookie carries it."""
+        self.assertSessionCookies(self.login())
+
+        logged_out = self.client.post('/api/auth/logout/', {}, format='json')
+
+        self.assertEqual(logged_out.status_code, status.HTTP_204_NO_CONTENT)
+        self.assertEqual(logged_out.cookies['refresh_token'].value, '')
+        self.assertEqual(logged_out.cookies['has_session'].value, '')
+        # The token itself is blacklisted, so a stolen copy is useless too.
+        replay = self.client.post('/api/auth/token/refresh/', {}, format='json')
         self.assertEqual(replay.status_code, status.HTTP_401_UNAUTHORIZED)
 
     def test_password_reset_request_does_not_reveal_account_existence(self):

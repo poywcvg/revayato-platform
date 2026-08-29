@@ -81,12 +81,22 @@
   --color-cinema-surface: var(--theme-bg-surface);
   --color-cinema-card: var(--theme-bg-elevated);
   --color-cinema-muted: color-mix(in srgb, var(--theme-text-muted) 75%, var(--theme-text-secondary));
-  /* Latin-first so English titles pick Plus Jakarta Sans; Persian falls to Vazirmatn. */
-  --font-sans: "Plus Jakarta Sans", "Vazirmatn", Tahoma, system-ui, sans-serif;
+  /* Vazirmatn is the single UI face for Persian chrome and form controls. */
+  --font-sans: "Vazirmatn", Tahoma, system-ui, sans-serif;
   --font-latin: "Plus Jakarta Sans", "Vazirmatn", Tahoma, system-ui, sans-serif;
+  /* Motion Design: Tailwind v4 theme mirror so `duration-motion-base`,
+     `ease-out`, `ease-in-out`, `ease-spring` utilities resolve. */
+  --duration-motion-fast: 120ms;
+  --duration-motion-base: 160ms;
+  --duration-motion-slow: 280ms;
+  --ease-out: cubic-bezier(.2,.8,.2,1);
+  --ease-in-out: cubic-bezier(.4,0,.2,1);
+  --ease-spring: cubic-bezier(.34,1.56,.64,1);
+
 }
 
-/* Toasts inherit the same cinematic surfaces as the rest of the interface. */
+/* Toasts follow the site alert kit: icon + title/description row + inline close button.
+   Structures mirror the approved templates (success card, tinted error/warning/info, action buttons). */
 [data-sonner-toaster].cinema-toaster {
   /* Clear sticky site header so toasts never sit under it. */
   top: calc(var(--sticky-offset) + .75rem) !important;
@@ -99,7 +109,12 @@
 [data-sonner-toaster].cinema-toaster [data-sonner-toast] {
   width: 100%;
   max-width: min(26rem, calc(100vw - 1.5rem));
+  display: flex;
+  align-items: flex-start;
+  gap: .65rem;
+  padding: .7rem .85rem;
   border: 1px solid var(--theme-border);
+  border-radius: .85rem;
   background: color-mix(in srgb, var(--theme-bg-surface) 96%, transparent);
   color: var(--theme-text-primary);
   box-shadow: 0 8px 24px rgb(0 0 0 / 18%);
@@ -108,26 +123,147 @@
   white-space: normal;
 }
 
+[data-sonner-toaster].cinema-toaster [data-icon] {
+  flex: none;
+  display: grid;
+  place-items: center;
+  margin-top: .1rem;
+}
+
+[data-sonner-toaster].cinema-toaster [data-content] {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: .15rem;
+}
+
 [data-sonner-toaster].cinema-toaster [data-title] {
-  font-weight: 800;
-  line-height: 1.45;
+  font-weight: 700;
+  font-size: .85rem;
+  line-height: 1.55;
 }
 
 [data-sonner-toaster].cinema-toaster [data-description] {
   color: var(--theme-text-secondary);
+  font-size: .78rem;
+  line-height: 1.6;
   white-space: pre-line;
-  line-height: 1.55;
   max-width: 100%;
 }
 
+/* Close button rendered inline at the row end (template X pattern). */
 [data-sonner-toaster].cinema-toaster [data-close-button] {
+  position: static;
+  inset: auto;
+  transform: none !important;
+  flex: none;
+  width: 1.9rem;
+  height: 1.9rem;
+  margin-top: -.15rem;
+  display: grid;
+  place-items: center;
+  border: 0;
+  border-radius: .55rem;
+  background: transparent;
+  color: var(--theme-text-muted);
+  opacity: 1;
+  cursor: pointer;
+  transition: background-color 160ms ease, color 160ms ease, scale 120ms ease;
+}
+
+@media (hover: hover) and (pointer: fine) {
+  [data-sonner-toaster].cinema-toaster [data-close-button]:hover {
+    background: rgb(255 255 255 / 8%);
+    color: var(--theme-text-primary);
+  }
+}
+
+[data-sonner-toaster].cinema-toaster [data-close-button]:active {
+  scale: .9;
+}
+
+/* Tinted alert variants (Error/Success Alert Light pattern). */
+[data-sonner-toaster].cinema-toaster [data-type="error"] {
+  border-color: color-mix(in srgb, var(--theme-error) 38%, transparent);
+  background: color-mix(in srgb, var(--theme-error) 16%, var(--theme-bg-surface));
+}
+
+[data-sonner-toaster].cinema-toaster [data-type="error"] [data-title] {
+  color: color-mix(in srgb, var(--theme-error) 72%, #fff);
+}
+
+[data-sonner-toaster].cinema-toaster [data-type="error"] [data-description] {
+  color: color-mix(in srgb, var(--theme-error) 45%, #fff);
+}
+
+[data-sonner-toaster].cinema-toaster [data-type="warning"] {
+  border-color: color-mix(in srgb, var(--theme-warning) 38%, transparent);
+  background: color-mix(in srgb, var(--theme-warning) 14%, var(--theme-bg-surface));
+}
+
+[data-sonner-toaster].cinema-toaster [data-type="warning"] [data-title] {
+  color: color-mix(in srgb, var(--theme-warning) 70%, #fff);
+}
+
+[data-sonner-toaster].cinema-toaster [data-type="warning"] [data-description] {
+  color: color-mix(in srgb, var(--theme-warning) 42%, #fff);
+}
+
+[data-sonner-toaster].cinema-toaster [data-type="info"] {
+  border-color: color-mix(in srgb, var(--theme-info) 38%, transparent);
+  background: color-mix(in srgb, var(--theme-info) 14%, var(--theme-bg-surface));
+}
+
+[data-sonner-toaster].cinema-toaster [data-type="info"] [data-title] {
+  color: color-mix(in srgb, var(--theme-info) 70%, #fff);
+}
+
+[data-sonner-toaster].cinema-toaster [data-type="info"] [data-description] {
+  color: color-mix(in srgb, var(--theme-info) 45%, #fff);
+}
+
+[data-sonner-toaster].cinema-toaster [data-type="success"] {
+  border-color: color-mix(in srgb, var(--theme-success) 30%, var(--theme-border));
+}
+
+/* In-toast action buttons (divided action-notification pattern). */
+[data-sonner-toaster].cinema-toaster [data-button],
+[data-sonner-toaster].cinema-toaster [data-cancel] {
+  order: 3;
+  flex: none;
+  align-self: center;
+  min-height: 2.35rem;
+  margin-top: .35rem;
+  padding-inline: .9rem;
+  border: 1px solid transparent;
+  border-radius: .6rem;
+  font-weight: 800;
+  font-size: .75rem;
+  cursor: pointer;
+  transition: background-color 160ms ease, color 160ms ease;
+}
+
+[data-sonner-toaster].cinema-toaster [data-button] {
+  background: color-mix(in srgb, var(--theme-accent-primary) 14%, transparent);
+  color: var(--theme-accent-primary);
+}
+
+[data-sonner-toaster].cinema-toaster [data-cancel] {
   border-color: var(--theme-border);
-  background: var(--theme-bg-elevated);
+  background: transparent;
   color: var(--theme-text-secondary);
 }
 
-[data-sonner-toaster].cinema-toaster [data-type="error"] {
-  border-color: color-mix(in srgb, var(--theme-error) 35%, var(--theme-border));
+@media (hover: hover) and (pointer: fine) {
+  [data-sonner-toaster].cinema-toaster [data-button]:hover {
+    background: color-mix(in srgb, var(--theme-accent-primary) 22%, transparent);
+  }
+
+  [data-sonner-toaster].cinema-toaster [data-cancel]:hover {
+    background: rgb(255 255 255 / 8%);
+    color: var(--theme-text-primary);
+  }
 }
 
 :root {
@@ -242,6 +378,20 @@
   --shadow-card: var(--theme-shadow-card);
   --transition-ui: 160ms ease;
 
+  /* Motion Design tokens — single source of truth for duration + easing.
+     Mirrored into Tailwind @theme below so utilities like duration-motion-base resolve.
+     Android (Theme.java) keeps identical durations for cross-platform coherence. */
+  --motion-fast: 120ms;
+  --motion-base: 160ms;
+  --motion-slow: 280ms;
+  --motion-stagger: 40ms;
+  --ease-out: cubic-bezier(.2,.8,.2,1);
+  --ease-in-out: cubic-bezier(.4,0,.2,1);
+  --ease-spring: cubic-bezier(.34,1.56,.64,1);
+  --ease-emphasized: cubic-bezier(.22,1,.36,1);
+  /* Pre-composed shorthand for the most common case. */
+  --motion-ui: var(--motion-base) var(--ease-out);
+
   /* Body layout tokens (myf2m-style foundation, responsive). */
   --gutter: clamp(1rem, 2.4vw, 1.5rem);
   --s-space: .5rem;
@@ -275,7 +425,9 @@
   --rail-card-width: calc((100% - (var(--rail-gap) * (var(--rail-columns) - 1))) / var(--rail-columns));
 }
 
-@media (min-width: 768px) {
+/* Desktop header (68px) renders from lg up; phones and tablets share the
+   compact 3.5rem mobile chrome. */
+@media (min-width: 1024px) {
   :root {
     --header-height: 4.25rem;
   }
@@ -627,6 +779,7 @@ input,
 select,
 textarea {
   font: inherit;
+  font-family: var(--font-ui);
   line-height: 1.55;
 }
 
@@ -644,6 +797,17 @@ select option {
 input::placeholder,
 textarea::placeholder {
   color: var(--theme-text-muted);
+  font-family: var(--font-ui);
+  font-style: normal;
+}
+
+/* Native form pseudo-elements do not consistently inherit in Safari/WebView. */
+input::-webkit-input-placeholder,
+textarea::-webkit-input-placeholder,
+input::-moz-placeholder,
+textarea::-moz-placeholder {
+  font-family: var(--font-ui);
+  font-style: normal;
 }
 
 :where(button, input, select, textarea):disabled,
@@ -1796,7 +1960,7 @@ html[data-theme="light"] .cinematic-card__synopsis p {
   box-shadow: none;
 }
 
-@media (max-width: 767px) {
+@media (max-width: 1023px) {
   .scroll-top-button {
     bottom: calc(var(--mobile-bottom-nav-height) + .75rem + env(safe-area-inset-bottom));
   }
@@ -2323,5 +2487,54 @@ html[data-scroll-reveal] .hero-movie-slider .reveal {
   .performance-card img {
     transition: none !important;
     transform: none !important;
+  }
+}
+
+/* Prevent the page behind the mobile watch-room sheet from scrolling. */
+body.party-panel-open {
+  overflow: hidden;
+  overscroll-behavior: none;
+}
+
+/* Mobile filter drawer (CatalogBrowser) — slide-up sheet + fade backdrop. */
+.filter-drawer-enter-active,
+.filter-drawer-leave-active {
+  transition: opacity 220ms ease;
+}
+.filter-drawer-enter-active .absolute.inset-x-0.bottom-0,
+.filter-drawer-leave-active .absolute.inset-x-0.bottom-0 {
+  transition: transform 300ms cubic-bezier(.22, 1, .36, 1);
+}
+.filter-drawer-enter-from,
+.filter-drawer-leave-to {
+  opacity: 0;
+}
+.filter-drawer-enter-from .absolute.inset-x-0.bottom-0,
+.filter-drawer-leave-to .absolute.inset-x-0.bottom-0 {
+  transform: translateY(100%);
+}
+
+/* Active filter chips — smooth add/remove. */
+.filter-chip-enter-active,
+.filter-chip-leave-active {
+  transition: opacity 160ms ease, transform 180ms cubic-bezier(.22, 1, .36, 1);
+}
+.filter-chip-enter-from,
+.filter-chip-leave-to {
+  opacity: 0;
+  transform: scale(.92) translateY(-.2rem);
+}
+.filter-chip-leave-active {
+  position: absolute;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .filter-drawer-enter-active,
+  .filter-drawer-leave-active,
+  .filter-drawer-enter-active .absolute.inset-x-0.bottom-0,
+  .filter-drawer-leave-active .absolute.inset-x-0.bottom-0,
+  .filter-chip-enter-active,
+  .filter-chip-leave-active {
+    transition: none;
   }
 }

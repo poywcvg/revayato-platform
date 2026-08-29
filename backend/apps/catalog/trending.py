@@ -127,7 +127,7 @@ def _daily_jitter(item, *, now, salt: str, amplitude: float = 1.8) -> float:
     return (unit - 0.5) * 2.0 * amplitude
 
 
-def _slot_jitter(item, *, now, salt: str, amplitude: float = 2.4, hours: int = 6) -> float:
+def _slot_jitter(item, *, now, salt: str, amplitude: float = 2.4, hours: int = 1) -> float:
     """Rotate rails a few times per day (stable inside each time slot)."""
     slot_hours = max(1, int(hours))
     slot = int(now.hour // slot_hours)
@@ -141,7 +141,9 @@ def _slot_jitter(item, *, now, salt: str, amplitude: float = 2.4, hours: int = 6
 def rail_rotation_meta(now=None) -> dict:
     """Public meta so clients know which discovery slot is active."""
     now = now or timezone.now()
-    bucket = int(now.hour // 6)
+    # Home rails refresh every hour: stable during the hour (cache-friendly),
+    # but never look like permanently hard-coded shelves.
+    bucket = int(now.hour)
     day = now.strftime('%Y-%m-%d')
     focus_genres = (
         'action', 'drama', 'comedy', 'thriller', 'sci-fi', 'romance',
@@ -152,7 +154,7 @@ def rail_rotation_meta(now=None) -> dict:
     return {
         'day': day,
         'bucket': bucket,
-        'slot_hours': 6,
+        'slot_hours': 1,
         'focus_genre': focus,
     }
 
@@ -374,7 +376,9 @@ def featured_score(item, *, now=None, recent_hits: float = 0.0) -> float:
         score += 2.8
 
     # Slot rotation among near-ties so «منتخب» reshuffles a few times per day.
-    score += _slot_jitter(item, now=now, salt='featured', amplitude=2.6)
+    # Strong enough to rotate similarly-ranked editorial picks each hour while
+    # quality, playability and engagement remain the dominant signals.
+    score += _slot_jitter(item, now=now, salt='featured', amplitude=7.5)
     return score
 
 
@@ -410,7 +414,7 @@ def popular_score(item, *, now=None, recent_hits: float = 0.0) -> float:
     if age_hours > 24 * 45:
         score *= 0.9
 
-    score += _slot_jitter(item, now=now, salt='popular', amplitude=2.0)
+    score += _slot_jitter(item, now=now, salt='popular', amplitude=4.0)
     return score
 
 
@@ -452,7 +456,7 @@ def dubbed_score(item, *, now=None, recent_hits: float = 0.0) -> float:
     if getattr(item, 'is_recommended', False):
         score += 1.2
 
-    score += _slot_jitter(item, now=now, salt='dubbed', amplitude=2.4)
+    score += _slot_jitter(item, now=now, salt='dubbed', amplitude=6.0)
     return score
 
 

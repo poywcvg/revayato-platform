@@ -673,7 +673,7 @@ def _taste_summary(profile):
         for slug, title in Genre.objects.values_list('slug', 'title')
     }
     top_genres = [
-        {'slug': slug, 'title': genre_lookup.get(slug, slug)}
+        {'slug': slug, 'title': genre_lookup.get(slug, slug), 'score': round(score, 2)}
         for slug, score in sorted(profile['genres'].items(), key=lambda row: -row[1])[:5]
         if score >= 1.5
     ]

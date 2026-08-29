@@ -22,7 +22,7 @@ else if (!await loadItemFromApi(slug.value, 'movie')) await loadItemFromApi(slug
 const item = computed(() => catalog.value.find(candidate => candidate.slug === slug.value) ?? null)
 const { trackTrailerPlay, trackWatchProgress } = useAnalyticsEvent()
 const watchProgress = useWatchProgress()
-const { ensurePlaybackSubtitles } = usePlaybackSubtitleEnsure()
+const { ensurePlaybackSubtitles, getPlaybackSubtitleStatus } = usePlaybackSubtitleEnsure()
 
 if (!item.value) throw createError({ statusCode: 404, message: 'محتوا پیدا نشد' })
 
@@ -259,6 +259,10 @@ const resumeProgress = computed(() => {
     ?? 0
   return Math.min(95, Math.max(0, local || fromItem))
 })
+const resumeSeconds = computed(() => {
+  if (mode.value === 'trailer' || !item.value) return 0
+  return watchProgress.resumeFor(item.value.id, item.value.type, currentEpisode.value?.id)?.position_seconds || 0
+})
 const selectedQuality = ref<PlaybackQuality>('auto')
 const playerToast = ref<(PlayerToastMeta & { id: number, message: string }) | null>(null)
 const softsubBanner = ref<{ tone: SoftsubBannerTone, title: string, detail: string } | null>(null)
@@ -267,6 +271,7 @@ let toastTimer: number | undefined
 let softsubBannerTimer: number | undefined
 let softsubPollTimer: number | undefined
 let softsubRetryTimer: number | undefined
+let softsubReportId: number | null = null
 let softsubEnsureRounds = 0
 const SOFTSUB_ENSURE_MAX_ROUNDS = 4
 let autoUpgradeDone = false
@@ -597,6 +602,18 @@ function handlePlaybackProgress(progress: number) {
   }
 }
 
+function handlePlaybackPosition(snapshot: { position_seconds: number, duration_seconds: number }) {
+  if (!item.value || mode.value !== 'full' || snapshot.duration_seconds <= 0) return
+  const progress = snapshot.position_seconds / snapshot.duration_seconds * 100
+  watchProgress.upsert(
+    item.value,
+    progress,
+    currentEpisode.value?.id,
+    snapshot.position_seconds,
+    snapshot.duration_seconds,
+  )
+}
+
 function handlePlaybackComplete(progress: number) {
   if (item.value && mode.value === 'full') {
     trackWatchProgress(item.value, progress, 'complete')
@@ -774,16 +791,14 @@ function applySoftsubWhenReady() {
 
 async function pollSoftsubOnce() {
   if (!item.value) return false
-  // Lightweight ensure check — never re-download the full series/movie payload
-  // while the progressive player is filling its buffer.
+  // Read-only status check: never re-queues extraction, calls providers, or
+  // increments the viewer report while the video buffer is filling.
   try {
-    const result = await ensurePlaybackSubtitles({
+    const result = await getPlaybackSubtitleStatus({
       type: item.value.type,
       slug: slug.value,
       episodeId: currentEpisode.value?.id || 0,
-      version: String(activeVersion.value?.kind || route.query.version || ''),
-      sourceUrl: String(route.query.source || activeVersion.value?.url || playerSource.value || ''),
-      sync: false,
+      reportId: softsubReportId,
     })
     if (result?.subtitle_tracks?.length && injectEnsuredSubtitleTracks(result.subtitle_tracks)) {
       applySoftsubWhenReady()
@@ -830,6 +845,7 @@ async function runPlaybackSubtitleEnsure(options: { showBanner?: boolean } = {})
       sourceUrl: String(route.query.source || activeVersion.value?.url || playerSource.value || ''),
       sync: true,
     })
+    softsubReportId = result?.report_id || softsubReportId
     if (result?.subtitle_tracks?.length && injectEnsuredSubtitleTracks(result.subtitle_tracks)) {
       applySoftsubWhenReady()
       return
@@ -845,8 +861,11 @@ async function runPlaybackSubtitleEnsure(options: { showBanner?: boolean } = {})
       return
     }
     if (result?.status === 'unavailable') {
+      // Transient queue/broker failures must not end the hunt: the beat drain
+      // re-enqueues server-side, and one bounded local retry covers restarts.
       clearSoftsubPoll()
-      showSoftsubBanner('failed', 0)
+      showSoftsubBanner('retrying', 0)
+      scheduleSoftsubRetry()
       return
     }
     // Only poll after the sync call when the worker still needs time —
@@ -854,7 +873,7 @@ async function runPlaybackSubtitleEnsure(options: { showBanner?: boolean } = {})
     if (result?.queued || result?.status === 'queued' || result?.status === 'loading') {
       // Remote container demux can outlive the short provider path; keep polling
       // long enough for a complete (never partial) WebVTT to be persisted.
-      startSoftsubPoll({ maxAttempts: 30, intervalMs: 4_000, retryAt: 4 })
+      startSoftsubPoll({ maxAttempts: 40, intervalMs: 3_000, retryAt: 6 })
       if (showBanner) showSoftsubBanner('finding', 0)
       return
     }
@@ -929,6 +948,7 @@ watch(() => confirmed.value, (isConfirmed, wasConfirmed) => {
 watch(() => currentEpisode.value?.id, (episodeId, previousId) => {
   if (!import.meta.client || mode.value !== 'full') return
   if (!episodeId || episodeId === previousId) return
+  softsubReportId = null
   resetSoftsubRetry()
   if (activeSubtitleSourceTracks.value.length) return
   void runPlaybackSubtitleEnsure({ showBanner: true })
@@ -972,6 +992,7 @@ useSeoMeta({
           :poster="currentEpisode?.thumbnail_url || item.playback?.poster_url || item.backdrop_url"
           :title="currentEpisode ? `${item.title} · فصل ${(currentEpisode.season_number || 1).toLocaleString('fa-IR')} · ${currentEpisode.title}` : item.title"
           :start-at-percent="resumeProgress"
+          :start-at-seconds="resumeSeconds"
           :quality="selectedQuality"
           :source-quality="playerSourceQuality"
           :available-qualities="playerQualities"
@@ -984,6 +1005,7 @@ useSeoMeta({
           @play="handlePlaybackStart"
           @pause="handlePlaybackPause"
           @progress="handlePlaybackProgress"
+          @position-snapshot="handlePlaybackPosition"
           @complete="handlePlaybackComplete"
           @buffer-health="handleBufferHealth"
           @quality-request="selectQuality"

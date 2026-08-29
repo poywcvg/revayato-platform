@@ -8,7 +8,14 @@ import type { AdminEditorConfig } from '~/types/editorSchema'
 export function createSeriesEditorConfig(): AdminEditorConfig {
   return {
     contentType: 'series',
-    api: () => useAdminSeries() as ReturnType<typeof useAdminSeries>,
+    api: () => {
+      const series = useAdminSeries()
+      const provider = useProviderImport()
+      return {
+        ...series,
+        discoverProvider: (id: number, options?: { force?: boolean }) => provider.discoverSeries(id, options),
+      }
+    },
     listBackHref: '/admin/series',
     newTitle: 'افزودن سریال جدید',
     editTitle: 'ویرایش سریال',

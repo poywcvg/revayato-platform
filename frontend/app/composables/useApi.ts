@@ -1,13 +1,28 @@
+import { accessTokenNeedsRefresh } from '~/utils/jwtSession'
+
 type ApiOptions = NonNullable<Parameters<typeof $fetch>[1]>
 
 interface RefreshResponse {
-  access: string
+  access?: string
   refresh?: string
 }
 
-const REFRESH_COOKIE_KEY = 'refresh_token'
+interface SessionState {
+  /** In-flight rotation, so concurrent callers share one refresh round-trip. */
+  refreshFlight?: Promise<string | null> | null
+  /**
+   * Server-only: the access token rotated during this render. Nuxt's server
+   * cookie refs read the *incoming* request header, so a token written mid-render
+   * is invisible to every later `useCookie` call — without this, each SSR request
+   * would keep presenting the superseded token and rotate again.
+   */
+  renderAccessToken?: string | null
+}
 
-let clientRefreshRequest: Promise<string | null> | null = null
+const RECOVERABLE_REFRESH_STATUSES = [400, 401, 403]
+
+/** The browser has exactly one session; SSR gets one state per request. */
+const browserSession: SessionState = {}
 
 function responseStatus(error: unknown) {
   if (!error || typeof error !== 'object') return 0
@@ -15,12 +30,54 @@ function responseStatus(error: unknown) {
   return candidate.status || candidate.statusCode || candidate.response?.status || 0
 }
 
+/** `refresh_token_rotated` (retry) vs `token_not_valid` (session is over). */
+function refreshFailureCode(error: unknown) {
+  if (!error || typeof error !== 'object') return ''
+  const candidate = error as { data?: { code?: unknown }; response?: { _data?: { code?: unknown } } }
+  const code = candidate.data?.code ?? candidate.response?._data?.code
+  return typeof code === 'string' ? code : ''
+}
+
+/**
+ * Client-only in-flight request coalescing for GETs. When several components
+ * mount together and each call `api()` for the same endpoint (genres, the home
+ * catalog, etc.), they would otherwise fire separate network requests. A single
+ * shared promise is returned so the backend sees one round-trip. Not used on the
+ * server (each SSR request is independent) and never for mutations (POST/PUT/...).
+ */
+const clientInflight = new Map<string, Promise<unknown>>()
+
+function inflightKey(method: string, request: string, options: ApiOptions): string | null {
+  if (method.toUpperCase() !== 'GET') return null
+  const query = options.query ? JSON.stringify(options.query) : ''
+  return `${request}::${query}`
+}
+
+function coalesceGet<T>(key: string | null, run: () => Promise<T>): Promise<T> {
+  if (!key || !import.meta.client) return run()
+  const existing = clientInflight.get(key)
+  if (existing) return existing as Promise<T>
+  const promise = run().finally(() => clientInflight.delete(key))
+  clientInflight.set(key, promise)
+  return promise
+}
+
 export const useApi = () => {
   const config = useRuntimeConfig()
-  const { accessToken, refreshToken, clearAuthCookies } = useAuthCookies()
+  const { accessToken, refreshToken, sessionFlag, hasSession, clearAuthCookies } = useAuthCookies()
   const personalizationConsent = useCookie('revayato_personalization')
+  // Resolved eagerly: useNuxtApp() needs the Nuxt context, which is not
+  // guaranteed to still be attached after the first await below.
+  const session: SessionState = import.meta.client
+    ? browserSession
+    : ((useNuxtApp() as unknown as { _revayatoSession?: SessionState })._revayatoSession ??= {})
 
-  function requestHeaders(options: ApiOptions, token = accessToken.value) {
+  function currentAccessToken() {
+    if (import.meta.server && session.renderAccessToken) return session.renderAccessToken
+    return accessToken.value
+  }
+
+  function requestHeaders(options: ApiOptions, token = currentAccessToken()) {
     const headers = new Headers(options.headers as HeadersInit | undefined)
     headers.set('Accept', 'application/json')
     if (token) headers.set('Authorization', `Bearer ${token}`)
@@ -31,55 +88,105 @@ export const useApi = () => {
     return headers
   }
 
-  async function refreshAccessToken() {
-    if (!refreshToken.value) return null
-    // Tab races: when two tabs (or an SSR cold-start + a tab) hit the refresh
-    // endpoint with the SAME token, the second call is rejected as already
-    // rotated/blacklisted and returns 400. That rejection is NOT the session
-    // dying — a newer refresh token simply won the race. Before giving up,
-    // probe the most recent refresh cookie we have; if a fresher token exists
-    // it is still valid and we can carry on instead of logging the user out.
-    const candidate = useCookie<string | null>(REFRESH_COOKIE_KEY, { default: () => null }).value
-    const tokenToUse = candidate || refreshToken.value
-    if (!tokenToUse) return null
-    try {
-      const result = await $fetch<RefreshResponse>('/auth/token/refresh/', {
-        baseURL: config.public.apiBase,
-        method: 'POST',
-        headers: { Accept: 'application/json' },
-        body: { refresh: tokenToUse },
-        retry: 0,
-      })
-      accessToken.value = result.access
+  /**
+   * Exchange the stored refresh token for a fresh access token.
+   *
+   * In the browser the request carries no token at all: the refresh cookie is
+   * HttpOnly, so the browser attaches it and the API answers with a rotated
+   * cookie the page never sees. A server render has no cookie jar of its own, so
+   * it reads the incoming header and passes the token in the body instead, then
+   * relays the rotated one onward through its own Set-Cookie.
+   */
+  async function rotateSession() {
+    const result = await $fetch<RefreshResponse>('/auth/token/refresh/', {
+      baseURL: import.meta.server ? config.apiInternalBase : config.public.apiBase,
+      method: 'POST',
+      headers: { Accept: 'application/json' },
+      body: import.meta.server ? { refresh: refreshToken.value } : undefined,
+      credentials: 'include',
+      retry: 0,
+    })
+    if (!result?.access) return null
+    accessToken.value = result.access
+    if (import.meta.server) {
+      session.renderAccessToken = result.access
+      // Pass the rotated session on to the browser. Both writes become
+      // Set-Cookie headers on this render's response.
       if (result.refresh) refreshToken.value = result.refresh
-      return result.access
+      sessionFlag.value = '1'
+    }
+    return result.access
+  }
+
+  async function refreshAccessToken() {
+    if (!hasSession()) return null
+    try {
+      return await rotateSession()
     } catch (error) {
       const status = responseStatus(error)
-      if (status === 400 || status === 401 || status === 403) {
-        // Refresh token truly invalid (expired, logged out elsewhere, or
-        // revoked). Session is over — clear cookies and surface the failure.
-        clearAuthCookies()
+      if (!RECOVERABLE_REFRESH_STATUSES.includes(status)) {
+        // Network outages, rate limits and server errors do not invalidate an
+        // otherwise valid persistent session. Let the caller retry later.
+        throw error
+      }
+      // Rotation blacklists a refresh token the instant it is used, so two tabs
+      // (or a retried request) can race and the loser is told its token is gone.
+      // The winner's rotated cookie is already in the shared jar, and the browser
+      // attaches it by itself — so a plain retry recovers a live session. A
+      // render cannot benefit: the cookie it would need was written after this
+      // request left the browser.
+      if (import.meta.client && refreshFailureCode(error) === 'refresh_token_rotated') {
+        try {
+          const rotated = await rotateSession()
+          if (rotated) return rotated
+        } catch (retryError) {
+          if (!RECOVERABLE_REFRESH_STATUSES.includes(responseStatus(retryError))) throw retryError
+        }
+      }
+      if (import.meta.server) {
+        // A render cannot prove the session is dead — it cannot see cookies the
+        // browser received after this request left. Report the failure and let
+        // the client, which reads the live jar, make that call.
         return null
       }
-      // Network outages, rate limits and server errors do not invalidate an
-      // otherwise valid persistent session. Let the caller retry later.
-      throw error
+      // Refresh token truly invalid (expired, logged out elsewhere, or revoked).
+      // The API has already retired its own cookies; drop what the page holds.
+      clearAuthCookies()
+      return null
     }
   }
 
-  async function sharedRefresh() {
-    if (!import.meta.client) return refreshAccessToken()
-    if (!clientRefreshRequest) {
-      clientRefreshRequest = refreshAccessToken().finally(() => {
-        clientRefreshRequest = null
+  function sharedRefresh() {
+    if (!session.refreshFlight) {
+      session.refreshFlight = refreshAccessToken().finally(() => {
+        session.refreshFlight = null
       })
     }
-    return clientRefreshRequest
+    return session.refreshFlight
   }
 
-  async function execute<T>(request: string, options: ApiOptions, token = accessToken.value) {
+  /**
+   * Rotate a fresh access token *before* it is needed, when one is missing or
+   * about to expire. Without this, the first call after an idle hour either 401s
+   * (an extra round-trip on every page) or — on the many endpoints that also
+   * serve anonymous traffic — quietly returns public data, which is exactly what
+   * "it logged me out" looks like even though the session never ended.
+   */
+  async function ensureFreshAccessToken() {
+    const token = currentAccessToken()
+    if (!hasSession()) return token
+    if (!accessTokenNeedsRefresh(token)) return token
+    try {
+      return await sharedRefresh()
+    } catch {
+      // Transient failure: keep whatever token we have and let the request try.
+      return currentAccessToken()
+    }
+  }
+
+  async function execute<T>(request: string, options: ApiOptions, token = currentAccessToken()) {
     const requestToken = request.startsWith('/auth/') ? null : token
-    return $fetch<T>(request, {
+    const run = () => $fetch<T>(request, {
       ...options,
       // Server-side catalog rendering should use Docker's private network instead
       // of making a public round-trip through Caddy. The browser keeps using the
@@ -87,23 +194,26 @@ export const useApi = () => {
       baseURL: import.meta.server ? config.apiInternalBase : config.public.apiBase,
       headers: requestHeaders(options, requestToken),
       retry: 0,
-      // Catalog list endpoints can exceed 12s under crawler DB load; keep SSR
-      // slightly higher so home does not paint an empty shell on every timeout.
-      timeout: options.timeout ?? (import.meta.server ? 20_000 : 10_000),
+      // A cold cache miss should not pin a Nitro worker for 20s; 10s is a safer
+      // ceiling and the slow catalog shell already passes its own lower timeout.
+      timeout: options.timeout ?? (import.meta.server ? 10_000 : 10_000),
     })
+    const key = inflightKey(options.method ?? 'GET', request, options)
+    return coalesceGet<T>(key, () => run() as Promise<T>)
   }
 
   async function api<T>(request: string, options: ApiOptions = {}) {
+    const authRequest = request.startsWith('/auth/')
+    const token = authRequest ? null : await ensureFreshAccessToken()
     try {
-      return await execute<T>(request, options)
+      return await execute<T>(request, options, token)
     } catch (error) {
-      const authRequest = request.startsWith('/auth/')
-      if (responseStatus(error) !== 401 || authRequest || !refreshToken.value) throw error
-      const token = await sharedRefresh()
-      if (!token) throw error
-      return execute<T>(request, options, token)
+      if (responseStatus(error) !== 401 || authRequest || !hasSession()) throw error
+      const refreshed = await sharedRefresh()
+      if (!refreshed) throw error
+      return execute<T>(request, options, refreshed)
     }
   }
 
-  return { api, refreshAccessToken }
+  return { api, refreshAccessToken, ensureFreshAccessToken }
 }

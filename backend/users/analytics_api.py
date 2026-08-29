@@ -31,7 +31,14 @@ from rest_framework.throttling import AnonRateThrottle, UserRateThrottle
 from apps.catalog.models import Episode, Movie, Series
 from apps.engagement.models import Like, Rating, UserActivityEvent, WatchlistItem
 from users.admin_api import IsStaffUser, StaffAdminThrottle
-from users.dashboard_api import VIEW_ACTIONS, _comparison, _device_breakdown, _rate, _top_searches
+from users.dashboard_api import (
+    ACTION_LABELS,
+    VIEW_ACTIONS,
+    _comparison,
+    _device_breakdown,
+    _rate,
+    _top_searches,
+)
 from users.presence import PRESENCE_WINDOW_SECONDS, touch_presence
 
 User = get_user_model()
@@ -348,6 +355,25 @@ def _active_by_weekday_from_logins(start, end, tz):
             'value': max(rows.get(day, 0), event_rows.get(day, 0)),
         }
         for day in order
+    ]
+
+
+def _action_breakdown(events, limit=12):
+    """Real event-type mix — replaces device telemetry that consent rules never record."""
+    rows = list(
+        events
+        .values('action')
+        .annotate(count=Count('id'))
+        .order_by('-count', 'action')[:limit]
+    )
+    labels = dict(ACTION_LABELS)
+    return [
+        {
+            'id': row['action'],
+            'label': labels.get(row['action'], row['action']),
+            'value': row['count'],
+        }
+        for row in rows
     ]
 
 
@@ -734,28 +760,38 @@ def analytics_overview(request):
     win = _window(days)
 
     total_users = User.objects.count()
-    active_users = User.objects.filter(
+    active_user_ids = set(User.objects.filter(
         is_active=True,
         last_login__gte=win['start'],
         last_login__lte=win['end'],
-    ).count()
-    previous_active = User.objects.filter(
+    ).values_list('id', flat=True))
+    previous_active_ids = set(User.objects.filter(
         is_active=True,
         last_login__gte=win['previous_start'],
         last_login__lt=win['previous_end'],
-    ).count()
-    # Also count distinct event actors in period.
-    active_from_events = (
+    ).values_list('id', flat=True))
+    # Use a union, not max(counts): users active through events and users with
+    # a recent login can be disjoint sets.
+    active_user_ids.update(
         UserActivityEvent.objects.filter(
             created_at__gte=win['start'],
             created_at__lte=win['end'],
             user_id__isnull=False,
         )
-        .values('user_id')
+        .values_list('user_id', flat=True)
         .distinct()
-        .count()
     )
-    active_users = max(active_users, active_from_events)
+    previous_active_ids.update(
+        UserActivityEvent.objects.filter(
+            created_at__gte=win['previous_start'],
+            created_at__lt=win['previous_end'],
+            user_id__isnull=False,
+        )
+        .values_list('user_id', flat=True)
+        .distinct()
+    )
+    active_users = len(active_user_ids)
+    previous_active = len(previous_active_ids)
 
     today_start = win['local_now'].replace(hour=0, minute=0, second=0, microsecond=0)
     new_today = User.objects.filter(date_joined__gte=today_start).count()
@@ -777,6 +813,8 @@ def analytics_overview(request):
 
     watch_hours = _watch_hours_from_db(win['start'], win['end'])
     previous_watch_hours = _watch_hours_from_db(win['previous_start'], win['previous_end'])
+
+    likes_period = Like.objects.filter(created_at__gte=win['start'], created_at__lte=win['end']).count()
 
     dubbed = Movie.objects.filter(is_published=True, is_dubbed=True).count() + Series.objects.filter(
         is_published=True, is_dubbed=True,
@@ -827,12 +865,12 @@ def analytics_overview(request):
                 'hint': 'از واچ‌پارتی و رویداد پخش',
             },
             {
-                'id': 'revenue',
-                'label': 'درآمد',
-                'value': None,
+                'id': 'likes_total',
+                'label': 'لایک‌ها',
+                'value': Like.objects.count(),
                 'delta_percent': None,
-                'format': 'currency',
-                'hint': 'مدل درآمد هنوز فعال نیست',
+                'format': 'number',
+                'hint': f'{likes_period} لایک در بازه',
             },
         ],
         'realtime': _online_snapshot(win['now']),
@@ -879,6 +917,7 @@ def analytics_users(request):
             ),
         },
         'active_by_weekday': _active_by_weekday_from_logins(win['start'], win['end'], win['tz']),
+        'action_breakdown': _action_breakdown(events),
         'devices': _normalize_device_breakdown(_device_breakdown(events)),
         'top_active_users': _top_active_users(win['start'], win['end'], limit=10),
         'totals': {

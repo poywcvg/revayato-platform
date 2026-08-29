@@ -100,6 +100,14 @@ class WatchPartyConsumer(AsyncJsonWebsocketConsumer):
                     'type': 'playback.sync.response',
                     'playback_state': playback,
                 })
+                # Persisted sync snapshots are deliberately throttled. Also ask
+                # the connected host for its exact in-memory player state so a
+                # late join/reconnect does not visibly jump to an older position.
+                await self.channel_layer.group_send(self.group_name, {
+                    'type': 'watchparty.event',
+                    'payload': {'type': 'playback.sync.requested'},
+                    'sender_channel': self.channel_name,
+                })
             else:
                 await self._error('room_unavailable', 'This watch party is no longer available.')
             return

@@ -330,7 +330,7 @@ function onKeydown(event: KeyboardEvent) {
 }
 
 function focusFromShortcut(event: KeyboardEvent) {
-  if (window.matchMedia('(max-width: 767px)').matches) return
+  if (window.matchMedia('(max-width: 1023px)').matches) return
   const target = event.target as HTMLElement | null
   if (target?.matches('input, textarea, select, [contenteditable="true"]')) return
   event.preventDefault()
@@ -586,15 +586,15 @@ watch(() => props.autofocus, async (value) => {
   height: 2.75rem;
   align-items: center;
   gap: .5rem;
-  padding-inline: .8rem .65rem;
+  padding-inline: .85rem .65rem;
   overflow: hidden;
   border: 1px solid color-mix(in srgb, var(--theme-border) 88%, transparent);
-  border-radius: 9999px;
+  border-radius: .7rem;
   background:
     linear-gradient(180deg, rgb(255 255 255 / 5%), transparent 55%),
     color-mix(in srgb, var(--theme-bg-elevated) 38%, transparent);
   color: var(--search-fg);
-  transition: border-color 200ms ease, background-color 200ms ease, color 180ms ease, border-radius 160ms ease;
+  transition: border-color 200ms ease, background-color 200ms ease, color 180ms ease;
   -webkit-backdrop-filter: blur(14px) saturate(140%);
   backdrop-filter: blur(14px) saturate(140%);
 }
@@ -608,10 +608,6 @@ watch(() => props.autofocus, async (value) => {
   background:
     linear-gradient(180deg, rgb(255 255 255 / 7%), transparent 55%),
     color-mix(in srgb, var(--theme-bg-surface) 55%, transparent);
-}
-
-.header-search--open {
-  border-radius: 1.15rem 1.15rem .35rem .35rem;
 }
 
 .header-search__icon {
@@ -631,11 +627,15 @@ watch(() => props.autofocus, async (value) => {
   height: 100%;
   border: 0;
   background: transparent;
-  color: var(--theme-text-primary);
+  color: var(--theme-text-secondary);
   font-size: .875rem;
   font-weight: 500;
   letter-spacing: -.01em;
   outline: none;
+}
+
+.header-search:focus-within .header-search__input {
+  color: var(--theme-text-primary);
 }
 
 .header-search__input::placeholder {
@@ -662,7 +662,7 @@ watch(() => props.autofocus, async (value) => {
   -webkit-tap-highlight-color: transparent;
 }
 
-@media (max-width: 767px) {
+@media (max-width: 1023px) {
   .header-search {
     height: 2.75rem;
     padding-inline: .7rem .45rem;
@@ -698,22 +698,21 @@ watch(() => props.autofocus, async (value) => {
 .header-search__panel {
   position: absolute;
   inset-inline: 0;
-  top: calc(100% - 1px);
+  top: calc(100% + .5rem);
   z-index: 80;
   max-height: min(70dvh, 28rem);
   overflow: auto;
   border: 1px solid color-mix(in srgb, var(--theme-accent-primary) 28%, var(--theme-border));
-  border-top: 0;
-  border-radius: 0 0 1.15rem 1.15rem;
-  background: color-mix(in srgb, var(--theme-bg-surface) 96%, transparent);
+  border-radius: .8rem;
+  background: color-mix(in srgb, var(--theme-bg-surface) 98%, transparent);
   box-shadow: 0 18px 40px rgb(0 0 0 / 28%);
   -webkit-backdrop-filter: blur(18px) saturate(140%);
   backdrop-filter: blur(18px) saturate(140%);
 }
 
 .header-search__section-label {
-  padding: .7rem .9rem .35rem;
-  color: var(--theme-text-muted);
+  padding: .75rem 1rem .3rem;
+  color: color-mix(in srgb, var(--theme-text-primary) 78%, transparent);
   font-size: .6875rem;
   font-weight: 800;
 }
@@ -723,7 +722,7 @@ watch(() => props.autofocus, async (value) => {
   width: 100%;
   align-items: center;
   gap: .75rem;
-  padding: .55rem .85rem;
+  padding: .5rem 1rem;
   text-align: right;
   transition: background-color 140ms ease;
 }

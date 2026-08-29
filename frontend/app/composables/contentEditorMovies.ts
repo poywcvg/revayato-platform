@@ -15,6 +15,7 @@ export function createMovieEditorConfig(): AdminEditorConfig {
         const result = await provider.crawlMovieDownloads(id, options as { page_url?: string; replace?: boolean })
         return result as { imported_count: number; movie: AdminMovie; series?: never }
       },
+      discoverProvider: (id, options) => provider.discoverMovie(id, options),
     }
   }
 

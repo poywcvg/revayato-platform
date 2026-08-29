@@ -404,6 +404,46 @@ class SubtitleStarProviderTests(SimpleTestCase):
         )
         self.assertTrue(all(item.imdb_id == 'tt12345678' for item in matches))
 
+    def test_series_lookup_stops_after_first_complete_season_pack(self):
+        search = _Response(
+            body=b'<a href="/persian-subtitles-example-series/">Example</a>',
+            url='https://subtitlestar.com/?s=Example',
+            content_type='text/html',
+            filename='',
+        )
+        detail = _Response(
+            body=(
+                b'<a href="https://www.imdb.com/title/tt12345678/">IMDb</a>'
+                b'<a href="https://file-share.io/example-All-S01.zip">S01</a>'
+                b'<a href="https://file-share.io/example-All-S02.zip">S02</a>'
+            ),
+            url='https://subtitlestar.com/persian-subtitles-example-series/',
+            content_type='text/html',
+            filename='',
+        )
+        persian_srt = (
+            '1\n00:00:01,000 --> 00:00:03,000\nسلام دنیا، این زیرنویس فارسی است.\n'
+        ).encode('utf-8')
+        first_archive = _Response(
+            body=_zip_payload({'Example.S01E01.WEB-DL.Farsi.srt': persian_srt}),
+            url='https://file-share.io/example-All-S01.zip',
+            content_type='application/zip',
+            filename='example-All-S01.zip',
+        )
+        series = SimpleNamespace(
+            imdb_id='tt12345678', original_title='Example Series',
+            title='سریال نمونه', start_year=2024,
+        )
+        fetches = [search, detail, first_archive]
+        with patch('apps.catalog.subtitle_star._fetch', side_effect=fetches) as fetch:
+            matches = find_series_episode_subtitles(
+                series,
+                episode_videos={(1, 1): ['https://media.example/Example.S01E01.WEB-DL.mp4']},
+            )
+
+        self.assertEqual(len(matches), 1)
+        self.assertEqual(fetch.call_count, 3)
+
 
 class SubtitleStarPlaybackIntegrationTests(SimpleTestCase):
     def test_attach_saves_webvtt_and_binds_compatible_sources(self):

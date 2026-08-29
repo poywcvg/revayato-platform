@@ -4,11 +4,18 @@ import type { AppErrorDetails, AppNotification, AppNotificationType } from '~/ty
 const STORAGE_KEY = 'revayato:notifications:v1'
 const MAX_NOTIFICATIONS = 30
 
+export type NotifyAction = {
+  label: string
+  onClick: (event: MouseEvent) => void
+}
+
 export type NotifyOptions = {
   inbox?: boolean
   href?: string
   reason?: string
   duration?: number
+  /** Up to two in-toast buttons rendered as divided actions (primary + secondary). */
+  actions?: [NotifyAction, NotifyAction?] | NotifyAction[]
 }
 
 function toastDescription(message: string, reason?: string) {
@@ -39,9 +46,12 @@ export function useNotifications() {
   function show(type: AppNotificationType, title: string, message: string, options: NotifyOptions = {}) {
     const reason = options.reason?.trim() || undefined
     const duration = options.duration ?? (type === 'error' ? (reason ? 8500 : 6500) : 4500)
+    const [primaryAction, secondaryAction] = options.actions ?? []
     toast[type](title, {
       description: toastDescription(message, reason),
       duration,
+      ...(primaryAction ? { action: { label: primaryAction.label, onClick: primaryAction.onClick } } : {}),
+      ...(secondaryAction ? { cancel: { label: secondaryAction.label, onClick: secondaryAction.onClick } } : {}),
     })
     if (options.inbox) {
       notifications.value = [{

@@ -41,8 +41,6 @@ const remoteDubbed = ref<Movie[]>([])
 const remotePopularSeries = ref<Movie[]>([])
 /** Dedicated «تازه اضافه‌شده‌ها» rail — independent of the lean catalog merge. */
 const remoteRecent = ref<Movie[]>([])
-/** Tiny popular pool for hero SSR — avoids waiting on the multi-endpoint catalog merge. */
-const remoteHero = ref<Movie[]>([])
 const shellPending = ref(true)
 const railMeta = ref<{
   focus_genre?: string
@@ -52,7 +50,6 @@ const railMeta = ref<{
 
 const heroSource = computed(() => {
   if (catalog.value.length) return catalog.value
-  if (remoteHero.value.length) return remoteHero.value
   return remoteRecent.value
 })
 
@@ -184,17 +181,10 @@ async function loadRecentRail() {
 }
 
 async function loadHeroShell() {
-  const mediaBase = String(config.public.mediaCdnBaseUrl)
-  try {
-    const response = await api<ApiListResponse<ApiCatalogItem> | ApiCatalogItem[]>('/movies/', {
-      query: { limit: 12, sort: 'popular' },
-      timeout: 6_000,
-    })
-    remoteHero.value = unwrapApiList(response).map(item => adaptApiCatalogListItem(item, 'movie', mediaBase))
-  }
-  catch {
-    remoteHero.value = []
-  }
+  // The home catalog load already fetches /movies/?limit=12&sort=popular (the
+  // popularMovies=12 slice in useContent's home mode), so we reuse that instead
+  // of firing the identical request a second time.
+  await loadFromApi(false, 'home')
 }
 
 async function loadRemoteDiscovery() {

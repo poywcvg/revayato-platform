@@ -14,6 +14,8 @@ from pathlib import Path
 APP_ROOT = Path(__file__).resolve().parents[1]
 IMPORT_SCRIPT = APP_ROOT / 'scripts' / 'import_missing_myf2m_batch.py'
 SIZE_SCRIPT = APP_ROOT / 'scripts' / 'backfill_download_sizes.py'
+SERIES_REFRESH_SCRIPT = APP_ROOT / 'scripts' / 'refresh_series_new_episodes.py'
+MOVIE_REFRESH_SCRIPT = APP_ROOT / 'scripts' / 'refresh_movie_download_links.py'
 STOP = threading.Event()
 CHILD: subprocess.Popen | None = None
 
@@ -75,20 +77,36 @@ def main() -> int:
     size_probe_batch = _integer('MYF2M_SIZE_PROBE_BATCH', 600, minimum=50)
     size_limit = _integer('MYF2M_SIZE_LIMIT', 0, minimum=0)
     probe_sizes = str(os.environ.get('MYF2M_PROBE_SIZES', '1')).strip().lower() in {'1', 'true', 'yes', 'on'}
+    refresh_delay = _number('MYF2M_REFRESH_DELAY_SECONDS', 0.7, minimum=0.1)
+    series_refresh_limit = _integer('MYF2M_SERIES_REFRESH_LIMIT', 150, minimum=1)
+    series_refresh_year_min = _integer('MYF2M_SERIES_REFRESH_YEAR_MIN', 2023, minimum=0)
+    movie_refresh_limit = _integer('MYF2M_MOVIE_REFRESH_LIMIT', 200, minimum=1)
+    crawl_workers = _integer('MYF2M_CRAWL_WORKERS', 6, minimum=1)
+    listing_delay = _number('MYF2M_LISTING_DELAY', 0.08, minimum=0.0)
+    recent_movie_pages = _integer('MYF2M_RECENT_MOVIE_PAGES', 16, minimum=1)
+    recent_series_pages = _integer('MYF2M_RECENT_SERIES_PAGES', 10, minimum=1)
+    deep_sweep_every = _integer('MYF2M_DEEP_SWEEP_EVERY_ROUNDS', 12, minimum=1)
+    checkpoint = Path(os.environ.get(
+        'MYF2M_CRAWL_CHECKPOINT',
+        '/var/lib/revayato-crawler/myf2m-listings.json',
+    ))
 
-    importer = [
-        sys.executable,
-        str(IMPORT_SCRIPT),
-        '--target', '0',
-        '--max-movie-pages', '500',
-        '--max-series-pages', '200',
-        '--delay', str(request_delay),
-        '--new-only',
-        '--require-playback',
-        '--no-queue-softsub',
-        '--no-dornatv-enrich',
-        *(('--probe-sizes',) if probe_sizes else ()),
-    ]
+    def importer(*, deep: bool) -> list[str]:
+        return [
+            sys.executable,
+            str(IMPORT_SCRIPT),
+            '--target', '0',
+            '--max-movie-pages', '500' if deep else str(recent_movie_pages),
+            '--max-series-pages', '200' if deep else str(recent_series_pages),
+            '--delay', str(request_delay),
+            '--listing-delay', str(listing_delay),
+            '--workers', str(crawl_workers),
+            '--checkpoint', str(checkpoint),
+            '--resume',
+            '--new-only',
+            '--require-playback',
+            *(('--probe-sizes',) if probe_sizes else ()),
+        ]
     sizes = [
         sys.executable,
         str(SIZE_SCRIPT),
@@ -97,12 +115,49 @@ def main() -> int:
         '--probe-batch-size', str(size_probe_batch),
         '--limit', str(size_limit),
     ]
+    # Re-crawl pages of EXISTING published titles so a new episode or quality
+    # that Film2Media adds after the first import also lands automatically.
+    series_refresh = [
+        sys.executable,
+        str(SERIES_REFRESH_SCRIPT),
+        '--delay', str(max(refresh_delay, request_delay)),
+        '--limit', str(series_refresh_limit),
+        '--workers', str(crawl_workers),
+        *(('--year-min', str(series_refresh_year_min)) if series_refresh_year_min else ()),
+    ]
+    movie_refresh = [
+        sys.executable,
+        str(MOVIE_REFRESH_SCRIPT),
+        '--delay', str(refresh_delay),
+        '--limit', str(movie_refresh_limit),
+        '--order', os.environ.get('MYF2M_MOVIE_REFRESH_ORDER', 'stale').strip().lower(),
+    ]
 
     round_number = 0
     while not STOP.is_set():
         round_number += 1
         print(f'MYF2M_LOOP_ROUND round={round_number}', flush=True)
-        _run('catalog', importer)
+        deep_round = round_number % deep_sweep_every == 0
+        # Avoid reading the first listing pages twice on a deep round. During
+        # initial coverage (deep every round), start the full missing-title
+        # sweep immediately; later configurations retain the fast delta lane.
+        if deep_round:
+            import_code = _run('catalog-deep', importer(deep=True))
+        else:
+            import_code = _run('catalog-recent', importer(deep=False))
+        # A checkpoint is only for an interrupted listing walk. Once a complete
+        # pass succeeds, remove it so the next round starts at the newest pages.
+        # If the process/container dies mid-pass, the durable file survives and
+        # --resume continues from the last completed listing page.
+        if import_code == 0:
+            try:
+                checkpoint.unlink(missing_ok=True)
+            except OSError as exc:
+                print(f'MYF2M_CHECKPOINT_CLEANUP_FAILED {exc}', flush=True)
+        if not STOP.is_set():
+            _run('series-refresh', series_refresh)
+        if not STOP.is_set():
+            _run('movie-refresh', movie_refresh)
         if not STOP.is_set():
             _run('sizes', sizes)
         if not STOP.is_set():

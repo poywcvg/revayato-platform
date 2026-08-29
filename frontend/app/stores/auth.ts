@@ -8,12 +8,21 @@ function errorStatus(error: unknown) {
 }
 
 export const useAuthStore = defineStore('auth', () => {
-  const { accessToken, refreshToken, clearAuthCookies } = useAuthCookies()
+  const { accessToken, hasSession, clearAuthCookies } = useAuthCookies()
   const user = ref<Me | null>(null)
   const initialized = ref(false)
   const pending = ref(false)
 
-  const isAuthenticated = computed(() => Boolean(accessToken.value || refreshToken.value))
+  // The refresh token is HttpOnly, so "am I signed in?" is answered by the
+  // credential-free session flag the API sets beside it — not by reading it.
+  const isAuthenticated = computed(() => Boolean(accessToken.value || hasSession()))
+
+  function endSession() {
+    clearAuthCookies()
+    user.value = null
+    initialized.value = true
+    if (import.meta.client) useNotifications().clear()
+  }
 
   async function fetchMe() {
     if (!isAuthenticated.value) {
@@ -31,11 +40,12 @@ export const useAuthStore = defineStore('auth', () => {
       }
       return user.value
     } catch (error) {
-      if (errorStatus(error) === 401 || errorStatus(error) === 403) {
-        clearAuthCookies()
-        user.value = null
-        if (import.meta.client) useNotifications().clear()
-      }
+      // Only a failed *refresh* can prove a session is over, and that path has
+      // already cleared the cookies by the time we get here. A 401/403 while a
+      // session is still on record means something else went wrong (a request
+      // that raced rotation, a blip on one endpoint) — dropping the session then
+      // is what logged people out for no reason.
+      if ([401, 403].includes(errorStatus(error)) && !hasSession()) endSession()
       throw error
     } finally {
       initialized.value = true
@@ -56,8 +66,11 @@ export const useAuthStore = defineStore('auth', () => {
   }
 
   function applySession(session: AuthSession) {
+    // `session.refresh` is deliberately ignored: the API delivered the browser's
+    // copy as an HttpOnly cookie in this same response, which is what survives
+    // Safari's seven-day cap on script-written cookies. The body still carries it
+    // for the native app.
     accessToken.value = session.access
-    refreshToken.value = session.refresh
     user.value = session.user
     initialized.value = true
     if (import.meta.client) {
@@ -98,19 +111,15 @@ export const useAuthStore = defineStore('auth', () => {
   }
 
   async function logout() {
-    const refresh = refreshToken.value
     try {
-      if (refresh) {
-        const { api } = useApi()
-        await api('/auth/logout/', { method: 'POST', body: { refresh } })
-      }
+      const { api } = useApi()
+      // No body: the refresh token the API needs to blacklist is in the HttpOnly
+      // cookie it issued, and this response is what retires it.
+      await api('/auth/logout/', { method: 'POST', credentials: 'include' })
     } catch {
       // Local logout must always finish, even when the API is unavailable.
     } finally {
-      clearAuthCookies()
-      user.value = null
-      initialized.value = true
-      if (import.meta.client) useNotifications().clear()
+      endSession()
     }
   }
 
@@ -131,7 +140,6 @@ export const useAuthStore = defineStore('auth', () => {
 
   return {
     accessToken,
-    refreshToken,
     user,
     initialized,
     pending,

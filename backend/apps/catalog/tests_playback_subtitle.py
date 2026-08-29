@@ -337,6 +337,28 @@ class PlaybackSubtitleStatusTests(TestCase):
         self.assertEqual(response.data.get('message'), 'report_not_found')
         self.assertFalse(response.data.get('has_subtitle_tracks'))
 
+    def test_status_rejects_report_for_another_title(self):
+        other = Movie.objects.create(
+            title='Other Status Movie',
+            slug='other-status-movie-test',
+            is_published=True,
+        )
+        gap = PlaybackSubtitleGap.objects.create(
+            content_type='movie',
+            object_id=other.pk,
+            episode_id=0,
+            slug=other.slug,
+            title=other.title,
+            status=PlaybackSubtitleGap.Status.QUEUED,
+        )
+        response = self.client.get(
+            '/api/catalog/playback-subtitle-status/',
+            {'report_id': gap.pk, 'content_type': 'movie', 'slug': self.movie.slug},
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data.get('status'), 'invalid_report')
+        self.assertEqual(response.data.get('message'), 'report_target_mismatch')
+
     def test_status_invalid(self):
         response = self.client.get(
             '/api/catalog/playback-subtitle-status/',

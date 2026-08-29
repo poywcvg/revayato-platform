@@ -8,6 +8,25 @@ www.{$SITE_DOMAIN} {
 	redir https://{$SITE_DOMAIN}{uri} permanent
 }
 
+# Nilla is an independent Docker Compose project. Only its internal nginx
+# joins this edge network; its database, Redis, backend and frontend are not
+# published on host ports.
+www.nilla.shop {
+	redir https://nilla.shop{uri} permanent
+}
+
+nilla.shop {
+	encode zstd gzip
+	reverse_proxy nilla-web:80
+	header {
+		-Server
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options "nosniff"
+		X-Frame-Options "DENY"
+		Referrer-Policy "strict-origin-when-cross-origin"
+	}
+}
+
 # ---- Shared handler set, imported by both the public HTTPS site and the
 # ---- native-app direct-origin fallback (plain HTTP on :8080). Keeps the two
 # ---- in lockstep so the app gets identical routes on either path.

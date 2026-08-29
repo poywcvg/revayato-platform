@@ -8,6 +8,8 @@ export interface WatchProgressEntry {
   progress_percent: number
   updated_at: string
   episode_id?: number
+  position_seconds?: number
+  duration_seconds?: number
 }
 
 const STORAGE_KEY = 'revayato:watch-progress:v1'
@@ -18,7 +20,12 @@ function storageKeyFor(userId: number | string | null | undefined) {
 }
 
 function clampProgress(value: number) {
-  return Math.min(95, Math.max(0, Math.round(value)))
+  return Math.min(100, Math.max(0, Math.round(value)))
+}
+
+function finiteSeconds(value: unknown) {
+  const seconds = Number(value)
+  return Number.isFinite(seconds) && seconds >= 0 ? Math.round(seconds) : undefined
 }
 
 /**
@@ -54,6 +61,8 @@ export function useWatchProgress() {
           .map(item => ({
             ...item,
             progress_percent: clampProgress(Number(item.progress_percent) || 0),
+            position_seconds: finiteSeconds(item.position_seconds),
+            duration_seconds: finiteSeconds(item.duration_seconds),
           }))
           .filter(item => item.progress_percent > 1 && item.progress_percent < 96)
       }
@@ -81,7 +90,13 @@ export function useWatchProgress() {
     }
   }
 
-  function upsert(item: Pick<Movie, 'id' | 'slug' | 'title' | 'type' | 'duration_minutes'>, progressPercent: number, episodeId?: number) {
+  function upsert(
+    item: Pick<Movie, 'id' | 'slug' | 'title' | 'type' | 'duration_minutes'>,
+    progressPercent: number,
+    episodeId?: number,
+    positionSeconds?: number,
+    durationSeconds?: number,
+  ) {
     const progress = clampProgress(progressPercent)
     if (progress <= 1) return
     try {
@@ -104,6 +119,8 @@ export function useWatchProgress() {
       progress_percent: progress,
       updated_at: new Date().toISOString(),
       episode_id: episodeId,
+      position_seconds: finiteSeconds(positionSeconds) ?? previous?.position_seconds,
+      duration_seconds: finiteSeconds(durationSeconds) ?? previous?.duration_seconds,
     }
     entries.value = [
       next,
@@ -143,6 +160,12 @@ export function useWatchProgress() {
     return entry.progress_percent || 0
   }
 
+  function resumeFor(objectId: number, contentType: ContentType = 'movie', episodeId?: number) {
+    const entry = entries.value.find(item => item.content_type === contentType && item.object_id === objectId)
+    if (!entry || (contentType === 'series' && episodeId && entry.episode_id !== episodeId)) return null
+    return entry
+  }
+
   const continueWatching = computed(() => {
     const byKey = new Map(catalog.value.map(item => [`${item.type}:${item.id}`, item]))
     return entries.value
@@ -152,6 +175,9 @@ export function useWatchProgress() {
         return {
           ...item,
           progress_percent: entry.progress_percent,
+          resume_episode_id: entry.episode_id,
+          resume_position_seconds: entry.position_seconds,
+          resume_duration_seconds: entry.duration_seconds,
         } as Movie
       })
       .filter((item): item is Movie => Boolean(item))
@@ -176,6 +202,7 @@ export function useWatchProgress() {
     entries: readonly(entries),
     continueWatching,
     progressFor,
+    resumeFor,
     upsert,
     remove,
     hydrate,

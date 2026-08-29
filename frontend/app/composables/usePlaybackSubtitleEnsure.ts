@@ -47,5 +47,22 @@ export function usePlaybackSubtitleEnsure() {
     })
   }
 
-  return { ensurePlaybackSubtitles }
+  async function getPlaybackSubtitleStatus(input: {
+    type: ContentType
+    slug: string
+    episodeId?: number | null
+    reportId?: number | null
+  }) {
+    return api<PlaybackSubtitleEnsureResult>('/catalog/playback-subtitle-status/', {
+      query: {
+        content_type: input.type,
+        slug: input.slug,
+        episode_id: input.episodeId || 0,
+        ...(input.reportId ? { report_id: input.reportId } : {}),
+      },
+      timeout: 8_000,
+    })
+  }
+
+  return { ensurePlaybackSubtitles, getPlaybackSubtitleStatus }
 }

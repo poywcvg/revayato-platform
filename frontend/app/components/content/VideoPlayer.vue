@@ -10,6 +10,7 @@ const props = withDefaults(defineProps<{
   title?: string
   autoplay?: boolean
   startAtPercent?: number
+  startAtSeconds?: number
   quality?: PlaybackQuality
   sourceQuality?: string
   availableQualities?: PlaybackQuality[]
@@ -28,6 +29,7 @@ const props = withDefaults(defineProps<{
   title: 'ویدیو',
   autoplay: false,
   startAtPercent: 0,
+  startAtSeconds: 0,
   quality: 'auto',
   sourceQuality: '',
   availableQualities: () => [],
@@ -48,6 +50,7 @@ const emit = defineEmits<{
   pause: [progressPercent: number]
   progress: [progressPercent: number]
   position: [progressPercent: number]
+  positionSnapshot: [snapshot: PlaybackSnapshot]
   complete: [progressPercent: number]
   ready: [durationSeconds: number]
   playbackPlay: [snapshot: PlaybackSnapshot]
@@ -60,6 +63,7 @@ const emit = defineEmits<{
   sourceFailed: [payload: { src: string, code: number }]
   notice: [message: string]
   fullscreenChange: [active: boolean]
+  syncCorrection: [payload: { type: 'seek' | 'rate', drift: number }]
 }>()
 
 type SettingsTab = 'episodes' | 'version' | 'quality' | 'speed' | 'subtitle'
@@ -94,9 +98,12 @@ const subtitleOffset = ref(0)
 const selectedSeason = ref(0)
 
 let hls: Hls | null = null
+let hlsFatalNetworkRetries = 0
+let hlsMediaRecoveryDone = false
 let trackingReady = false
 let lastProgressBucket = 0
 let lastPosition = -1
+let lastSnapshotSecond = -1
 let resumeApplied = false
 let readyEmitted = false
 let applyingRemotePlayback = false
@@ -120,6 +127,19 @@ const MEDIA_ERR_NETWORK = 2
 const MEDIA_ERR_DECODE = 3
 const MEDIA_ERR_SRC_NOT_SUPPORTED = 4
 const rateOptions = [0.5, 0.75, 1, 1.25, 1.5, 2]
+
+type VendorDocument = Document & {
+  webkitFullscreenElement?: Element | null
+  webkitExitFullscreen?: () => Promise<void>
+}
+type IOSVideo = HTMLVideoElement & { webkitEnterFullscreen?: () => void }
+
+/** Fullscreen element across standard and legacy WebKit implementations. */
+function activeFullscreenElement(): Element | null {
+  if (typeof document === 'undefined') return null
+  const doc = document as VendorDocument
+  return document.fullscreenElement || doc.webkitFullscreenElement || null
+}
 
 const progressPercent = computed(() => duration.value > 0
   ? Math.min(100, Math.max(0, currentTime.value / duration.value * 100))
@@ -291,7 +311,7 @@ async function applyRemotePlayback(state: PlaybackSnapshot) {
   const targetRate = Math.min(4, Math.max(0.25, state.playback_rate || 1))
   const currentPosition = Number.isFinite(element.currentTime) ? element.currentTime : 0
   const drift = state.position_seconds - currentPosition
-  const seekThreshold = props.partySync && state.is_playing ? 0.85 : state.is_playing ? 1.25 : 0.12
+  const seekThreshold = props.partySync && state.is_playing ? 0.6 : state.is_playing ? 1.25 : 0.12
   if (remoteRateResetTimer) clearTimeout(remoteRateResetTimer)
   remoteRateResetTimer = undefined
   applyingRemotePlayback = true
@@ -299,12 +319,14 @@ async function applyRemotePlayback(state: PlaybackSnapshot) {
     if (Math.abs(drift) > seekThreshold) {
       element.currentTime = Math.max(0, Math.min(state.position_seconds, element.duration || state.position_seconds))
       element.playbackRate = targetRate
-    } else if (state.is_playing && Math.abs(drift) > 0.12 && !element.paused) {
-      const correction = Math.min(0.06, Math.abs(drift) * 0.12) * Math.sign(drift)
+      emit('syncCorrection', { type: 'seek', drift })
+    } else if (state.is_playing && Math.abs(drift) > 0.1 && !element.paused) {
+      const correction = Math.min(0.08, Math.abs(drift) * 0.15) * Math.sign(drift)
       element.playbackRate = Math.min(4, Math.max(0.25, targetRate + correction))
+      emit('syncCorrection', { type: 'rate', drift })
       remoteRateResetTimer = setTimeout(() => {
         if (video.value === element && !applyingRemotePlayback) element.playbackRate = targetRate
-      }, 5000)
+      }, 6000)
     } else {
       element.playbackRate = targetRate
     }
@@ -364,6 +386,11 @@ function handleTimeUpdate() {
     lastPosition = progress
     emit('position', progress)
   }
+  const snapshotSecond = Math.floor(element.currentTime / 10) * 10
+  if (snapshotSecond >= 10 && snapshotSecond !== lastSnapshotSecond) {
+    lastSnapshotSecond = snapshotSecond
+    emit('positionSnapshot', getPlaybackSnapshot())
+  }
   const bucket = Math.floor(progress / 10) * 10
   if (bucket >= 10 && bucket > lastProgressBucket && bucket < 100) {
     lastProgressBucket = bucket
@@ -390,6 +417,11 @@ function setReady() {
     element.currentTime = Math.min(resumeAfterSourceSeconds, Math.max(0, duration.value - 0.25))
     resumeAfterSourceSeconds = null
     resumeApplied = true
+  } else if (!resumeApplied && props.startAtSeconds > 0 && duration.value > 0) {
+    const resumeSeconds = Math.min(props.startAtSeconds, Math.max(0, duration.value - 2))
+    element.currentTime = resumeSeconds
+    resumeApplied = true
+    lastPosition = Math.round(resumeSeconds / duration.value * 100)
   } else if (!resumeApplied && props.startAtPercent > 0 && duration.value > 0) {
     const resumePercent = Math.min(95, Math.max(0, props.startAtPercent))
     element.currentTime = duration.value * resumePercent / 100
@@ -524,6 +556,8 @@ async function loadSource() {
   loading.value = true
   failedSourceEmitted = ''
   stallRecoveryAttempts = 0
+  hlsFatalNetworkRetries = 0
+  hlsMediaRecoveryDone = false
   currentStreamQuality.value = ''
   const element = video.value
   if (!element || !props.src) {
@@ -539,7 +573,8 @@ async function loadSource() {
     return
   }
 
-  if (element.canPlayType('application/vnd.apple.mpegurl')) {
+  // Native HLS first (Safari, iOS, some WebViews); both MIME variants for wider detection.
+  if (element.canPlayType('application/vnd.apple.mpegurl') || element.canPlayType('application/x-mpegurl')) {
     element.src = props.src
     element.load()
     armSourceStartupWatchdog(token)
@@ -576,8 +611,21 @@ async function loadSource() {
     instance.on(HlsClass.Events.ERROR, (_, data) => {
       if (!data.fatal || token !== loadToken || hls !== instance) return
       if (data.type === HlsClass.ErrorTypes.NETWORK_ERROR) {
+        // Transient network drops: resume loading before giving up on the source.
+        if (hlsFatalNetworkRetries < 2) {
+          hlsFatalNetworkRetries += 1
+          emit('notice', 'اتصال قطع شد؛ در حال تلاش دوباره')
+          instance.startLoad()
+          return
+        }
         emitSourceFailure(MEDIA_ERR_NETWORK, 'ارتباط با جریان ویدیو برقرار نشد.')
       } else if (data.type === HlsClass.ErrorTypes.MEDIA_ERROR) {
+        // Decoder hiccups are usually recoverable once per stream.
+        if (!hlsMediaRecoveryDone) {
+          hlsMediaRecoveryDone = true
+          instance.recoverMediaError()
+          return
+        }
         emitSourceFailure(MEDIA_ERR_DECODE, 'مرورگر نتوانست این ویدیو را رمزگشایی کند.')
       } else {
         emitSourceFailure(MEDIA_ERR_SRC_NOT_SUPPORTED, 'خطایی در آماده‌سازی پخش رخ داد.')
@@ -722,26 +770,44 @@ function openSettings(tab: SettingsTab) {
   bumpControls(true)
 }
 
+/** Best-effort landscape lock while fullscreen on phones; silently ignored where unsupported. */
+function lockLandscapeWhileFullscreen() {
+  const orientation = screen.orientation as ScreenOrientation & { lock?: (orientation: 'landscape' | string) => Promise<void> }
+  if (orientation?.lock && window.matchMedia('(hover: none) and (max-width: 767px)').matches) {
+    orientation.lock('landscape').catch(() => { /* iOS and desktop ignore this */ })
+  }
+}
+
 async function toggleFullscreen() {
   const element = root.value
   if (!element) return
   try {
-    if (document.fullscreenElement) {
-      await document.exitFullscreen()
-    } else if (element.requestFullscreen) {
-      await element.requestFullscreen()
-    } else {
-      isPseudoFullscreen.value = !isPseudoFullscreen.value
-      if (isPseudoFullscreen.value) {
-        previousBodyOverflow = document.body.style.overflow
-        document.body.style.overflow = 'hidden'
-      } else {
-        document.body.style.overflow = previousBodyOverflow
-      }
-      emit('fullscreenChange', isPseudoFullscreen.value)
+    const active = activeFullscreenElement()
+    if (active) {
+      if (document.exitFullscreen) await document.exitFullscreen()
+      else await (document as VendorDocument).webkitExitFullscreen?.()
+      return
     }
+    if (element.requestFullscreen) {
+      await element.requestFullscreen({ navigationUI: 'hide' })
+      lockLandscapeWhileFullscreen()
+      return
+    }
+    // iPhone Safari only allows the video element itself to go fullscreen.
+    const videoEl = video.value as IOSVideo | null
+    if (videoEl?.webkitEnterFullscreen) {
+      videoEl.webkitEnterFullscreen()
+      return
+    }
+    throw new Error('Fullscreen API unavailable')
   } catch {
     isPseudoFullscreen.value = !isPseudoFullscreen.value
+    if (isPseudoFullscreen.value) {
+      previousBodyOverflow = document.body.style.overflow
+      document.body.style.overflow = 'hidden'
+    } else {
+      document.body.style.overflow = previousBodyOverflow
+    }
     emit('fullscreenChange', isPseudoFullscreen.value)
   }
 }
@@ -758,9 +824,46 @@ async function togglePip() {
 }
 
 function handleFullscreenChange() {
-  isFullscreen.value = document.fullscreenElement === root.value
+  isFullscreen.value = activeFullscreenElement() === root.value
   emit('fullscreenChange', fullscreenActive.value)
   bumpControls(true)
+}
+
+function handleIosVideoFullscreen(active: boolean) {
+  isFullscreen.value = active
+  emit('fullscreenChange', fullscreenActive.value)
+  bumpControls(true)
+}
+
+/** Lock-screen / hardware media key integration (mobile platforms). */
+function setupMediaSession() {
+  if (typeof navigator === 'undefined' || !('mediaSession' in navigator)) return
+  const session = navigator.mediaSession
+  try {
+    session.metadata = new MediaMetadata({
+      title: props.title,
+      artist: 'روایتو',
+      artwork: props.poster ? [{ src: props.poster }] : [],
+    })
+  } catch { /* MediaMetadata unsupported */ }
+  const guarded = (action: MediaSessionAction, handler: MediaSessionActionHandler) => {
+    try { session.setActionHandler(action, (details) => { if (!props.locked) handler(details) }) }
+    catch { /* action unsupported on this platform */ }
+  }
+  guarded('play', () => { void togglePlayback() })
+  guarded('pause', () => { void togglePlayback() })
+  guarded('seekbackward', () => skip(-10))
+  guarded('seekforward', () => skip(10))
+  guarded('seekto', (details) => {
+    if (typeof details.seekTime === 'number' && video.value) video.value.currentTime = details.seekTime
+  })
+}
+
+function teardownMediaSession() {
+  if (typeof navigator === 'undefined' || !('mediaSession' in navigator)) return
+  ;(['play', 'pause', 'seekbackward', 'seekforward', 'seekto'] as MediaSessionAction[]).forEach((action) => {
+    try { navigator.mediaSession.setActionHandler(action, null) } catch { /* ignore */ }
+  })
 }
 
 function handleKeydown(event: KeyboardEvent) {
@@ -799,9 +902,13 @@ function handleSurfaceClick(event: MouseEvent) {
 onMounted(() => {
   pipSupported.value = Boolean(document.pictureInPictureEnabled && video.value?.requestPictureInPicture)
   document.addEventListener('fullscreenchange', handleFullscreenChange)
+  document.addEventListener('webkitfullscreenchange', handleFullscreenChange)
   window.addEventListener('keydown', handleKeydown)
   video.value?.addEventListener('enterpictureinpicture', () => { isPip.value = true })
   video.value?.addEventListener('leavepictureinpicture', () => { isPip.value = false })
+  video.value?.addEventListener('webkitbeginfullscreen', () => handleIosVideoFullscreen(true))
+  video.value?.addEventListener('webkitendfullscreen', () => handleIosVideoFullscreen(false))
+  setupMediaSession()
   syncSubtitleTracks()
   void loadSource()
   bumpControls(true)
@@ -810,6 +917,7 @@ onMounted(() => {
 watch(() => props.src, () => { void loadSource() })
 watch(() => props.quality, applyQuality)
 watch(() => props.lowLatency, () => { void loadSource() })
+watch(() => [props.title, props.poster], setupMediaSession)
 watch(() => props.subtitleTracks.map(track => `${track.id}:${track.src}`).join('|'), syncSubtitleTracks)
 watch(showSettings, (open) => {
   if (open) bumpControls(true)
@@ -821,7 +929,9 @@ onBeforeUnmount(() => {
   destroyPlayer()
   cancelControlsTimer()
   document.removeEventListener('fullscreenchange', handleFullscreenChange)
+  document.removeEventListener('webkitfullscreenchange', handleFullscreenChange)
   window.removeEventListener('keydown', handleKeydown)
+  teardownMediaSession()
   if (isPseudoFullscreen.value) document.body.style.overflow = previousBodyOverflow
 })
 </script>
@@ -853,8 +963,8 @@ onBeforeUnmount(() => {
       :poster="poster"
       :controls="false"
       controlslist="nodownload noplaybackrate"
-      disablepictureinpicture
       playsinline
+      webkit-playsinline
       preload="auto"
       @loadedmetadata="setReady"
       @durationchange="setReady"

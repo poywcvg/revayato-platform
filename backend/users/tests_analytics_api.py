@@ -71,7 +71,9 @@ class AnalyticsApiTests(APITestCase):
         self.assertIn('end', body['period'])
         self.assertEqual(body.get('source'), 'database')
         kpi_ids = {item['id'] for item in body['data']['kpis']}
-        self.assertTrue({'total_users', 'active_users', 'watch_hours'}.issubset(kpi_ids))
+        self.assertTrue({'total_users', 'active_users', 'watch_hours', 'likes_total'}.issubset(kpi_ids))
+        active_kpi = next(item for item in body['data']['kpis'] if item['id'] == 'active_users')
+        self.assertGreaterEqual(active_kpi['value'], 1)
         self.assertIn('realtime', body['data'])
         self.assertIn('catalog', body['data'])
         realtime = body['data']['realtime']
@@ -91,6 +93,11 @@ class AnalyticsApiTests(APITestCase):
         self.assertEqual(users_body['registrations']['granularity'], 'daily')
         self.assertIn('totals', users_body)
         self.assertIn('top_active_users', users_body)
+        # Event-type mix must reflect recorded actions (device telemetry stays
+        # empty because the privacy-safe tracker never records device_type).
+        breakdown = {row['id']: row['value'] for row in users_body['action_breakdown']}
+        self.assertGreaterEqual(breakdown.get('play', 0), 1)
+        self.assertGreaterEqual(breakdown.get('complete_watch', 0), 1)
 
         content = self.client.get('/api/analytics/content/top/', {'period': '30d'})
         self.assertEqual(content.status_code, status.HTTP_200_OK)

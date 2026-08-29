@@ -185,6 +185,8 @@ defineExpose({
   beginDrag: () => engineRef.value?.beginDrag() ?? false,
   drag: (ndx: number) => engineRef.value?.drag(ndx),
   endDrag: () => engineRef.value?.endDrag(),
+  pause: () => engineRef.value?.pause(),
+  resume: () => engineRef.value?.resume(),
 })
 </script>
 
@@ -315,18 +317,15 @@ defineExpose({
   letter-spacing: 0.01em;
   opacity: 0;
   transform: translateY(12px);
-  filter: blur(6px);
-  backdrop-filter: blur(8px);
+  /* GPU-composited only: opacity + transform. No filter:blur (non-composited). */
   transition:
     opacity var(--ms-swap) cubic-bezier(0.16, 1, 0.3, 1),
-    transform var(--ms-swap) cubic-bezier(0.16, 1, 0.3, 1),
-    filter var(--ms-swap) cubic-bezier(0.16, 1, 0.3, 1);
+    transform var(--ms-swap) cubic-bezier(0.16, 1, 0.3, 1);
 }
 
 .morph-slider__caption--active {
   opacity: 1;
   transform: translateY(0);
-  filter: blur(0);
 }
 
 .morph-slider__controls {
@@ -390,13 +389,16 @@ defineExpose({
   border-radius: 999px;
   background: rgb(255 255 255 / 35%);
   cursor: pointer;
+  /* GPU-composited: animate scaleX, never width (width triggers layout/reflow). */
+  transform: scaleX(1);
+  transform-origin: center;
   transition:
-    width var(--ms-dot) cubic-bezier(0.16, 1, 0.3, 1),
+    transform var(--ms-dot) cubic-bezier(0.16, 1, 0.3, 1),
     background-color var(--ms-dot) ease;
 }
 
 .morph-slider__dot--active {
-  width: 22px;
+  transform: scaleX(2.75);
   background: rgb(255 255 255 / 95%);
 }
 

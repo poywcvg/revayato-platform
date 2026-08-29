@@ -237,6 +237,9 @@ export class MorphEngine {
   private shownIndex: number
   private tween: gsap.core.Tween | null = null
   private externalSync = false
+  /** When true (off-screen or reduced-motion settled) the rAF loop stops
+   *  repainting instead of running forever at ~60fps. */
+  private inactive = false
 
   private renderer: Renderer
   private gl: GL
@@ -382,7 +385,61 @@ export class MorphEngine {
     this.program.uniforms.uTime.value = t * 0.001
     if (!this.dragging && !this.animating) this.syncOptions()
     this.renderer.render({ scene: this.mesh })
+
+    // Keep repainting only while the hero is on-screen and (for reduced-motion
+    // users) only while a transition is actually animating. Otherwise stop the
+    // rAF so the GPU/CPU aren't burned on a hero nobody can see or that should
+    // be static. GSAP transition tweens run on their own timer and call
+    // startLoop() via animateTo/beginDrag, so active transitions still paint.
+    const repaint = !this.inactive && (!this.reducedMotion || this.animating || this.dragging)
+    if (repaint) {
+      this.raf = requestAnimationFrame(this.boundLoop)
+    }
+    else {
+      this.raf = 0
+    }
+  }
+
+  private startLoop(): void {
+    if (this.raf) return
     this.raf = requestAnimationFrame(this.boundLoop)
+  }
+
+  /** Pause/resume the render loop. Used by the host slider's IntersectionObserver
+   *  so the WebGL hero stops repainting once scrolled out of view. */
+  setActive(active: boolean): void {
+    const wasInactive = this.inactive
+    this.inactive = !active
+    if (wasInactive && active) {
+      // Back on screen: repaint one frame and resume the loop.
+      this.startLoop()
+    }
+    // Going inactive lets the running frame see `inactive` and stop itself,
+    // so we never tear down mid-frame.
+  }
+
+  pause(): void {
+    this.setActive(false)
+  }
+
+  resume(): void {
+    this.setActive(true)
+  }
+
+  /** Tear down GL resources. Call from the component's onBeforeUnmount. */
+  dispose(): void {
+    if (this.raf) cancelAnimationFrame(this.raf)
+    this.raf = 0
+    this.tween?.kill()
+    this.tween = null
+    this.canvas.removeEventListener('webglcontextlost', this.boundContextLost)
+    this.resizeObserver.disconnect()
+    try {
+      this.gl.getExtension('WEBGL_lose_context')?.loseContext()
+    }
+    catch {
+      // Context may already be gone.
+    }
   }
 
   private wrap(i: number): number {
@@ -435,6 +492,10 @@ export class MorphEngine {
         onComplete: () => this.commit(target),
       },
     )
+    // A transition must repaint even if the loop was stopped (reduced-motion
+    // settled or just mounted paused). The loop re-arms itself from `animateTo`
+    // and keeps going for the duration of `animating`.
+    this.startLoop()
   }
 
   goTo(dir: number): void {

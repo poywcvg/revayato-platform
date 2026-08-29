@@ -183,6 +183,7 @@ export interface AnalyticsUsersData {
     points: AnalyticsSeriesPoint[]
   }
   active_by_weekday: AnalyticsNamedValue[]
+  action_breakdown?: AnalyticsNamedValue[]
   devices: Array<{ id: string, label: string, value: number }>
   top_active_users: AnalyticsActiveUserRow[]
   totals?: {

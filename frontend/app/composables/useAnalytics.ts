@@ -45,7 +45,6 @@ export function useAnalytics() {
   async function fetchUsers(force = false) {
     const period = store.period
     const granularity = store.granularity
-    const cacheKey = `${period}:${granularity}`
     if (
       !force
       && store.users
@@ -61,7 +60,6 @@ export function useAnalytics() {
         query: { period, granularity },
       })
       store.users = { payload, fetchedAt: Date.now() }
-      void cacheKey
       return payload
     } catch (error) {
       store.errors.users = errorMessage(error)

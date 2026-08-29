@@ -66,7 +66,7 @@ const empty = computed(() => !props.slices.some(slice => slice.value > 0))
         <div class="size-36 animate-pulse rounded-full bg-[var(--admin-surface-muted)]" />
       </div>
       <div v-else-if="empty" class="grid h-56 place-items-center text-sm text-[var(--admin-muted)]">
-        هنوز دادهٔ دستگاه ثبت نشده
+        در این بازه داده‌ای ثبت نشده
       </div>
       <ClientOnly v-else>
         <VChart class="h-56 w-full" :option="option" autoresize />

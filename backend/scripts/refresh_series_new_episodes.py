@@ -6,7 +6,9 @@ from __future__ import annotations
 import argparse
 import os
 import sys
+import threading
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 _APP_ROOT = Path(__file__).resolve().parents[1]
@@ -39,6 +41,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--delay', type=float, default=0.7)
     parser.add_argument('--limit', type=int, default=0)
+    parser.add_argument('--workers', type=int, default=4)
     parser.add_argument('--popularity-min', type=float, default=0.0)
     parser.add_argument(
         '--year-min',
@@ -47,6 +50,8 @@ def main() -> int:
         help='Only series whose start_year or end_year is >= this (e.g. 2025 for current airing)',
     )
     args = parser.parse_args()
+    workers = max(1, min(8, int(args.workers)))
+    request_interval = max(0.0, float(args.delay))
 
     qs = (
         Series.objects.filter(is_published=True)
@@ -74,42 +79,66 @@ def main() -> int:
         'episodes_before': before_eps,
         'created_total': 0,
     }
-    print(f'refresh_series={len(series_rows)} episodes_before={before_eps}', flush=True)
+    print(f'refresh_series={len(series_rows)} episodes_before={before_eps} workers={workers}', flush=True)
+
+    pace_lock = threading.Lock()
+    next_request_at = [0.0]
+
+    def refresh_one(series_id: int, page: str):
+        from django.db import close_old_connections
+
+        close_old_connections()
+        with pace_lock:
+            wait = next_request_at[0] - time.monotonic()
+            if wait > 0:
+                time.sleep(wait)
+            next_request_at[0] = time.monotonic() + request_interval
+        try:
+            series = Series.objects.get(pk=series_id)
+            eps_before = Episode.objects.filter(season__series_id=series_id).count()
+            result = crawl_myf2m_downloads_for_series(
+                series=series,
+                page_url=page,
+                replace=True,
+                queue_softsub_extract=True,
+            )
+            series.refresh_from_db(fields=['download_links', 'updated_at', 'has_subtitle', 'is_dubbed'])
+            eps_after = Episode.objects.filter(season__series_id=series_id).count()
+            return 'ok', result.get('imported_count') or len(series.download_links or []), max(0, eps_after - eps_before)
+        except ProviderImportError as exc:
+            return 'fail', getattr(exc, 'code', ''), str(exc)
+        except Exception as exc:
+            return 'error', type(exc).__name__, str(exc)
+        finally:
+            close_old_connections()
 
     with _suppress_provider_publish_signals():
-        for series in series_rows:
-            stats['tried'] += 1
-            page = _page_path(series)
-            eps_before = Episode.objects.filter(season__series_id=series.pk).count()
-            print(
-                f'[{stats["tried"]}/{len(series_rows)}] series={series.pk} {series.title} page={page}',
-                flush=True,
-            )
-            try:
-                result = crawl_myf2m_downloads_for_series(
-                    series=series,
-                    page_url=page,
-                    replace=True,
-                    queue_softsub_extract=True,
-                )
-                series.refresh_from_db(fields=['download_links', 'updated_at', 'has_subtitle', 'is_dubbed'])
-                eps_after = Episode.objects.filter(season__series_id=series.pk).count()
-                created = max(0, eps_after - eps_before)
-                stats['ok'] += 1
-                stats['created_total'] += created
-                print(
-                    f'  -> ok links={result.get("imported_count") or len(series.download_links or [])} '
-                    f'new_episodes={created}',
-                    flush=True,
-                )
-            except ProviderImportError as exc:
-                stats['failed'] += 1
-                print(f'  -> fail {getattr(exc, "code", "")} {exc}', flush=True)
-            except Exception as exc:
-                stats['failed'] += 1
-                print(f'  -> error {type(exc).__name__}: {exc}', flush=True)
-            if args.delay:
-                time.sleep(max(0.0, float(args.delay)))
+        with ThreadPoolExecutor(max_workers=workers, thread_name_prefix='series-refresh') as pool:
+            pending = {
+                pool.submit(refresh_one, series.pk, _page_path(series)): series
+                for series in series_rows
+            }
+            for future in as_completed(pending):
+                series = pending[future]
+                stats['tried'] += 1
+                status, first, second = future.result()
+                if status == 'ok':
+                    created = int(second)
+                    links = int(first)
+                    stats['ok'] += 1
+                    stats['created_total'] += created
+                    print(
+                        f'[{stats["tried"]}/{len(series_rows)}] ok series={series.pk} {series.title} '
+                        f'links={links} new_episodes={created}',
+                        flush=True,
+                    )
+                else:
+                    stats['failed'] += 1
+                    print(
+                        f'[{stats["tried"]}/{len(series_rows)}] {status} series={series.pk} '
+                        f'{series.title} {first} {second}',
+                        flush=True,
+                    )
 
     after_eps = Episode.objects.filter(is_published=True).count()
     stats['episodes_after'] = after_eps

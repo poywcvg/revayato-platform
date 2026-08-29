@@ -131,6 +131,10 @@ export interface Movie {
   /** True when backdrop comes from TMDB/admin import (not a local placeholder). */
   has_backdrop?: boolean
   progress_percent: number
+  /** Local precise continue-watching state (client-only). */
+  resume_episode_id?: number
+  resume_position_seconds?: number
+  resume_duration_seconds?: number
   popularity: number
   /** Platform engagement counters from the catalog API (used by discovery ranking). */
   view_count?: number

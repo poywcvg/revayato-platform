@@ -62,6 +62,7 @@ INSTALLED_APPS = [
     'apps.accounts',
     'apps.recommendations',
     'apps.watchparty',
+    'apps.assistant',
 ]
 
 MIDDLEWARE = [
@@ -325,7 +326,7 @@ SUBZONE_VERIFY_SSL = env_bool('SUBZONE_VERIFY_SSL', True)
 # The player's sync window is deliberately short: quick provider sidecars only,
 # so the POST never blocks video start; everything else runs on the worker.
 PLAYBACK_SUBTITLE_SYNC_MAX_SECONDS = max(
-    3, int(os.environ.get('PLAYBACK_SUBTITLE_SYNC_MAX_SECONDS', '6')),
+    3, int(os.environ.get('PLAYBACK_SUBTITLE_SYNC_MAX_SECONDS', '9')),
 )
 # Redis micro-cache TTL for the lightweight status endpoint read by player polls.
 PLAYBACK_SUBTITLE_STATUS_CACHE_SECONDS = max(
@@ -443,9 +444,14 @@ REST_FRAMEWORK = {
 # SimpleJWT — optional dedicated signing key; falls back to Django SECRET_KEY.
 _JWT_SECRET = os.environ.get('JWT_SECRET', '').strip()
 JWT_REFRESH_TOKEN_DAYS = max(1, int(os.environ.get('JWT_REFRESH_TOKEN_DAYS', '400')))
+# Short-lived access token: it lives in a JS-readable cookie, so a small window
+# limits replay. The session itself never depends on it — the client silently
+# rotates a new one from the long-lived refresh token before it expires.
+JWT_ACCESS_TOKEN_MINUTES = max(5, int(os.environ.get('JWT_ACCESS_TOKEN_MINUTES', '60')))
 SIMPLE_JWT = {
-    'ACCESS_TOKEN_LIFETIME': timedelta(hours=1),
-    # Rotation renews this browser-compatible 400-day window on active use.
+    'ACCESS_TOKEN_LIFETIME': timedelta(minutes=JWT_ACCESS_TOKEN_MINUTES),
+    # Rotation renews this browser-compatible 400-day window on active use, so a
+    # user who keeps visiting stays signed in until they log out themselves.
     'REFRESH_TOKEN_LIFETIME': timedelta(days=JWT_REFRESH_TOKEN_DAYS),
     'ROTATE_REFRESH_TOKENS': True,
     'BLACKLIST_AFTER_ROTATION': True,
@@ -594,6 +600,13 @@ CELERY_BEAT_SCHEDULE = {
     'catalog-dornatv-import-missing': {
         'task': 'apps.catalog.provider_import.tasks.import_missing_dornatv_task',
         'schedule': 300,
+    },
+    # Rotating refresh tokens for 400 days means the blacklist tables only grow.
+    # Expired rows can no longer authorise anything, so sweep them daily to keep
+    # the refresh endpoint — the thing that keeps sessions alive — fast.
+    'accounts-flush-expired-tokens': {
+        'task': 'apps.accounts.tasks.flush_expired_tokens_task',
+        'schedule': 24 * 60 * 60,
     },
 }
 if CATALOG_AUTO_PUBLISH:

@@ -125,8 +125,22 @@ Series crawl merges Film2Media + Dornatv download links, stamps
 `season_number` / `episode_number` / `quality` on each row, then builds
 `Season` / `Episode` rows via `ensure_episodes_from_download_links`.
 
-Production also runs a low-priority `catalog-crawler` loop. Each round scans
-Film2Media with `--new-only --require-playback`, rejects trailer/sample media,
-and runs the bounded myf2m size backfill before sleeping. Configure its request
-delay, six-hour default interval, CPU cap, and size-probe concurrency with the
-`MYF2M_BULK_*`, `MYF2M_CRAWL_INTERVAL_SECONDS`, and `MYF2M_SIZE_*` variables.
+Production also runs a permanent, low-priority `catalog-crawler` loop. Each
+round performs four phases and then sleeps for `MYF2M_CRAWL_INTERVAL_SECONDS`
+(30 minutes in the current production environment):
+
+1. **New-title sweep** — scans Film2Media listings with `--new-only
+   --require-playback`, rejects trailer/sample media, and imports every title
+   that is missing from the catalog (matched by TMDB/IMDb identity).
+2. **Series refresh** (`refresh_series_new_episodes.py`) — re-crawls pages of
+   existing published series so newly released episodes appear automatically.
+3. **Movie refresh** (`refresh_movie_download_links.py`) — re-crawls pages of
+   existing published movies so new qualities/dub/hardsub/SoftSub encodes are
+   coalesced without wiping current rows.
+4. **Size backfill** — bounded myf2m download-size probing.
+
+Configure the request delay, round interval, refresh limits/year filters,
+CPU cap, and size-probe concurrency with the `MYF2M_BULK_*`,
+`MYF2M_CRAWL_INTERVAL_SECONDS`, `MYF2M_REFRESH_DELAY_SECONDS`,
+`MYF2M_SERIES_REFRESH_*`, `MYF2M_MOVIE_REFRESH_*`, and `MYF2M_SIZE_*`
+variables.

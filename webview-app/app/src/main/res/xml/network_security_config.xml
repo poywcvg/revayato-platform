@@ -1,7 +1,0 @@
-<?xml version="1.0" encoding="utf-8"?>
-<!-- The app talks to the live site over HTTPS. Cleartext is only ever allowed
-     for the debug build (dev against a LAN/self-hosted origin); release keeps
-     cleartext permanently off. -->
-<network-security-config>
-    <base-config cleartextTrafficPermitted="false" />
-</network-security-config>

@@ -267,15 +267,15 @@ onBeforeUnmount(() => sectionObserver?.disconnect())
       :backdrop-src="item.backdrop_url || item.poster_url"
       :backdrop-alt="`تصویر زمینه ${item.title}`"
     >
-      <nav class="media-hero__crumb" aria-label="مسیر صفحه">
-        <NuxtLink to="/">خانه</NuxtLink>
-        <CinematicIcon name="chevron-left" class="size-3.5 opacity-50" />
-        <NuxtLink :to="item.type === 'movie' ? '/movies' : '/series'">
-          {{ item.type === 'movie' ? 'فیلم‌ها' : 'سریال‌ها' }}
-        </NuxtLink>
-        <CinematicIcon name="chevron-left" class="size-3.5 opacity-50" />
-        <span class="max-w-40 truncate text-[color:var(--text-secondary)]">{{ item.title }}</span>
-      </nav>
+      <BreadcrumbsB
+        class="media-hero__crumb"
+        size="small"
+        :items="[
+          { slug: 'home', title: 'خانه', href: '/', icon: 'home' },
+          { slug: item.type, title: item.type === 'movie' ? 'فیلم‌ها' : 'سریال‌ها', href: item.type === 'movie' ? '/movies' : '/series' },
+          { slug: item.slug, title: item.title, active: true },
+        ]"
+      />
 
       <div class="media-hero__layout">
         <MediaPoster

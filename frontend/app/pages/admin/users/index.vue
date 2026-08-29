@@ -53,7 +53,7 @@ const createForm = reactive({
 const drafts = reactive<Record<number, Partial<AdminUser> & { password?: string }>>({})
 const meId = computed(() => authStore.user?.id)
 
-function draftFor(user: AdminUser) {
+function draftFor(user: AdminUser): Partial<AdminUser> & { password?: string } {
   if (!drafts[user.id]) {
     drafts[user.id] = {
       is_active: user.is_active,
@@ -63,7 +63,7 @@ function draftFor(user: AdminUser) {
       password: '',
     }
   }
-  return drafts[user.id]
+  return drafts[user.id]!
 }
 
 async function loadUsers(silent = false) {

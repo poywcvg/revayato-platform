@@ -81,6 +81,8 @@ function requestEnd() {
   <aside
     class="watch-party-panel flex max-h-[78dvh] flex-col bg-[#0c0c0c]/95 p-3.5 shadow-2xl shadow-black/50 backdrop-blur-xl sm:p-4 lg:h-[min(78vh,760px)] lg:max-h-none"
     aria-label="پنل تماشای گروهی"
+    role="dialog"
+    aria-modal="true"
   >
     <div class="mb-2 flex justify-center lg:hidden" aria-hidden="true">
       <span class="h-1 w-10 rounded-full bg-white/25" />
