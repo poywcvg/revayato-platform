@@ -11,7 +11,6 @@ const quickLinks = [
 
 const supportLinks = [
   { label: 'درخواست فیلم یا سریال', to: '/contact?subject=content_request' },
-  { label: 'حمایت از روایتو', to: 'https://daramet.com/revayato', external: true },
   { label: 'درباره ما', to: '/about' },
   { label: 'تماس با ما', to: '/contact' },
   { label: 'قوانین', to: '/terms' },
@@ -84,7 +83,7 @@ function isActive(to: string) {
                 :href="item.to"
                 target="_blank"
                 rel="noopener noreferrer"
-                class="site-footer__link site-footer__link--donation"
+                class="site-footer__link"
               >♥ {{ item.label }}</a>
               <NuxtLink
                 v-else

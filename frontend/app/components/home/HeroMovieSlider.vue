@@ -286,6 +286,8 @@ onBeforeUnmount(() => {
         image-class="hero-movie-slider__backdrop-image"
         :fallback-label="`تصویر پس‌زمینه ${currentItem.title} در دسترس نیست`"
       />
+      <div class="hero-movie-slider__scrim" aria-hidden="true" />
+
       <ClientOnly>
         <!-- Lazy on purpose: this layer is a WebGL enhancement over the backdrop
              image above, and it drags in ogl + gsap. Loading it eagerly put both
@@ -435,7 +437,10 @@ onBeforeUnmount(() => {
 <style scoped>
 .hero-movie-slider {
   --hero-poster-width: clamp(3.5rem, 18vw, 4.5rem);
-  --hero-dock-height: calc(var(--hero-poster-width) * 1.5 + 1.25rem);
+  /* Reserve enough room for the poster dock: poster + row padding + the active
+     thumb's scale overflow. The old 1.25rem slack under-measured the real dock
+     height, so the title/IMDb block occasionally collided with the thumbnails. */
+  --hero-dock-height: calc(var(--hero-poster-width) * 1.5 + 2rem);
   position: relative;
   isolation: isolate;
   display: flex;
@@ -480,7 +485,11 @@ onBeforeUnmount(() => {
   aspect-ratio: unset !important;
 }
 
-.hero-movie-slider__morph {
+/* Bump specificity past the morph component's own `.morph-slider` rule, which
+   sets `position: relative`. If relative wins (scoped-CSS source order), the
+   WebGL layer becomes an in-flow flex child that squishes the stage and pushes
+   the title/IMDb block into the poster dock. */
+.hero-movie-slider__media .hero-movie-slider__morph {
   position: absolute;
   inset: 0;
   z-index: 1;
@@ -489,6 +498,30 @@ onBeforeUnmount(() => {
   border-radius: inherit;
   background: transparent;
   pointer-events: none;
+}
+
+/* Bottom scrim: fades the backdrop into the poster dock so the title/IMDb
+   block never visually collides with the thumbnails. Sits above the WebGL
+   morph layer (z 1) but below the content (z 10) and dock (z 20). */
+.hero-movie-slider__scrim {
+  position: absolute;
+  inset-inline: 0;
+  bottom: 0;
+  z-index: 2;
+  height: calc(var(--hero-dock-height) + 8rem);
+  pointer-events: none;
+  background: linear-gradient(
+    to top,
+    rgb(2 3 3 / 92%) 0%,
+    rgb(2 3 3 / 70%) 28%,
+    rgb(2 3 3 / 0%) 100%
+  );
+}
+
+@media (min-width: 768px) {
+  .hero-movie-slider__scrim {
+    height: calc(var(--hero-dock-height) + 6rem);
+  }
 }
 
 .hero-movie-slider__backdrop--under-morph {
@@ -548,6 +581,10 @@ onBeforeUnmount(() => {
   flex: 1 1 auto;
   grid-template-columns: minmax(0, 1fr);
   align-items: end;
+  /* align-items alone can't bottom-align a single auto-height grid row, so the
+     title block was starting at the top of the content box and overlapping the
+     poster dock. align-content pins the row to the bottom instead. */
+  align-content: end;
   padding-top: calc(var(--header-height) + env(safe-area-inset-top, 0px) + clamp(.5rem, 2vw, 1.25rem));
   padding-bottom: calc(var(--hero-dock-height) + clamp(.75rem, 2vw, 1.25rem));
   overflow: hidden;
@@ -696,7 +733,7 @@ onBeforeUnmount(() => {
   top: 42%;
   z-index: 15;
   display: none;
-  width: clamp(2.75rem, 3.5vw, 3.5rem);
+  width: clamp(2.5rem, 3vw, 2.75rem);
   aspect-ratio: 1;
   place-items: center;
   border: 1px solid rgb(255 255 255 / 35%);
@@ -847,7 +884,7 @@ onBeforeUnmount(() => {
 
 @media (max-width: 767px) {
   .hero-movie-slider {
-    --hero-poster-width: clamp(3.65rem, min(18vw, 9.5svh), 4.5rem);
+    --hero-poster-width: clamp(3.25rem, min(16vw, 8.5svh), 4rem);
   }
 
   /* Full first-screen canvas: image paints the entire slider frame. */
@@ -879,22 +916,43 @@ onBeforeUnmount(() => {
     top: 38%;
   }
 
+  /* Reserve explicit space for the poster dock so the title/IMDb block never
+     overlaps the thumbnails (was inheriting an undersized desktop padding). */
   .hero-movie-slider__stage {
     padding-inline: max(5vw, var(--layout-gutter));
+    padding-top: calc(var(--header-height) + env(safe-area-inset-top, 0px) + clamp(.5rem, 2vh, 1rem));
+    padding-bottom: calc(var(--hero-dock-height) + env(safe-area-inset-bottom, 0px) + 0.75rem);
   }
 
   .hero-movie-slider__content {
     width: 100%;
     max-width: min(92vw, 30rem);
+    gap: .5rem;
   }
 
   .hero-movie-slider__title {
     font-size: clamp(1.65rem, 7.5vw, 2.35rem);
   }
 
+  /* Posters sit fully above the content block; safe-area aware on notched phones. */
+  .hero-movie-slider__dock {
+    min-height: var(--hero-dock-height);
+    padding-bottom: env(safe-area-inset-bottom, 0px);
+  }
+
+  /* Touch targets: slightly larger thumbs, comfortable spacing, centered snap. */
+  .hero-movie-thumb {
+    transform: scale(.94);
+  }
+
+  .hero-movie-thumb--active {
+    transform: scale(1.06);
+  }
+
   .hero-movie-slider__thumbnails {
-    gap: .55rem;
+    gap: .6rem;
     scroll-snap-type: x mandatory;
+    scroll-padding-inline: 50%;
   }
 }
 
@@ -902,6 +960,30 @@ onBeforeUnmount(() => {
   .hero-movie-slider__media {
     height: max(22rem, 100svh);
     min-height: max(22rem, 100svh);
+  }
+
+  .hero-movie-slider__scrim {
+    height: calc(var(--hero-dock-height) + 5rem);
+  }
+
+  /* Landscape phones: the centered play affordance would land on top of the
+     right-aligned title, so drop it and let the title link + thumbnails drive
+     navigation. Tighten the content block so it fits the short viewport. */
+  .hero-movie-slider__play {
+    display: none;
+  }
+
+  .hero-movie-slider__content {
+    gap: .4rem;
+    max-width: min(82vw, 30rem);
+  }
+
+  .hero-movie-slider__title {
+    font-size: clamp(1.4rem, 4.5vw, 1.9rem);
+  }
+
+  .hero-movie-slider__subtitle {
+    display: none;
   }
 }
 
@@ -945,24 +1027,21 @@ onBeforeUnmount(() => {
 
   .hero-movie-slider__nav {
     display: grid;
-    width: 2.75rem;
-  }
-
-  .hero-movie-slider__nav--next {
-    left: max(.75rem, env(safe-area-inset-left, 0px));
-  }
-
-  .hero-movie-slider__nav--previous {
-    right: max(.75rem, env(safe-area-inset-right, 0px));
+    width: 2.5rem;
   }
 
   .hero-movie-slider__stage,
   .hero-movie-slider__dock-inner {
-    padding-inline: max(var(--layout-gutter), 3.25rem);
+    /* Wide enough to clear the nav arrows (which sit in the layout gutter),
+       so the "previous" arrow never clips the year/title block. */
+    padding-inline: max(var(--layout-gutter), 4rem);
   }
 
   .hero-movie-slider__content {
-    max-width: 40rem;
+    /* Stop the right-aligned title block from reaching the centered play
+       button on narrow desktop (1024–1200px). 7rem = 4rem gutter + play
+       half-width + a small safety gap. */
+    max-width: min(40rem, calc(50% - 7rem));
   }
 
   .hero-movie-slider__thumbnails {

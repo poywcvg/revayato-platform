@@ -334,10 +334,6 @@ onMounted(() => {
                 <span class="mobile-sidebar__help-icon mobile-sidebar__help-icon--support"><CinematicIcon name="comments" class="size-4.5" /></span>
                 <span><strong>پشتیبانی</strong><small>سؤال یا مشکل</small></span>
               </button>
-              <a href="https://daramet.com/revayato" target="_blank" rel="noopener noreferrer" class="mobile-sidebar__help-action" @click="handleFooterClick($event, $el)">
-                <span class="mobile-sidebar__help-icon mobile-sidebar__help-icon--donate"><CinematicIcon name="heart" class="size-4.5" /></span>
-                <span><strong>حمایت از ما</strong><small>دونیت امن</small></span>
-              </a>
             </div>
           </section>
         </div>
@@ -656,8 +652,6 @@ onMounted(() => {
 .mobile-sidebar__help-action small { display: block; margin-top: .12rem; color: var(--theme-text-muted); font-size: .58rem; white-space: nowrap; }
 .mobile-sidebar__help-icon { display: grid; width: 2rem; height: 2rem; flex: none; place-items: center; border-radius: .65rem; }
 .mobile-sidebar__help-icon--support { background: color-mix(in srgb, var(--theme-accent-primary) 12%, transparent); color: var(--theme-accent-primary); }
-.mobile-sidebar__help-icon--donate { background: color-mix(in srgb, var(--theme-accent-crimson, #b04848) 13%, transparent); color: var(--theme-accent-crimson, #d66); }
-
 .mobile-sidebar__line-nav {
   width: 100%;
   min-width: 0;

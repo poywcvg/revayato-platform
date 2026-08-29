@@ -77,14 +77,18 @@ export function useCatalog() {
     listPending.value = true
     error.value = null
 
-    let request!: Promise<void>
-    request = (async () => {
+    // Track which inflight entry this load created so only its completion clears
+    // the shared slot (a later full-mode load must not wipe an in-progress home load).
+    let ownedInflight = false
+    const task = (async () => {
       try {
         // Home needs only enough candidates for one full rail (railLimit=7).
         // SSR payload lean cuts HTML transfer/hydration cost without changing UI.
         const limits = mode === 'home'
           // Shell rails (recent/hero) are loaded separately; keep home catalog tiny.
-          ? { popularMovies: 12, newestMovies: 0, dubbedMovies: 0, downloadMovies: 0, popularSeries: 8, newestSeries: 0 }
+          // popularSeries is intentionally 0: the rendered series rail comes from
+          // /home/rails/ popular_series, so fetching it here would be a duplicate.
+          ? { popularMovies: 12, newestMovies: 0, dubbedMovies: 0, downloadMovies: 0, popularSeries: 0, newestSeries: 0 }
           : { popularMovies: 80, newestMovies: 40, dubbedMovies: 40, downloadMovies: 60, popularSeries: 50, newestSeries: 30 }
 
         // Popular first so home/rails show playable dubbed+subtitle titles.
@@ -125,7 +129,12 @@ export function useCatalog() {
                 ...(requestTimeout ? { timeout: requestTimeout } : {}),
               })
             : Promise.resolve(null),
-          api<ApiGenre[]>('/genres/', requestTimeout ? { timeout: requestTimeout } : {}),
+          // Genres change rarely and ship a static fallback (catalogGenres); only
+          // fetch when we don't already have them, so a hot reload / re-mount does
+          // not re-pull an unchanged list on every home load.
+          genreState.value.length
+            ? Promise.resolve(genreState.value.map(genre => ({ slug: genre.slug, title: genre.title } as ApiGenre)))
+            : api<ApiGenre[]>('/genres/', requestTimeout ? { timeout: requestTimeout } : {}),
         ])
 
         function settledValue<T>(index: number): T | null {
@@ -205,12 +214,15 @@ export function useCatalog() {
         error.value = cause instanceof Error ? cause.message : 'Catalog API is unavailable'
       } finally {
         listPending.value = false
-        if (import.meta.client && clientCatalogInflight?.promise === request) clientCatalogInflight = null
+        if (import.meta.client && ownedInflight) clientCatalogInflight = null
       }
     })()
 
-    if (import.meta.client) clientCatalogInflight = { mode, promise: request }
-    return request
+    if (import.meta.client) {
+      ownedInflight = true
+      clientCatalogInflight = { mode, promise: task }
+    }
+    return task
   }
 
   async function loadItemFromApi(slug: string, type: ContentType, options: { softsubPoll?: boolean } = {}) {
@@ -281,7 +293,13 @@ export function useTrending(limit = 8) {
 export function useMovieBySlug(slug: MaybeRefOrGetter<string>, expectedType?: ContentType) {
   const { catalog, pending, error, loadItemFromApi } = useCatalog()
   const movie = computed(() => catalog.value.find(item => item.slug === toValue(slug) && (!expectedType || item.type === expectedType)) ?? null)
-  const refresh = () => expectedType ? loadItemFromApi(toValue(slug), expectedType) : Promise.resolve(movie.value)
+  // The catalog state is serialized into the SSR payload, so on hydration the
+  // item is already present (with full cast/episode metadata) — do not refetch.
+  // Only hit the API when the item is genuinely missing (client-only navigation
+  // without a catalog entry yet).
+  const refresh = () => expectedType
+    ? (movie.value ? Promise.resolve(movie.value) : loadItemFromApi(toValue(slug), expectedType))
+    : Promise.resolve(movie.value)
   return { data: movie, movie, pending, error, refresh }
 }
 

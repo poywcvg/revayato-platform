@@ -472,6 +472,23 @@ services:
     networks:
       - edge
 
+  # One-shot: copy the staged APK(s) from ./downloads into the downloads_data
+  # volume that Caddy serves at /srv/downloads (see ops/Caddyfile /downloads/*).
+  # Nothing else populates that volume, so without this the /app download link
+  # 404s. Run with `docker compose run --rm downloads-seed` (see ops/deploy.sh).
+  # The APK is gitignored, so ops/deploy.sh stages it from android-app/dist/
+  # (or a GitHub Release) onto the host before this runs.
+  downloads-seed:
+    image: busybox:1.36
+    volumes:
+      - downloads_data:/srv/downloads
+      - ./downloads:/seed:ro
+    command: sh -c "cp -f /seed/*.apk /srv/downloads/ 2>/dev/null; echo '--- /srv/downloads ---'; ls -l /srv/downloads"
+    restart: "no"
+    networks:
+      - edge
+    logging: *default-logging
+
 volumes:
   postgres_data:
   static_data:

@@ -1,7 +1,7 @@
 <script setup lang="ts">
-const APP_VERSION = '5.0.1'
-const APP_SIZE = '۶٫۷ مگابایت'
-const APK_URL = '/downloads/revayato-native-v5.0.1.apk'
+const APP_VERSION = '5.0.2'
+const APP_SIZE = '۷٫۴ مگابایت'
+const APK_URL = '/downloads/revayato-native-v5.0.2.apk'
 const STORE_URL = 'https://revayato.com/app'
 
 const features = [

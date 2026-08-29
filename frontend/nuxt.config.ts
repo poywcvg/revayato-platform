@@ -150,11 +150,12 @@ export default defineNuxtConfig({
     storage: {
       'data:swr': {
         driver: 'memory',
-        // Sized against the container's 1Gi limit / 768M heap. Detail routes are
-        // cached too now, so the LRU needs room for more than the handful of
-        // list pages — but not so much that a long tail of rendered HTML can
-        // crowd out the SSR heap itself.
-        max: 220 /* max number of cached entries */,
+        // Sized against the container's 1Gi limit / 768M heap. The hot set is
+        // home + 4 list pages + the power-law head of 4 detail namespaces. A
+        // 220-slot LRU could evict /, /movies, /series under long-tail detail
+        // traffic, defeating the whole optimization on the highest-traffic routes.
+        // 500 leaves enough headroom for the long tail without crowding the heap.
+        max: 500 /* max number of cached entries */,
         ttl: 600 /* seconds; overridden per-route by swr below */,
       },
     },
@@ -185,7 +186,10 @@ export default defineNuxtConfig({
     '/app': { prerender: true },
     '/_nuxt/**': { headers: { 'cache-control': 'public, max-age=31536000, immutable' } },
     '/_ipx/**': { headers: { 'cache-control': 'public, max-age=2592000, stale-while-revalidate=86400' } },
-    '/media/**': { headers: { 'cache-control': 'public, max-age=2592000, stale-while-revalidate=86400' } },
+    // Media URLs here are not content-hashed, so a 30-day cache would serve stale
+    // artwork for a month after a re-encode. Cap at 1 day with SWR so updated
+    // posters/backdrops propagate quickly.
+    '/media/**': { headers: { 'cache-control': 'public, max-age=86400, stale-while-revalidate=86400' } },
     // Staff panel is auth-gated; skip SSR to free Nuxt workers for public pages.
     '/admin/**': { ssr: false },
   },

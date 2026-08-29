@@ -86,3 +86,8 @@ nohup.out
 # Android install artifacts (distributed via GitHub Releases)
 *.apk
 *.aab
+
+# Deploy-time APK staging dir (ops/deploy.sh seeds it from android-app/dist/).
+# The .gitkeep is committed so the dir exists; APKs inside stay ignored.
+downloads/*.apk
+downloads/*.aab

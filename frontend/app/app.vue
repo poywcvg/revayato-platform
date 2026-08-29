@@ -8,7 +8,6 @@
   <NuxtRouteAnnouncer />
   <AppNotifications />
   <SupportModal />
-  <DonationNudge />
   <NuxtLayout>
     <NuxtPage />
   </NuxtLayout>

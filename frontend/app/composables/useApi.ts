@@ -38,6 +38,30 @@ function refreshFailureCode(error: unknown) {
   return typeof code === 'string' ? code : ''
 }
 
+/**
+ * Client-only in-flight request coalescing for GETs. When several components
+ * mount together and each call `api()` for the same endpoint (genres, the home
+ * catalog, etc.), they would otherwise fire separate network requests. A single
+ * shared promise is returned so the backend sees one round-trip. Not used on the
+ * server (each SSR request is independent) and never for mutations (POST/PUT/...).
+ */
+const clientInflight = new Map<string, Promise<unknown>>()
+
+function inflightKey(method: string, request: string, options: ApiOptions): string | null {
+  if (method.toUpperCase() !== 'GET') return null
+  const query = options.query ? JSON.stringify(options.query) : ''
+  return `${request}::${query}`
+}
+
+function coalesceGet<T>(key: string | null, run: () => Promise<T>): Promise<T> {
+  if (!key || !import.meta.client) return run()
+  const existing = clientInflight.get(key)
+  if (existing) return existing as Promise<T>
+  const promise = run().finally(() => clientInflight.delete(key))
+  clientInflight.set(key, promise)
+  return promise
+}
+
 export const useApi = () => {
   const config = useRuntimeConfig()
   const { accessToken, refreshToken, sessionFlag, hasSession, clearAuthCookies } = useAuthCookies()
@@ -162,7 +186,7 @@ export const useApi = () => {
 
   async function execute<T>(request: string, options: ApiOptions, token = currentAccessToken()) {
     const requestToken = request.startsWith('/auth/') ? null : token
-    return $fetch<T>(request, {
+    const run = () => $fetch<T>(request, {
       ...options,
       // Server-side catalog rendering should use Docker's private network instead
       // of making a public round-trip through Caddy. The browser keeps using the
@@ -170,10 +194,12 @@ export const useApi = () => {
       baseURL: import.meta.server ? config.apiInternalBase : config.public.apiBase,
       headers: requestHeaders(options, requestToken),
       retry: 0,
-      // Catalog list endpoints can exceed 12s under crawler DB load; keep SSR
-      // slightly higher so home does not paint an empty shell on every timeout.
-      timeout: options.timeout ?? (import.meta.server ? 20_000 : 10_000),
+      // A cold cache miss should not pin a Nitro worker for 20s; 10s is a safer
+      // ceiling and the slow catalog shell already passes its own lower timeout.
+      timeout: options.timeout ?? (import.meta.server ? 10_000 : 10_000),
     })
+    const key = inflightKey(options.method ?? 'GET', request, options)
+    return coalesceGet<T>(key, () => run() as Promise<T>)
   }
 
   async function api<T>(request: string, options: ApiOptions = {}) {
