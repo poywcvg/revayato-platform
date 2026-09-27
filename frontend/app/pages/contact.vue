@@ -112,7 +112,7 @@ async function sendReply() {
   try {
     activeTicket.value = await support.reply(activeTicket.value.tracking_code, replyBody.value.trim())
     replyBody.value = ''
-    notifications.success('پاسخ ارسال شد')
+    notifications.success('پاسخ ارسال شد', 'تیم روایتو به‌زودی پاسخ می‌دهد.')
     await loadMine()
   } catch (cause) {
     notifications.notifyError(cause, 'ارسال پاسخ انجام نشد.')
@@ -202,7 +202,7 @@ useSeoMeta({
             {{ submitting ? 'در حال ارسال…' : 'ارسال' }}
             <CinematicIcon name="arrow-left" class="size-4" />
           </button>
-          <p v-if="!authStore.isAuthenticated" class="text-[11px] leading-6 text-muted">
+          <p v-if="!authStore.isAuthenticated" class="text-xs leading-6 text-muted">
             برای ارسال پیام
             <NuxtLink to="/auth/login?redirect=/contact" class="font-bold text-brand">وارد حساب</NuxtLink>
             شو.
@@ -234,7 +234,7 @@ useSeoMeta({
                   <strong class="truncate text-sm text-ink">{{ ticket.subject }}</strong>
                   <span v-if="ticket.unread_by_user" class="size-2 shrink-0 rounded-full bg-brand" />
                 </span>
-                <span class="mt-1 block text-[11px] text-secondary">{{ ticket.status_label }}</span>
+                <span class="mt-1 block text-xs text-secondary">{{ ticket.status_label }}</span>
               </button>
             </li>
             <li v-if="!myTickets.length" class="rounded-2xl bg-elevated p-4 text-xs text-muted">هنوز پیامی نفرستاده‌ای.</li>
@@ -245,9 +245,9 @@ useSeoMeta({
               <div>
                 <p class="text-sm font-black text-ink">{{ activeTicket.subject }}</p>
               </div>
-              <span class="rounded-lg bg-primary-500/14 px-2 py-1 text-[10px] font-black text-brand">{{ activeTicket.status_label }}</span>
+              <span class="rounded-lg bg-primary-500/14 px-2 py-1 text-[11px] font-black text-brand">{{ activeTicket.status_label }}</span>
             </div>
-            <p v-if="activeTicket.related_title" class="mt-2 text-[11px] text-secondary">عنوان مرتبط: {{ activeTicket.related_title }}</p>
+            <p v-if="activeTicket.related_title" class="mt-2 text-xs text-secondary">عنوان مرتبط: {{ activeTicket.related_title }}</p>
             <div class="mt-4 max-h-80 space-y-3 overflow-y-auto">
               <article
                 v-for="message in activeTicket.messages"
@@ -255,7 +255,7 @@ useSeoMeta({
                 class="rounded-xl px-3 py-2.5 text-xs leading-6"
                 :class="message.is_staff_reply ? 'bg-primary-500/10 text-ink' : 'bg-[var(--surface-1)] text-secondary ring-1 ring-line'"
               >
-                <p class="mb-1 text-[10px] font-black text-muted">{{ message.author_username }}</p>
+                <p class="mb-1 text-[11px] font-black text-muted">{{ message.author_username }}</p>
                 {{ message.body }}
               </article>
             </div>

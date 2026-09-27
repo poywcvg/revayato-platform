@@ -21,7 +21,7 @@ withDefaults(defineProps<{
       v-if="isDubbed"
       class="inline-flex items-center justify-center rounded-lg ring-1 ring-inset"
       :class="[
-        iconsOnly ? 'size-7 bg-primary-500/14 text-primary-300 ring-primary-400/25' : 'gap-1 bg-primary-500/14 px-2 py-1 text-[10px] font-black text-primary-300 ring-primary-400/25',
+        iconsOnly ? 'size-7 bg-primary-500/14 text-primary-300 ring-primary-400/25' : 'gap-1 bg-primary-500/14 px-2 py-1 text-[11px] font-black text-primary-300 ring-primary-400/25',
       ]"
       :title="iconsOnly ? 'دوبله فارسی' : undefined"
       :aria-label="iconsOnly ? 'دوبله فارسی' : undefined"
@@ -35,7 +35,7 @@ withDefaults(defineProps<{
       :class="[
         iconsOnly
           ? (dark ? 'size-7 bg-white/5 text-secondary ring-white/10' : 'size-7 bg-elevated text-secondary ring-line')
-          : (dark ? 'gap-1 bg-white/5 px-2 py-1 text-[10px] font-black text-secondary ring-white/10' : 'gap-1 bg-elevated px-2 py-1 text-[10px] font-black text-secondary ring-line'),
+          : (dark ? 'gap-1 bg-white/5 px-2 py-1 text-[11px] font-black text-secondary ring-white/10' : 'gap-1 bg-elevated px-2 py-1 text-[11px] font-black text-secondary ring-line'),
       ]"
       :title="iconsOnly ? 'زیرنویس فارسی' : undefined"
       :aria-label="iconsOnly ? 'زیرنویس فارسی' : undefined"

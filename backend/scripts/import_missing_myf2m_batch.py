@@ -29,12 +29,17 @@ if not (_APP_ROOT / 'config').is_dir():
 if str(_APP_ROOT) not in sys.path:
     sys.path.insert(0, str(_APP_ROOT))
 
+# Host-agnostic on purpose. These used to hard-code ``myf2m.info``; when the
+# provider moved to a new domain every listing page still returned HTTP 200 and
+# matched **zero** items, so the importer reported success while importing
+# nothing and the archive silently stopped growing. The host is configuration
+# (MYF2M_BASE_URL) — the shape of the link is what identifies a title.
 LISTING_MOVIE_RE = re.compile(
-    r'href="(?:https?://(?:www\.)?myf2m\.info)?/(?P<id>\d+)/(?P<slug>[^"/]+)/"',
+    r'href="(?:https?://[^"/]+)?/(?P<id>\d+)/(?P<slug>[^"/]+)/"',
     re.I,
 )
 SERIES_SLUG_RE = re.compile(
-    r'href="(?:https?://(?:www\.)?myf2m\.info)?/series/(?P<slug>[a-z0-9\-]+)/"',
+    r'href="(?:https?://[^"/]+)?/series/(?P<slug>[a-z0-9\-]+)/"',
     re.I,
 )
 IMDB_RE = re.compile(r'(tt\d{7,10})', re.I)
@@ -244,6 +249,44 @@ def _merge_dornatv(obj, *, content_type: str) -> dict:
         ) or {}
     except Exception as exc:
         return {'status': 'error', 'detail': str(exc)[:200]}
+
+
+def _sourceless_draft_ids(model) -> tuple[set[int], set[str]]:
+    """(tmdb ids, imdb ids) of crawler-made drafts that carry no source at all.
+
+    Only unpublished, TMDB-sourced rows with an empty ``download_links`` count.
+    Archived titles are left alone: a movie says so in ``publication_status``; a
+    series has no such column, so its archive is the admin audit row.
+    """
+    from django.db.models import Q
+
+    from apps.catalog.models import Movie, MovieSyncAudit
+
+    qs = (
+        model.objects.filter(is_published=False, metadata_source='tmdb')
+        .filter(Q(download_links=[]) | Q(download_links__isnull=True))
+    )
+    if model is Movie:
+        qs = qs.exclude(publication_status=Movie.PublicationStatus.ARCHIVED).filter(
+            Q(video_url='') | Q(video_url__isnull=True),
+        )
+    else:
+        archived = {
+            int(pk) for pk in MovieSyncAudit.objects.filter(
+                action=MovieSyncAudit.Action.ARCHIVE, details__kind='series',
+            ).values_list('details__object_id', flat=True)
+            if str(pk or '').isdigit()
+        }
+        if archived:
+            qs = qs.exclude(pk__in=archived)
+    tmdb_ids: set[int] = set()
+    imdb_ids: set[str] = set()
+    for tmdb_id, imdb_id in qs.values_list('tmdb_id', 'imdb_id').iterator(chunk_size=1000):
+        if tmdb_id:
+            tmdb_ids.add(int(tmdb_id))
+        if imdb_id and str(imdb_id).strip():
+            imdb_ids.add(str(imdb_id).strip().lower())
+    return tmdb_ids, imdb_ids
 
 
 def main() -> int:
@@ -471,6 +514,22 @@ def main() -> int:
         str(v).strip().lower()
         for v in Series.objects.exclude(imdb_id__isnull=True).exclude(imdb_id='').values_list('imdb_id', flat=True)
     }
+
+    # Sourceless drafts are "existing" rows with nothing to watch: the metadata
+    # crawlers created ~7,000 of them (TMDB/IMDb charts) and no provider page was
+    # ever matched. `--new-only` used to skip them by IMDb/TMDB id, so a listing
+    # page that carried exactly the links a draft was missing was walked past on
+    # every deep sweep while the drafts lane searched for the same title by name
+    # and failed. They are revived here instead: the row is updated in place (no
+    # duplicate) and still has to clear every publish gate below. Hand-made rows
+    # and archived titles stay out — those are an operator's call, not ours.
+    revivable_movie_tmdb, revivable_movie_imdb = _sourceless_draft_ids(Movie)
+    revivable_series_tmdb, revivable_series_imdb = _sourceless_draft_ids(Series)
+    print(
+        f'revivable sourceless drafts movies={len(revivable_movie_tmdb | revivable_movie_imdb)} '
+        f'series={len(revivable_series_tmdb | revivable_series_imdb)}',
+        flush=True,
+    )
 
     existing_movie_paths: set[str] = set()
     for links in (
@@ -815,7 +874,7 @@ def main() -> int:
                     )
                     year = int(year_match.group(1)) if year_match else None
 
-                    if new_only and imdb_id and imdb_id in existing_movie_imdb:
+                    if new_only and imdb_id and imdb_id in existing_movie_imdb and imdb_id not in revivable_movie_imdb:
                         stats['skipped_existing'] += 1
                         existing_movie_paths.add(page_path)
                         print(f'  -> skip existing imdb={imdb_id}', flush=True)
@@ -901,7 +960,7 @@ def main() -> int:
                         continue
 
                     tmdb_id = int(tmdb_summary['id'])
-                    if new_only and tmdb_id in existing_movie_tmdb:
+                    if new_only and tmdb_id in existing_movie_tmdb and tmdb_id not in revivable_movie_tmdb:
                         stats['skipped_existing'] += 1
                         existing_movie_paths.add(page_path)
                         print(f'  -> skip existing tmdb={tmdb_id}', flush=True)
@@ -1099,6 +1158,8 @@ def main() -> int:
                     stats['kept_movie_ids'].append(movie.pk)
                     published_movie_tmdb.add(tmdb_id)
                     existing_movie_tmdb.add(tmdb_id)
+                    revivable_movie_tmdb.discard(tmdb_id)
+                    revivable_movie_imdb.discard(imdb_id)
                     existing_movie_paths.add(page_path)
                     if imdb_id:
                         published_movie_imdb.add(imdb_id)
@@ -1182,7 +1243,7 @@ def main() -> int:
                     html = detail.text or ''
                     imdb_ids = IMDB_RE.findall(html)
                     imdb_id = (imdb_ids[0] if imdb_ids else '').lower()
-                    if new_only and imdb_id and imdb_id in existing_series_imdb:
+                    if new_only and imdb_id and imdb_id in existing_series_imdb and imdb_id not in revivable_series_imdb:
                         stats['skipped_existing'] += 1
                         existing_series_paths.add(page_path)
                         print(f'  -> skip existing imdb={imdb_id}', flush=True)
@@ -1343,7 +1404,7 @@ def main() -> int:
                         continue
 
                     tmdb_id = int(tmdb_summary['id'])
-                    if new_only and tmdb_id in existing_series_tmdb:
+                    if new_only and tmdb_id in existing_series_tmdb and tmdb_id not in revivable_series_tmdb:
                         stats['skipped_existing'] += 1
                         existing_series_paths.add(page_path)
                         print(f'  -> skip existing tmdb={tmdb_id}', flush=True)
@@ -1510,6 +1571,8 @@ def main() -> int:
                     stats['kept_series_ids'].append(series.pk)
                     published_series_tmdb.add(tmdb_id)
                     existing_series_tmdb.add(tmdb_id)
+                    revivable_series_tmdb.discard(tmdb_id)
+                    revivable_series_imdb.discard(imdb_id)
                     existing_series_paths.add(page_path)
                     if imdb_id:
                         published_series_imdb.add(imdb_id)

@@ -63,6 +63,9 @@ const { data, pending, error, refresh } = await useAsyncData(
   {
     watch: [kind, page],
     default: () => ({ items: [] as Movie[], count: 0 }),
+    // Block SSR (complete HTML + SEO) but never freeze a client SPA navigation
+    // behind the fetch — MovieGrid's :loading skeleton covers the pending state.
+    lazy: import.meta.client,
   },
 )
 
@@ -156,7 +159,7 @@ useSeoMeta({
           {{ pending ? 'در حال بارگذاری...' : `${total.toLocaleString('fa-IR')} عنوان تازه` }}
         </p>
       </div>
-      <span class="shrink-0 text-[11px] font-bold text-muted">مرتب‌شده بر اساس زمان افزودن</span>
+      <span class="shrink-0 text-xs font-bold text-muted">مرتب‌شده بر اساس زمان افزودن</span>
     </div>
 
     <MovieGrid

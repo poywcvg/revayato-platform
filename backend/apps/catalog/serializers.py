@@ -1,10 +1,10 @@
 from rest_framework import serializers
-from django.utils.text import slugify
 
 from config.public_urls import media_url, normalize_download_links, object_key, public_download_links, signed_download_url
 
 from .countries import persian_country_name
 from .localization import contains_persian, is_latin_text, secondary_title_for
+from .slugs import english_slug_for
 from .models import (
     Actor, CatalogImporterSettings, Collection, Country, Director, Episode, Genre,
     Movie, MovieActor, Season, Series, SeriesActor, Tag,
@@ -196,7 +196,40 @@ class DirectorListSerializer(PublicMediaSerializer):
 
     class Meta:
         model = Director
-        fields = ['id', 'name', 'original_name', 'slug', 'photo']
+        fields = [
+            'id', 'name', 'original_name', 'slug', 'photo', 'photo_external_url', 'birth_place', 'popularity', 'is_featured',
+        ]
+
+
+class DirectorDetailSerializer(PublicMediaSerializer):
+    public_media_fields = ('photo',)
+    movies = serializers.SerializerMethodField()
+    series = serializers.SerializerMethodField()
+
+    class Meta:
+        model = Director
+        fields = [
+            'id', 'name', 'original_name', 'slug', 'photo', 'biography', 'birth_date', 'birth_place',
+            'popularity', 'is_featured', 'photo_external_url', 'movies', 'series',
+        ]
+
+    def get_movies(self, obj):
+        qs = (
+            Movie.objects.filter(is_published=True, directors=obj)
+            .distinct()
+            .prefetch_related('genres', 'directors', 'countries')
+            .order_by('-release_year', '-popularity')[:120]
+        )
+        return MovieListSerializer(qs, many=True, context=self.context).data
+
+    def get_series(self, obj):
+        qs = (
+            Series.objects.filter(is_published=True, directors=obj)
+            .distinct()
+            .prefetch_related('genres', 'directors', 'countries')
+            .order_by('-start_year', '-popularity')[:80]
+        )
+        return SeriesListSerializer(qs, many=True, context=self.context).data
 
 
 class CountrySerializer(serializers.ModelSerializer):
@@ -263,7 +296,7 @@ class MovieListSerializer(CatalogTitleMixin, MediaRatingsMixin, PublicMediaSeria
             'id', 'title', 'original_title', 'secondary_title', 'slug', 'short_description',
             'release_year', 'duration_minutes', 'age_rating', 'language',
             'content_format', 'is_dubbed', 'has_subtitle', 'is_uncensored',
-            'imdb_rating', 'imdb_rank', 'rating_average', 'site_rating', 'ratings', 'popularity',
+            'imdb_rating', 'imdb_rank', 'rating_average', 'site_rating', 'site_rating_count', 'ratings', 'popularity',
             'poster', 'backdrop', 'trailer_url', 'has_downloads',
             'genres', 'directors', 'countries',
             'is_published', 'is_featured', 'is_recommended', 'view_count', 'like_count',
@@ -284,9 +317,14 @@ class MovieDetailSerializer(CatalogTitleMixin, MediaRatingsMixin, PublicMediaSer
     seo_title = serializers.ReadOnlyField()
     seo_description = serializers.ReadOnlyField()
     seo_keywords = serializers.SerializerMethodField()
+    #: Which SEO texts an editor wrote by hand; the web builds the rest itself.
+    seo_custom = serializers.SerializerMethodField()
     has_downloads = serializers.BooleanField(read_only=True)
     download_qualities = serializers.ListField(child=serializers.CharField(), read_only=True)
     ratings = serializers.SerializerMethodField()
+    #: What testing the source proved, so the player can route to the gateway
+    #: before the first frame instead of after a failure. See playback_gate.
+    playback_mode = serializers.CharField(read_only=True)
 
     class Meta:
         model = Movie
@@ -294,12 +332,13 @@ class MovieDetailSerializer(CatalogTitleMixin, MediaRatingsMixin, PublicMediaSer
             'id', 'title', 'original_title', 'secondary_title', 'slug', 'description',
             'release_year', 'duration_minutes', 'age_rating', 'language',
             'content_format', 'is_dubbed', 'has_subtitle', 'is_uncensored', 'content_warnings',
-            'imdb_rating', 'imdb_rank', 'rating_average', 'site_rating', 'ratings', 'imdb_id', 'tmdb_id',
-            'poster', 'backdrop', 'trailer_url', 'video_url', 'download_url', 'download_links',
+            'imdb_rating', 'imdb_rank', 'rating_average', 'site_rating', 'site_rating_count', 'ratings', 'imdb_id', 'tmdb_id',
+            'poster', 'backdrop', 'trailer_url', 'video_url', 'playback_mode',
+            'download_url', 'download_links',
             'quality', 'subtitle_tracks', 'has_downloads', 'download_qualities',
             'genres', 'movie_actors', 'directors', 'countries', 'tags',
             'is_published', 'is_featured', 'is_recommended', 'popularity', 'view_count', 'like_count',
-            'seo_title', 'seo_description', 'seo_keywords',
+            'seo_title', 'seo_description', 'seo_keywords', 'seo_custom',
             'created_at', 'updated_at',
         ]
 
@@ -308,6 +347,10 @@ class MovieDetailSerializer(CatalogTitleMixin, MediaRatingsMixin, PublicMediaSer
 
     def get_seo_keywords(self, obj):
         return obj.effective_seo_keywords
+
+    def get_seo_custom(self, obj):
+        manual = set(obj.manual_override_fields or [])
+        return {'title': 'meta_title' in manual, 'description': 'meta_description' in manual}
 
 
 class AdminMovieSerializer(serializers.ModelSerializer):
@@ -331,7 +374,8 @@ class AdminMovieSerializer(serializers.ModelSerializer):
             'genre_ids', 'country_ids', 'clear_genres', 'clear_countries', 'language', 'original_language', 'spoken_languages', 'age_rating',
             'imdb_id', 'tmdb_id', 'poster', 'backdrop', 'poster_path', 'backdrop_path', 'poster_external_url',
             'backdrop_external_url', 'poster_url', 'backdrop_url', 'trailer_url',
-            'trailer_external_url', 'video_url', 'download_key', 'download_links', 'quality', 'subtitle_tracks',
+            'trailer_external_url', 'video_url', 'playback_mode', 'playback_checked_at',
+            'download_key', 'download_links', 'quality', 'subtitle_tracks',
             'content_format', 'is_dubbed', 'has_subtitle', 'is_uncensored', 'content_warnings',
             'imdb_rating', 'rating_average', 'vote_count', 'popularity', 'production_companies',
             'crew_metadata', 'writers', 'movie_actors', 'directors', 'is_featured', 'is_recommended',
@@ -340,6 +384,7 @@ class AdminMovieSerializer(serializers.ModelSerializer):
             'last_tmdb_sync_at', 'created_at', 'updated_at', 'duplicate_warnings',
         ]
         read_only_fields = [
+            'playback_mode', 'playback_checked_at',
             'metadata_source', 'manual_override_fields', 'last_tmdb_sync_at',
             'poster_path', 'backdrop_path', 'rating_average', 'duration_text',
             'created_at', 'updated_at', 'duplicate_warnings',
@@ -416,13 +461,14 @@ class AdminMovieSerializer(serializers.ModelSerializer):
         attrs = _require_persian_title(attrs, self.instance)
         title = attrs['title']
         if not attrs.get('slug') and not getattr(self.instance, 'slug', ''):
-            base = slugify(title, allow_unicode=True) or 'movie'
-            slug = base
-            index = 2
-            while Movie.objects.filter(slug=slug).exists():
-                slug = f'{base}-{index}'
-                index += 1
-            attrs['slug'] = slug
+            # Page addresses are English (``inception-2010``), never the Persian title.
+            attrs['slug'] = english_slug_for(
+                Movie,
+                title=title,
+                original_title=attrs.get('original_title') or getattr(self.instance, 'original_title', ''),
+                year=attrs.get('release_year') or getattr(attrs.get('release_date'), 'year', None),
+                tmdb_id=attrs.get('tmdb_id'),
+            )
 
         links = attrs.get('download_links')
         if links is None and self.instance is not None:
@@ -504,6 +550,8 @@ class EpisodeSerializer(PublicMediaSerializer):
     public_download_fields = {'download_url': 'download_key'}
     download_url = serializers.CharField(source='download_key', read_only=True)
     stream_links = serializers.SerializerMethodField()
+    #: See MovieDetailSerializer.playback_mode.
+    playback_mode = serializers.CharField(read_only=True)
 
     def get_stream_links(self, obj):
         # Keep the Android/web player on the same episode-scoped source resolver
@@ -517,7 +565,8 @@ class EpisodeSerializer(PublicMediaSerializer):
         model = Episode
         fields = [
             'id', 'title', 'episode_number', 'description',
-            'duration_minutes', 'poster', 'video_url', 'trailer_url', 'download_url', 'stream_links', 'subtitle_tracks', 'air_date',
+            'duration_minutes', 'poster', 'video_url', 'playback_mode', 'trailer_url',
+            'download_url', 'stream_links', 'subtitle_tracks', 'air_date',
             'is_published', 'view_count',
             'created_at',
         ]
@@ -556,7 +605,7 @@ class SeriesListSerializer(CatalogTitleMixin, MediaRatingsMixin, PublicMediaSeri
             'id', 'title', 'original_title', 'secondary_title', 'slug', 'short_description',
             'start_year', 'end_year', 'age_rating', 'language',
             'content_format', 'is_dubbed', 'has_subtitle', 'is_uncensored',
-            'imdb_rating', 'imdb_rank', 'rating_average', 'site_rating', 'ratings', 'tmdb_id', 'popularity',
+            'imdb_rating', 'imdb_rank', 'rating_average', 'site_rating', 'site_rating_count', 'ratings', 'tmdb_id', 'popularity',
             'poster', 'backdrop', 'trailer_url', 'has_downloads',
             'genres', 'directors', 'countries',
             'status', 'is_published', 'is_featured', 'view_count', 'like_count',
@@ -583,7 +632,7 @@ class SeriesDetailSerializer(CatalogTitleMixin, MediaRatingsMixin, PublicMediaSe
             'id', 'title', 'original_title', 'secondary_title', 'slug', 'short_description', 'description',
             'start_year', 'end_year', 'age_rating', 'language',
             'content_format', 'is_dubbed', 'has_subtitle', 'is_uncensored', 'content_warnings',
-            'imdb_rating', 'imdb_rank', 'rating_average', 'site_rating', 'ratings', 'imdb_id', 'tmdb_id',
+            'imdb_rating', 'imdb_rank', 'rating_average', 'site_rating', 'site_rating_count', 'ratings', 'imdb_id', 'tmdb_id',
             'poster', 'backdrop', 'trailer_url', 'download_links',
             'has_downloads', 'download_qualities',
             'genres', 'series_actors', 'directors', 'countries', 'tags',
@@ -750,13 +799,14 @@ class AdminSeriesSerializer(serializers.ModelSerializer):
         attrs = _require_persian_title(attrs, self.instance)
         title = attrs['title']
         if not attrs.get('slug') and not getattr(self.instance, 'slug', ''):
-            base = slugify(title, allow_unicode=True) or 'series'
-            slug = base
-            index = 2
-            while Series.objects.filter(slug=slug).exists():
-                slug = f'{base}-{index}'
-                index += 1
-            attrs['slug'] = slug
+            # Page addresses are English (``inception-2010``), never the Persian title.
+            attrs['slug'] = english_slug_for(
+                Series,
+                title=title,
+                original_title=attrs.get('original_title') or getattr(self.instance, 'original_title', ''),
+                year=attrs.get('start_year'),
+                tmdb_id=attrs.get('tmdb_id'),
+            )
 
         links = attrs.get('download_links')
         if links is None and self.instance is not None:

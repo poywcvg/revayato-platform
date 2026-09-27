@@ -14,7 +14,7 @@ from users.admin_api import IsStaffUser, StaffAdminThrottle
 from . import selectors, services
 from .models import Rating, SupportTicket
 from .serializers import (
-    AdminRatingHideSerializer,
+    AdminReviewActionSerializer,
     AdminSupportTicketUpdateSerializer,
     RatingSerializer,
     SupportReplySerializer,
@@ -28,12 +28,21 @@ class AdminInboxPagination(LimitOffsetPagination):
     max_limit = 100
 
 
+def _review_payload(rating):
+    payload = RatingSerializer(rating).data
+    payload['content'] = selectors.resolve_content_summary(rating.content_type, rating.object_id)
+    return payload
+
+
 @api_view(['GET'])
 @permission_classes([IsAuthenticated, IsStaffUser])
 @throttle_classes([StaffAdminThrottle])
 def admin_reviews_list(request):
     content_type = request.GET.get('content_type') or None
     q = (request.GET.get('q') or '').strip()
+    state = request.GET.get('state') or None
+    if state not in {'unanswered', 'answered', 'featured'}:
+        state = None
     hidden_raw = request.GET.get('hidden')
     hidden = None
     if hidden_raw in {'1', 'true', 'True'}:
@@ -41,16 +50,13 @@ def admin_reviews_list(request):
     elif hidden_raw in {'0', 'false', 'False'}:
         hidden = False
 
-    queryset = selectors.get_admin_reviews(content_type=content_type, q=q, hidden=hidden)
+    queryset = selectors.get_admin_reviews(content_type=content_type, q=q, hidden=hidden, state=state)
     paginator = AdminInboxPagination()
     page = paginator.paginate_queryset(queryset, request)
-    results = []
-    for rating in page:
-        payload = RatingSerializer(rating).data
-        content = selectors.resolve_content_summary(rating.content_type, rating.object_id)
-        payload['content'] = content
-        results.append(payload)
-    return paginator.get_paginated_response(results)
+    results = [_review_payload(rating) for rating in page]
+    response = paginator.get_paginated_response(results)
+    response.data['counts'] = selectors.get_review_moderation_counts()
+    return response
 
 
 @api_view(['PATCH'])
@@ -58,12 +64,29 @@ def admin_reviews_list(request):
 @throttle_classes([StaffAdminThrottle])
 def admin_review_detail(request, rating_id):
     rating = get_object_or_404(Rating, pk=rating_id)
-    serializer = AdminRatingHideSerializer(data=request.data)
+    serializer = AdminReviewActionSerializer(data=request.data)
     serializer.is_valid(raise_exception=True)
-    services.set_rating_hidden(rating, serializer.validated_data['is_hidden'])
-    payload = RatingSerializer(rating).data
-    payload['content'] = selectors.resolve_content_summary(rating.content_type, rating.object_id)
-    return Response(payload)
+    data = serializer.validated_data
+    if 'is_hidden' in data:
+        services.set_rating_hidden(rating, data['is_hidden'])
+    if 'is_featured' in data:
+        services.set_review_featured(rating, data['is_featured'])
+    if 'admin_reply' in data:
+        services.set_review_admin_reply(rating, author=request.user, body=data['admin_reply'])
+    rating.refresh_from_db()
+    return Response(_review_payload(rating))
+
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated, IsStaffUser])
+@throttle_classes([StaffAdminThrottle])
+def admin_interaction_overview(request):
+    """Lightweight badge/overview feed for the admin shell: how many reviews are
+    waiting on the team and how many support requests are unread."""
+    return Response({
+        'reviews': selectors.get_review_moderation_counts(),
+        'support': selectors.get_support_inbox_counts(),
+    })
 
 
 @api_view(['GET'])

@@ -9,7 +9,8 @@ from apps.catalog.serializers import AdminSeriesSerializer
 class AdminSeriesAvailabilitySyncTests(TestCase):
     def setUp(self):
         self.series = Series.objects.create(
-            title='Test Series',
+            title='سریال آزمایشی',
+            original_title='Test Series',
             slug='test-series',
             is_dubbed=False,
             has_subtitle=False,
@@ -55,7 +56,8 @@ class AdminSeriesApiTests(TestCase):
         self.client = APIClient()
         self.client.force_authenticate(self.staff)
         self.series = Series.objects.create(
-            title='Public Series',
+            title='سریال عمومی',
+            original_title='Public Series',
             slug='public-series',
             is_published=True,
             download_links=[

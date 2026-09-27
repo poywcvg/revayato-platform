@@ -4,8 +4,9 @@ from __future__ import annotations
 
 from django.contrib.auth import get_user_model
 from django.core.exceptions import ValidationError as DjangoValidationError
-from django.db.models import Q
+from django.db.models import Count, Q
 from django.shortcuts import get_object_or_404
+from django.utils import timezone
 from rest_framework import serializers, status
 from rest_framework.decorators import api_view, permission_classes, throttle_classes
 from rest_framework.pagination import LimitOffsetPagination
@@ -15,6 +16,69 @@ from rest_framework.throttling import UserRateThrottle
 from users.username_policy import validate_username_policy
 
 User = get_user_model()
+
+
+def _user_activity_stats(user):
+    """Real per-user engagement stats for the admin user-detail drawer.
+
+    All values are live counts from the engagement tables — never fabricated.
+    """
+    from apps.catalog.models import Movie, Series
+    from apps.engagement.models import Like, Rating, UserActivityEvent, WatchlistItem
+
+    events = UserActivityEvent.objects.filter(user=user)
+    action_counts = {
+        row['action']: row['count']
+        for row in events.values('action').annotate(count=Count('id'))
+    }
+    downloads = action_counts.get('download_click', 0)
+    plays = action_counts.get('play', 0)
+    completes = action_counts.get('complete_watch', 0)
+    searches = action_counts.get('search', 0)
+
+    # Most recent activity (typed, title-resolved where possible).
+    recent_rows = list(
+        events.order_by('-created_at')
+        .values('action', 'content_type', 'object_id', 'query', 'created_at')[:15]
+    )
+    movie_ids = [r['object_id'] for r in recent_rows if r['content_type'] == 'movie' and r['object_id']]
+    series_ids = [r['object_id'] for r in recent_rows if r['content_type'] == 'series' and r['object_id']]
+    movies = Movie.objects.in_bulk(movie_ids)
+    series = Series.objects.in_bulk(series_ids)
+    recent_activity = []
+    for row in recent_rows:
+        item = None
+        if row['content_type'] == 'movie':
+            item = movies.get(row['object_id'])
+        elif row['content_type'] == 'series':
+            item = series.get(row['object_id'])
+        recent_activity.append({
+            'action': row['action'],
+            'content_type': row['content_type'],
+            'object_id': row['object_id'],
+            'title': (item.title if item else '') or row.get('query') or '',
+            'slug': item.slug if item else '',
+            'created_at': row['created_at'].isoformat() if row['created_at'] else None,
+        })
+
+    last_event = events.order_by('-created_at').values_list('created_at', flat=True).first()
+    last_seen = max([t for t in (user.last_login, last_event) if t], default=None)
+
+    return {
+        'stats': {
+            'downloads': downloads,
+            'plays': plays,
+            'completes': completes,
+            'searches': searches,
+            'total_events': events.count(),
+            'likes': Like.objects.filter(user=user).count(),
+            'ratings': Rating.objects.filter(user=user).count(),
+            'watchlist': WatchlistItem.objects.filter(user=user).count(),
+            'last_seen': last_seen.isoformat() if last_seen else None,
+            'days_since_joined': (timezone.now() - user.date_joined).days if user.date_joined else None,
+        },
+        'recent_activity': recent_activity,
+    }
 
 
 class IsStaffUser(BasePermission):
@@ -171,7 +235,15 @@ def admin_user_list_create(request):
 
     paginator = AdminUserPagination()
     page = paginator.paginate_queryset(queryset, request)
-    return paginator.get_paginated_response(AdminUserSerializer(page, many=True).data)
+    response = paginator.get_paginated_response(AdminUserSerializer(page, many=True).data)
+    response.data['summary'] = {
+        'total': User.objects.count(),
+        'active': User.objects.filter(is_active=True).count(),
+        'inactive': User.objects.filter(is_active=False).count(),
+        'staff': User.objects.filter(is_staff=True).count(),
+        'verified': User.objects.filter(is_verified=True).count(),
+    }
+    return response
 
 
 @api_view(['GET', 'PATCH'])
@@ -181,7 +253,9 @@ def admin_user_detail(request, user_id):
     user = get_object_or_404(User.objects.all(), pk=user_id)
 
     if request.method == 'GET':
-        return Response(AdminUserSerializer(user).data)
+        data = AdminUserSerializer(user).data
+        data.update(_user_activity_stats(user))
+        return Response(data)
 
     serializer = AdminUserUpdateSerializer(instance=user, data=request.data, partial=True)
     serializer.is_valid(raise_exception=True)

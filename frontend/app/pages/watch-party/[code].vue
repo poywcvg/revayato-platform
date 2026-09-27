@@ -1,15 +1,19 @@
 <script setup lang="ts">
+import { reportClientDiag } from '~/utils/clientDiag'
 import type {
   AppErrorDetails,
   DownloadLink,
   PlaybackSnapshot,
+  PlaybackTextTrack,
   PlaybackVersion,
+  SubtitleSyncFeedback,
   WatchPartyPlaybackEvent,
   WatchPartyPlaybackState,
   WatchPartyStreamLink,
   WatchRoom,
 } from '~/types'
-import { pickStreamFriendlyLink, prefersBrowserSafeContainers, qualityHeightOf, streamNetworkProfile, warmPlaybackOrigin } from '~/utils/downloadMeta'
+import type { StreamGatewaySession } from '~/composables/useStreamGateway'
+import { pickStreamFriendlyLink, prefersBrowserSafeContainers, qualityHeightOf, streamNetworkProfile, videoCodecFamily, warmPlaybackOrigin } from '~/utils/downloadMeta'
 import { buildPlaybackVersions, pairSubtitleTracksForSource, resolvePlaybackVersion } from '~/utils/playbackVersions'
 
 definePageMeta({ layout: 'player', middleware: 'auth', pageTransition: false })
@@ -23,6 +27,7 @@ interface PlayerHandle {
 const route = useRoute()
 const code = computed(() => String(route.params.code))
 const { api } = useApi()
+const { reportSubtitleSync } = useSubtitleSyncReport()
 const notifications = useNotifications()
 const socket = useWatchPartySocket(code)
 const player = useTemplateRef<PlayerHandle>('player')
@@ -65,6 +70,18 @@ let seekPublishTimer: ReturnType<typeof setTimeout> | undefined
 const HOST_SYNC_PLAYING_MS = 1200
 const HOST_SYNC_PAUSED_MS = 3000
 const failedPlaybackSources = new Set<string>()
+
+// --- playback gateway --------------------------------------------------------
+// Per-viewer, not per-room: one member on Safari can be watching a rewrapped
+// stream while everyone else plays the file directly. That stays in sync because
+// the player reports and consumes film time, never its own media clock.
+const { openGatewayStream, isGatewayUrl, gatewayMessageFor } = useStreamGateway()
+const gatewaySession = ref<StreamGatewaySession | null>(null)
+const gatewayAttempted = new Set<string>()
+let gatewayOriginUrl = ''
+let gatewayPending = false
+let lastPositionSeconds = 0
+let gatewayHeartbeat: ReturnType<typeof setInterval> | undefined
 const hostLiveState = ref<WatchPartyPlaybackState | null>(null)
 
 const room = computed(() => socket.room.value)
@@ -102,6 +119,19 @@ const playerSourceQuality = computed(() => {
   return height ? `${height}p` : raw
 })
 
+const { ensurePlaybackSubtitles, getPlaybackSubtitleStatus } = usePlaybackSubtitleEnsure()
+const ensuredSubtitles = ref<{ key: string, tracks: PlaybackTextTrack[] }>({ key: '', tracks: [] })
+const subtitleEnsureTarget = computed(() => {
+  const content = room.value?.content
+  if (!content) return null
+  if (content.type === 'movie') return { type: 'movie' as const, slug: content.slug, episodeId: 0 }
+  const seriesSlug = content.series?.slug
+  return seriesSlug ? { type: 'series' as const, slug: seriesSlug, episodeId: content.id } : null
+})
+const subtitleContentKey = computed(() => {
+  const target = subtitleEnsureTarget.value
+  return target ? `${target.type}:${target.slug}:${target.episodeId}` : ''
+})
 const activeSubtitleTracks = computed(() => {
   const version = activeVersion.value
   if (!version || version.burnedInSubtitles) return []
@@ -115,8 +145,82 @@ const activeSubtitleTracks = computed(() => {
   if (paired.length) return paired
   if (version.kind === 'softsub' && sourceTracks.length) return [...sourceTracks]
   if (version.subtitleTracks.length) return [...version.subtitleTracks]
+  if (ensuredSubtitles.value.key === subtitleContentKey.value) return [...ensuredSubtitles.value.tracks]
   return []
 })
+
+// --- missing Persian subtitle ------------------------------------------------
+// Same order as the main player: the player first looks inside the file it is
+// streaming; only when that has no Persian track does this viewer ask the
+// server once, then poll lightly until cues land or the server says none exist.
+const SUBTITLE_POLL_MS = 5_000
+const SUBTITLE_POLL_MAX = 24
+const subtitleEnsureAsked = new Set<string>()
+let subtitlePollTimer: ReturnType<typeof setTimeout> | undefined
+
+function clearSubtitlePoll() {
+  if (subtitlePollTimer) clearTimeout(subtitlePollTimer)
+  subtitlePollTimer = undefined
+}
+
+function acceptEnsuredTracks(key: string, tracks: PlaybackTextTrack[] | undefined) {
+  const usable = (tracks || []).filter(track => Boolean(track?.src))
+  if (!usable.length || key !== subtitleContentKey.value) return false
+  ensuredSubtitles.value = { key, tracks: usable }
+  clearSubtitlePoll()
+  showNotice('زیرنویس فارسی آماده شد و روشن شد')
+  return true
+}
+
+function pollEnsuredSubtitles(key: string, reportId: number | null, attempt: number) {
+  clearSubtitlePoll()
+  if (attempt >= SUBTITLE_POLL_MAX) return
+  subtitlePollTimer = setTimeout(async () => {
+    const target = subtitleEnsureTarget.value
+    if (!target || key !== subtitleContentKey.value) return
+    try {
+      const result = await getPlaybackSubtitleStatus({ ...target, reportId })
+      if (acceptEnsuredTracks(key, result?.subtitle_tracks)) return
+      if (result?.status === 'exhausted') return
+    } catch {
+      // A missed poll is harmless; the next one retries.
+    }
+    pollEnsuredSubtitles(key, reportId, attempt + 1)
+  }, SUBTITLE_POLL_MS)
+}
+
+async function ensureRoomSubtitles() {
+  const target = subtitleEnsureTarget.value
+  const key = subtitleContentKey.value
+  const version = activeVersion.value
+  if (!target || !key || !version || subtitleEnsureAsked.has(key)) return
+  if (version.kind === 'dub' || version.burnedInSubtitles || activeSubtitleTracks.value.length) return
+  subtitleEnsureAsked.add(key)
+  try {
+    const result = await ensurePlaybackSubtitles({
+      ...target,
+      version: version.kind,
+      sourceUrl: gatewayOriginUrl || playerSrc.value,
+      sync: true,
+    })
+    if (acceptEnsuredTracks(key, result?.subtitle_tracks)) return
+    if (result?.status === 'exhausted' || result?.status === 'burned_in') return
+    if (result?.queued || result?.status === 'queued' || result?.status === 'ready') {
+      pollEnsuredSubtitles(key, result?.report_id || null, 0)
+    }
+  } catch {
+    // Network hiccup: allow one more try the next time a file is probed.
+    subtitleEnsureAsked.delete(key)
+  }
+}
+
+function handleEmbeddedSubtitles(payload: { persian: boolean }) {
+  if (payload.persian) {
+    clearSubtitlePoll()
+    return
+  }
+  void ensureRoomSubtitles()
+}
 const inviteUrl = computed(() =>
   import.meta.client
     ? `${window.location.origin}/watch-party/${encodeURIComponent(code.value)}`
@@ -191,6 +295,9 @@ function reportError(error: unknown, fallback: string) {
 }
 
 function syncPlayerSource(url?: string | null) {
+  // A running gateway session is this viewer's only working source; re-picking
+  // from the link list would put them straight back on the file that failed.
+  if (gatewaySession.value) return
   const requested = String(url || '').trim()
   const preferred = resolvePlaybackVersion(
     playbackVersions.value,
@@ -224,9 +331,99 @@ function syncPlayerSource(url?: string | null) {
   }
 }
 
+/**
+ * Ask the backend to rewrap the failed file into HLS for this viewer alone.
+ *
+ * Resolves true once the session is playing. Only ever called from a dead end
+ * in handleSourceFailed, after every direct mirror has been spent.
+ */
+async function tryGatewayPlayback(
+  failedUrl: string,
+  options: { position?: number, force?: boolean } = {},
+) {
+  const content = room.value?.content
+  const source = String(failedUrl || '').trim()
+  if (!content?.id || !source || gatewayPending || isGatewayUrl(source)) return false
+
+  const kind = content.type === 'episode' ? 'episode' : 'movie'
+  const key = `${kind}:${content.id}:${source}`
+  if (!options.force && gatewayAttempted.has(key)) return false
+  gatewayAttempted.add(key)
+
+  gatewayPending = true
+  try {
+    const session = await openGatewayStream({
+      kind,
+      id: content.id,
+      url: source,
+      position: Math.max(0, Math.floor(options.position || 0)),
+    })
+    gatewayOriginUrl = source
+    gatewaySession.value = session
+    playerReady.value = false
+    playerSrc.value = session.playlist
+    showNotice('پخش سازگار با این مرورگر فعال شد.')
+    return true
+  }
+  catch (error) {
+    gatewaySession.value = null
+    showNotice(gatewayMessageFor((error as { code?: string })?.code || ''))
+    return false
+  }
+  finally {
+    gatewayPending = false
+  }
+}
+
+/** Track the playhead in film seconds so a reopened session lands on it. */
+function handlePartyPosition(snapshot: PlaybackSnapshot) {
+  lastPositionSeconds = Math.max(0, Number(snapshot?.position_seconds) || 0)
+}
+
+/** Viewer aimed outside the session's window — reopen the stream there. */
+async function handleSeekBeyondWindow(filmSeconds: number) {
+  if (!gatewayOriginUrl) return
+  lastPositionSeconds = filmSeconds
+  await tryGatewayPlayback(gatewayOriginUrl, { position: filmSeconds, force: true })
+}
+
+// A paused viewer stops pulling segments and the session is reaped as "left".
+// Re-reading the playlist is the cheapest thing that counts as presence.
+watch(() => gatewaySession.value?.playlist || '', (playlist) => {
+  if (gatewayHeartbeat) clearInterval(gatewayHeartbeat)
+  gatewayHeartbeat = undefined
+  if (!playlist || !import.meta.client) return
+  gatewayHeartbeat = setInterval(() => {
+    fetch(playlist, { method: 'GET', cache: 'no-store', credentials: 'omit' }).catch(() => {})
+  }, 30_000)
+})
+
 function handleSourceFailed(payload: { src: string, code: number }) {
   const failed = String(payload?.src || playerSrc.value || '').trim()
+  // The session itself broke — usually reaped while paused. Reopen at the
+  // playhead; only if that fails do we fall back to the direct mirrors, and
+  // the session has to be cleared first or syncPlayerSource will refuse.
+  if (failed && isGatewayUrl(failed)) {
+    const origin = gatewayOriginUrl
+    gatewaySession.value = null
+    if (origin) {
+      void tryGatewayPlayback(origin, { position: lastPositionSeconds, force: true }).then((ok) => {
+        if (!ok) handleSourceFailed({ src: origin, code: Number(payload?.code) || 0 })
+      })
+      return
+    }
+  }
   if (failed) failedPlaybackSources.add(failed)
+  const failedFamily = videoCodecFamily(failed)
+  const failedCode = Number(payload?.code) || 0
+  // Retire same-codec mirrors on decode failures so we do not churn HEVC files.
+  if (failedFamily && (failedCode === 3 || failedCode === 4)) {
+    for (const link of streamLinks.value) {
+      if (link.url && videoCodecFamily(link.url, link.quality, link.label) === failedFamily) {
+        failedPlaybackSources.add(link.url)
+      }
+    }
+  }
   const candidates = streamLinks.value
     .filter(link => Boolean(link.url) && !failedPlaybackSources.has(link.url))
     .map(link => ({
@@ -247,11 +444,22 @@ function handleSourceFailed(payload: { src: string, code: number }) {
     if (isHost.value && previous) sendPlayback('playback.sync', previous)
     return
   }
-  if (prefersBrowserSafeContainers() && /\.mkv(?:\?|$)/i.test(failed)) {
-    showNotice('فایرفاکس/سافاری فایل MKV را پخش نمی‌کند. کیفیت دیگری را انتخاب کن یا از Chrome استفاده کن.')
-    return
-  }
-  showNotice('این مرورگر این فایل را پخش نکرد. کیفیت دیگری را امتحان کن.')
+  // Every direct mirror is spent. Rewrapping is the last thing left, and it
+  // keeps this viewer in the room instead of dropping them out of the party.
+  const resumeAt = player.value?.getPlaybackSnapshot()?.position_seconds || lastPositionSeconds
+  showNotice('در حال آماده‌سازی نسخهٔ سازگار با این مرورگر…')
+  void tryGatewayPlayback(failed, { position: resumeAt }).then((ok) => {
+    if (ok) return
+    if (failedFamily === 'hevc' || failedFamily === 'av1') {
+      showNotice('این فایل با کُدک HEVC/AV1 است و این مرورگر نمی‌تواند آن را رمزگشایی کند.')
+      return
+    }
+    if (prefersBrowserSafeContainers() && /\.mkv(?:\?|$)/i.test(failed)) {
+      showNotice('این نسخه از مرورگر فایل MKV را پخش نمی‌کند. کیفیت دیگری را انتخاب کن یا مرورگر/iOS را به‌روز کن.')
+      return
+    }
+    showNotice('این مرورگر این فایل را پخش نکرد. کیفیت دیگری را امتحان کن.')
+  })
 }
 
 async function loadRoom() {
@@ -422,6 +630,19 @@ function onSyncCorrection() {
   syncTightTimer = setTimeout(() => { syncTight.value = false }, 1200)
 }
 
+function handleSubtitleSyncFeedback(feedback: SubtitleSyncFeedback) {
+  const content = room.value?.content
+  if (!content) return
+  // Party rooms describe a movie or a single episode; map to the catalog target.
+  const isEpisode = content.type === 'episode'
+  void reportSubtitleSync({
+    type: isEpisode ? 'series' : 'movie',
+    objectId: isEpisode ? (content.series?.id || 0) : content.id,
+    episodeId: isEpisode ? content.id : 0,
+    feedback,
+  })
+}
+
 function selectStream(link: WatchPartyStreamLink) {
   if (!isHost.value || !link.url || link.url === playerSrc.value) return
   const previous = player.value?.getPlaybackSnapshot()
@@ -562,6 +783,13 @@ function clearHostSync() {
   hostSyncTimer = undefined
 }
 
+// Same guard as the watch page: a player throw must not become the 500 screen.
+onErrorCaptured((error, _instance, info) => {
+  console.error('[watch-party] player error contained:', info, error)
+  reportClientDiag('contained-error', { info: String(info || '') }, error)
+  return false
+})
+
 onMounted(() => {
   void loadRoom()
   if (import.meta.client && window.matchMedia('(min-width: 1024px)').matches) {
@@ -575,11 +803,14 @@ onMounted(() => {
 })
 
 onBeforeUnmount(() => {
+  clearSubtitlePoll()
   document.removeEventListener('visibilitychange', handleTabVisibility)
   window.removeEventListener('keydown', handleRoomKeydown)
   document.body.classList.remove('party-panel-open')
   if (hostSyncTimer) clearTimeout(hostSyncTimer)
   hostSyncTimer = undefined
+  if (gatewayHeartbeat) clearInterval(gatewayHeartbeat)
+  gatewayHeartbeat = undefined
   if (seekPublishTimer) clearTimeout(seekPublishTimer)
   seekPublishTimer = undefined
   if (syncTightTimer) clearTimeout(syncTightTimer)
@@ -655,11 +886,11 @@ useSeoMeta({
             </NuxtLink>
             <div class="min-w-0">
               <div class="flex flex-wrap items-center gap-2">
-                <span class="inline-flex items-center gap-1.5 text-[10px] font-black text-crimson-hover">
+                <span class="inline-flex items-center gap-1.5 text-[11px] font-black text-crimson-hover">
                   <span class="size-1.5 animate-pulse rounded-full bg-crimson" />تماشای گروهی
                 </span>
-                <span v-if="isHost" class="rounded-md bg-primary-500/20 px-1.5 py-0.5 text-[9px] font-black text-primary-300">میزبان</span>
-                <span class="rounded-md bg-white/8 px-1.5 py-0.5 text-[9px] font-bold text-white/50">
+                <span v-if="isHost" class="rounded-md bg-primary-500/20 px-1.5 py-0.5 text-[11px] font-black text-primary-300">میزبان</span>
+                <span class="rounded-md bg-white/8 px-1.5 py-0.5 text-[11px] font-bold text-white/50">
                   {{ onlineCount.toLocaleString('fa-IR') }} آنلاین
                 </span>
               </div>
@@ -762,9 +993,15 @@ useSeoMeta({
                 :active-version-id="activeVersion?.id || ''"
                 :source-quality="playerSourceQuality"
                 :locked="!isHost"
+                :timeline-offset="gatewaySession?.start || 0"
+                :timeline-total="gatewaySession?.duration || 0"
+                :source-at-playhead="Boolean(gatewaySession)"
+                :timeline-back-seconds="gatewaySession?.keepBehindSeconds || 0"
                 autoplay
                 party-sync
                 @ready="handlePlayerReady"
+                @position-snapshot="handlePartyPosition"
+                @seek-beyond-window="handleSeekBeyondWindow"
                 @playback-play="onHostPlay"
                 @playback-pause="onHostPause"
                 @playback-seek="onHostSeek"
@@ -773,6 +1010,8 @@ useSeoMeta({
                 @notice="showNotice"
                 @fullscreen-change="handlePartyFullscreenChange"
                 @sync-correction="onSyncCorrection"
+                @sync-feedback="handleSubtitleSyncFeedback"
+                @embedded-subtitles="handleEmbeddedSubtitles"
               >
                 <template #fullscreen-overlay="{ isFullscreen }">
                   <div
@@ -814,7 +1053,7 @@ useSeoMeta({
                               <span class="size-2 rounded-full" :class="socket.connectionStatus.value === 'connected' ? 'bg-success' : 'bg-warning'" />
                               <p class="truncate text-sm font-black">گفت‌وگوی تماشای گروهی</p>
                             </div>
-                            <p class="mt-1 text-[10px] text-white/45">
+                            <p class="mt-1 text-[11px] text-white/45">
                               {{ onlineCount.toLocaleString('fa-IR') }} نفر آنلاین · ویدیو هم‌زمان ادامه دارد
                             </p>
                           </div>
@@ -849,7 +1088,7 @@ useSeoMeta({
                       <span>چت</span>
                       <span
                         v-if="fullscreenUnreadCount"
-                        class="grid min-w-5 place-items-center rounded-full bg-night-950/20 px-1.5 py-0.5 font-latin text-[10px]"
+                        class="grid min-w-5 place-items-center rounded-full bg-night-950/20 px-1.5 py-0.5 font-latin text-[11px]"
                       >
                         {{ Math.min(fullscreenUnreadCount, 99) }}
                       </span>
@@ -895,7 +1134,7 @@ useSeoMeta({
               v-if="isHost && streamLinks.length > 1"
               class="mt-3 rounded-2xl border border-white/8 bg-black/30 p-3"
             >
-              <p class="mb-2 text-[11px] font-black text-primary-300">کیفیت مشترک اتاق</p>
+              <p class="mb-2 text-xs font-black text-primary-300">کیفیت مشترک اتاق</p>
               <div class="hide-scrollbar flex gap-2 overflow-x-auto pb-1">
                 <button
                   v-for="(link, index) in streamLinks"
@@ -912,7 +1151,7 @@ useSeoMeta({
 
             <div
               v-if="!isHost"
-              class="mt-3 flex flex-wrap items-center justify-between gap-2 rounded-xl border border-white/8 bg-black/25 px-3 py-2.5 text-[11px] text-white/50"
+              class="mt-3 flex flex-wrap items-center justify-between gap-2 rounded-xl border border-white/8 bg-black/25 px-3 py-2.5 text-xs text-white/50"
             >
               <p class="inline-flex items-center gap-1.5">
                 <CinematicIcon name="lock" class="size-4 text-crimson-hover" />
@@ -1193,7 +1432,7 @@ useSeoMeta({
   border-radius: 0.9rem;
   border: 1px solid transparent;
   padding-inline: 0.7rem;
-  font-size: 0.6875rem;
+  font-size: 0.75rem;
   font-weight: 900;
   letter-spacing: -0.01em;
   transition:
@@ -1250,7 +1489,7 @@ useSeoMeta({
   border-radius: 999px;
   padding: 0.1rem 0.35rem;
   font-family: var(--font-latin, ui-monospace, monospace);
-  font-size: 0.625rem;
+  font-size: 0.75rem;
   line-height: 1.1;
   background: rgb(255 255 255 / 12%);
 }
@@ -1364,7 +1603,7 @@ useSeoMeta({
     min-height: 2.55rem;
     padding-inline: 0.45rem;
     gap: 0.3rem;
-    font-size: 0.625rem;
+    font-size: 0.75rem;
   }
 
   .party-btn__label {

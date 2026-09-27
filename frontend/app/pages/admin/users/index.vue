@@ -1,337 +1,213 @@
 <script setup lang="ts">
-import Plus from '~icons/lucide/plus'
-import Refresh from '~icons/lucide/rotate-cw'
-import Save from '~icons/lucide/save'
-import Search from '~icons/lucide/search'
-import Shield from '~icons/lucide/shield'
+import type { AdminUser, AdminUserListResponse } from '~/types/admin'
 import Users from '~icons/lucide/users-round'
-import type { AdminUser, AdminUserFilters, AppErrorDetails } from '~/types'
+import Search from '~icons/lucide/search'
+import ShieldCheck from '~icons/lucide/shield-check'
+import BadgeCheck from '~icons/lucide/badge-check'
+import UserCheck from '~icons/lucide/user-check'
+import UserX from '~icons/lucide/user-x'
+import ChevronRight from '~icons/lucide/chevron-right'
+import ChevronLeft from '~icons/lucide/chevron-left'
 
-definePageMeta({ layout: 'admin', middleware: ['staff'] })
-useSeoMeta({ title: 'مدیریت کاربران', robots: 'noindex, nofollow' })
+definePageMeta({ layout: 'admin', middleware: 'staff' })
+useSeoMeta({ title: 'مدیریت کاربران — روایتو' })
 
-const api = useAdminUsers()
-const authStore = useAuthStore()
-const notifications = useNotifications()
+const { api } = useApi()
+const notify = useNotifications()
+const auth = useAuthStore()
 
-const users = ref<AdminUser[]>([])
-const total = ref(0)
-const loading = ref(true)
-const savingId = ref<number | null>(null)
-const creating = ref(false)
-const createOpen = ref(false)
-const error = ref<AppErrorDetails | null>(null)
-const pageSize = 20
-const {
-  filters,
-  page,
-  debouncedWatch,
-  syncQuery,
-  clearFilters,
-} = useDebouncedFilters<AdminUserFilters>({
-  q: '',
-  role: '',
-  active: '',
-  limit: pageSize,
-  offset: 0,
-}, {
-  urlKeys: ['q', 'role', 'active'],
+const PAGE_SIZE = 20
+const q = ref('')
+const qDebounced = ref('')
+const roleFilter = ref<'' | 'staff' | 'user'>('')
+const activeFilter = ref<'' | 'true' | 'false'>('')
+const offset = ref(0)
+
+let searchTimer: ReturnType<typeof setTimeout> | null = null
+watch(q, (val) => {
+  if (searchTimer) clearTimeout(searchTimer)
+  searchTimer = setTimeout(() => { qDebounced.value = val.trim(); offset.value = 0 }, 350)
 })
-const filterDefaults: Partial<AdminUserFilters> = { q: '', role: '', active: '' }
+watch([roleFilter, activeFilter], () => { offset.value = 0 })
 
-const createForm = reactive({
-  email: '',
-  username: '',
-  password: '',
-  first_name: '',
-  last_name: '',
-  is_staff: false,
-  is_active: true,
-  is_verified: false,
-})
+const ROLE_OPTIONS = [
+  { value: '', label: 'همه نقش‌ها' },
+  { value: 'staff', label: 'مدیران' },
+  { value: 'user', label: 'کاربران عادی' },
+]
+const ACTIVE_OPTIONS = [
+  { value: '', label: 'همه وضعیت‌ها' },
+  { value: 'true', label: 'فعال' },
+  { value: 'false', label: 'غیرفعال' },
+]
 
-const drafts = reactive<Record<number, Partial<AdminUser> & { password?: string }>>({})
-const meId = computed(() => authStore.user?.id)
+const { data, pending, error, refresh } = await useAsyncData(
+  'admin-users',
+  () => api<AdminUserListResponse>('/admin/users/', {
+    query: {
+      q: qDebounced.value || undefined,
+      role: roleFilter.value || undefined,
+      active: activeFilter.value || undefined,
+      limit: PAGE_SIZE,
+      offset: offset.value,
+    },
+  }),
+  { watch: [qDebounced, roleFilter, activeFilter, offset] },
+)
 
-function draftFor(user: AdminUser): Partial<AdminUser> & { password?: string } {
-  if (!drafts[user.id]) {
-    drafts[user.id] = {
-      is_active: user.is_active,
-      is_staff: user.is_staff,
-      is_superuser: user.is_superuser,
-      is_verified: user.is_verified,
-      password: '',
-    }
-  }
-  return drafts[user.id]!
+const rows = computed(() => data.value?.results ?? [])
+const total = computed(() => data.value?.count ?? 0)
+const summary = computed(() => data.value?.summary ?? null)
+const from = computed(() => (total.value === 0 ? 0 : offset.value + 1))
+const to = computed(() => Math.min(offset.value + PAGE_SIZE, total.value))
+
+const busy = ref<Record<number, boolean>>({})
+const fa = (n: number | null | undefined) => (n ?? 0).toLocaleString('fa-IR')
+
+function initialOf(u: AdminUser) { return (u.username || u.email || '؟').trim().charAt(0).toUpperCase() }
+function fullName(u: AdminUser) {
+  const name = `${u.first_name || ''} ${u.last_name || ''}`.trim()
+  return name || u.username
 }
+function joinedDate(iso: string) {
+  try { return new Intl.DateTimeFormat('fa-IR', { year: 'numeric', month: 'short', day: 'numeric' }).format(new Date(iso)) }
+  catch { return '—' }
+}
+function isSelf(u: AdminUser) { return auth.user?.id === u.id }
 
-async function loadUsers(silent = false) {
-  if (!silent) loading.value = true
-  filters.offset = (page.value - 1) * pageSize
-  filters.limit = pageSize
+async function patchUser(u: AdminUser, payload: Record<string, unknown>, okMsg: string) {
+  busy.value = { ...busy.value, [u.id]: true }
   try {
-    const response = await api.list(filters)
-    users.value = response.results
-    total.value = response.count
-    for (const user of response.results) {
-      drafts[user.id] = {
-        is_active: user.is_active,
-        is_staff: user.is_staff,
-        is_superuser: user.is_superuser,
-        is_verified: user.is_verified,
-        password: '',
-      }
-    }
-    error.value = null
+    await api(`/admin/users/${u.id}/`, { method: 'PATCH', body: payload })
+    notify.success('انجام شد', okMsg)
+    await refresh()
   }
-  catch (cause) {
-    if (!silent) error.value = getAppError(cause, 'فهرست کاربران دریافت نشد.')
+  catch (err: unknown) {
+    const detail = (err as { data?: { detail?: string } })?.data?.detail
+    notify.error('خطا', detail || 'عملیات ناموفق بود')
   }
-  finally {
-    if (!silent) loading.value = false
-  }
+  finally { busy.value = { ...busy.value, [u.id]: false } }
 }
 
-async function saveUser(user: AdminUser) {
-  const draft = draftFor(user)
-  savingId.value = user.id
-  try {
-    const payload: Record<string, unknown> = {
-      is_active: Boolean(draft.is_active),
-      is_staff: Boolean(draft.is_staff),
-      is_verified: Boolean(draft.is_verified),
-    }
-    if (authStore.user?.is_superuser) {
-      payload.is_superuser = Boolean(draft.is_superuser)
-    }
-    if (draft.password?.trim()) {
-      payload.password = draft.password.trim()
-    }
-    const updated = await api.update(user.id, payload)
-    const index = users.value.findIndex(item => item.id === user.id)
-    if (index >= 0) users.value[index] = updated
-    drafts[user.id] = {
-      is_active: updated.is_active,
-      is_staff: updated.is_staff,
-      is_superuser: updated.is_superuser,
-      is_verified: updated.is_verified,
-      password: '',
-    }
-    notifications.success('ذخیره شد', `کاربر ${updated.username} به‌روز شد.`)
-  }
-  catch (cause) {
-    notifications.notifyError(cause, 'ذخیره نشد')
-  }
-  finally {
-    savingId.value = null
-  }
+function toggleActive(u: AdminUser) {
+  patchUser(u, { is_active: !u.is_active }, u.is_active ? 'حساب غیرفعال شد' : 'حساب فعال شد')
 }
-
-async function createUser() {
-  creating.value = true
-  try {
-    await api.create({ ...createForm })
-    notifications.success('کاربر ساخته شد', createForm.email)
-    createOpen.value = false
-    Object.assign(createForm, {
-      email: '', username: '', password: '', first_name: '', last_name: '',
-      is_staff: false, is_active: true, is_verified: false,
-    })
-    page.value = 1
-    await loadUsers()
-  }
-  catch (cause) {
-    notifications.notifyError(cause, 'ساخت کاربر ناموفق بود')
-  }
-  finally {
-    creating.value = false
-  }
+function toggleStaff(u: AdminUser) {
+  patchUser(u, { is_staff: !u.is_staff }, u.is_staff ? 'دسترسی مدیریت برداشته شد' : 'دسترسی مدیریت داده شد')
 }
-
-function formatDate(value: string | null | undefined) {
-  if (!value) return '—'
-  try {
-    return new Intl.DateTimeFormat('fa-IR', { dateStyle: 'medium', timeStyle: 'short' }).format(new Date(value))
-  }
-  catch {
-    return value
-  }
-}
-
-debouncedWatch(() => {
-  syncQuery()
-  void loadUsers()
-}, [() => filters.role, () => filters.active])
-
-watch(page, () => {
-  syncQuery()
-  void loadUsers()
-})
-
-onMounted(() => { void loadUsers() })
 </script>
 
 <template>
-  <div class="space-y-5 px-4 py-5 sm:px-6 lg:px-8">
-    <div class="flex flex-wrap items-end justify-between gap-3">
-      <div>
-        <p class="text-xs font-black tracking-[.16em] text-[var(--admin-muted)]">ADMIN · USERS</p>
-        <h1 class="mt-1 text-2xl font-black text-[var(--admin-text)]">مدیریت کاربران</h1>
-        <p class="mt-1 text-sm text-[var(--admin-muted)]">فعال/غیرفعال، دسترسی مدیریت، و ساخت کاربر جدید.</p>
-      </div>
-      <div class="flex flex-wrap gap-2">
-        <AdminButton :loading="loading" variant="ghost" @click="loadUsers()">
-          <Refresh class="size-4" /> بروزرسانی
-        </AdminButton>
-        <AdminButton @click="createOpen = true">
-          <Plus class="size-4" /> کاربر جدید
-        </AdminButton>
-      </div>
+  <div class="space-y-6">
+    <div>
+      <h1 class="text-xl font-black text-[var(--rv-text)] sm:text-2xl">کاربران</h1>
+      <p class="mt-1 text-xs font-semibold text-[var(--rv-muted)]">{{ fa(summary?.total ?? total) }} کاربر ثبت‌شده</p>
     </div>
 
-    <AdminCard class="p-4 sm:p-5">
-      <div class="grid gap-3 md:grid-cols-[1fr_10rem_10rem_auto]">
-        <AdminField label="جستجو">
-          <div class="relative">
-            <Search class="pointer-events-none absolute right-3 top-1/2 size-4 -translate-y-1/2 text-[var(--admin-muted)]" />
-            <input v-model="filters.q" class="admin-input w-full pr-10" placeholder="ایمیل، نام کاربری، تلفن…" >
-          </div>
-        </AdminField>
-        <AdminField label="نقش">
-          <select v-model="filters.role" class="admin-input w-full">
-            <option value="">همه</option>
-            <option value="staff">مدیر</option>
-            <option value="user">کاربر عادی</option>
-          </select>
-        </AdminField>
-        <AdminField label="وضعیت">
-          <select v-model="filters.active" class="admin-input w-full">
-            <option value="">همه</option>
-            <option value="true">فعال</option>
-            <option value="false">غیرفعال</option>
-          </select>
-        </AdminField>
-        <button
-          v-if="filters.q || filters.role || filters.active"
-          type="button"
-          class="admin-focus inline-flex min-h-11 items-center self-end rounded-lg px-2 text-xs font-bold text-[var(--admin-accent)] hover:underline"
-          @click="clearFilters(filterDefaults)"
-        >
-          پاک کردن فیلترها
-        </button>
-      </div>
-    </AdminCard>
+    <!-- Summary tiles -->
+    <div class="grid grid-cols-2 gap-4 sm:grid-cols-4">
+      <RvStat label="کل کاربران" :value="summary?.total ?? null" :icon="Users" tone="accent" :loading="pending && !summary" />
+      <RvStat label="فعال" :value="summary?.active ?? null" :icon="UserCheck" tone="success" :loading="pending && !summary" />
+      <RvStat label="مدیران" :value="summary?.staff ?? null" :icon="ShieldCheck" tone="violet" :loading="pending && !summary" />
+      <RvStat label="تأییدشده" :value="summary?.verified ?? null" :icon="BadgeCheck" tone="info" :loading="pending && !summary" />
+    </div>
 
-    <AdminState v-if="loading" title="در حال بارگذاری کاربران…" message="لطفاً چند لحظه صبر کنید." />
-    <AdminState v-else-if="error" kind="error" :title="error.message" message="درخواست فهرست کاربران ناموفق بود." @retry="loadUsers()" />
-    <AdminCard v-else class="overflow-hidden">
-      <div class="responsive-table">
-        <table class="min-w-[860px] text-sm">
-          <thead class="bg-[var(--admin-bg)] text-[var(--admin-muted)]">
+    <div class="flex flex-wrap items-center gap-3">
+      <div class="relative min-w-[200px] flex-1">
+        <Search class="pointer-events-none absolute right-3 top-1/2 size-4 -translate-y-1/2 text-[var(--rv-faint)]" />
+        <input v-model="q" type="search" placeholder="جستجوی نام، ایمیل یا شماره…" class="rv-input !pr-9">
+      </div>
+      <select v-model="roleFilter" class="rv-input !w-auto">
+        <option v-for="o in ROLE_OPTIONS" :key="o.value" :value="o.value">{{ o.label }}</option>
+      </select>
+      <select v-model="activeFilter" class="rv-input !w-auto">
+        <option v-for="o in ACTIVE_OPTIONS" :key="o.value" :value="o.value">{{ o.label }}</option>
+      </select>
+    </div>
+
+    <RvPanel :icon="Users" :padded="false">
+      <template #actions>
+        <span v-if="total" class="text-xs font-bold text-[var(--rv-muted)]">{{ fa(from) }}–{{ fa(to) }} از {{ fa(total) }}</span>
+      </template>
+
+      <RvState v-if="error" kind="error" title="خطا در دریافت فهرست" @retry="refresh()" />
+      <RvState v-else-if="!pending && rows.length === 0" title="کاربری یافت نشد" message="با فیلترهای دیگری امتحان کنید." />
+
+      <div v-else class="overflow-x-auto">
+        <table class="rv-table">
+          <thead>
             <tr>
-              <th class="px-3 py-3 text-right font-bold">کاربر</th>
-              <th class="px-3 py-3 text-right font-bold">نقش‌ها</th>
-              <th class="px-3 py-3 text-right font-bold">وضعیت</th>
-              <th class="px-3 py-3 text-right font-bold">آخرین ورود</th>
-              <th class="px-3 py-3 text-right font-bold">رمز جدید</th>
-              <th class="px-3 py-3 text-right font-bold">عملیات</th>
+              <th>کاربر</th>
+              <th>نقش</th>
+              <th>وضعیت</th>
+              <th>عضویت</th>
+              <th class="text-center">اقدامات</th>
             </tr>
           </thead>
           <tbody>
-            <tr v-for="user in users" :key="user.id" class="border-t border-[var(--admin-border)] align-top">
-              <td class="px-3 py-3">
-                <p class="font-black">{{ user.username }}</p>
-                <p class="text-xs text-[var(--admin-muted)]" dir="ltr">{{ user.email }}</p>
-                <p v-if="user.phone" class="mt-0.5 text-xs text-[var(--admin-muted)]" dir="ltr">{{ user.phone }}</p>
+            <template v-if="pending && rows.length === 0">
+              <tr v-for="i in 8" :key="`sk${i}`">
+                <td colspan="5"><div class="rv-skeleton h-9 w-full" /></td>
+              </tr>
+            </template>
+            <tr v-for="u in rows" :key="u.id">
+              <td>
+                <div class="flex items-center gap-3">
+                  <span class="grid size-9 shrink-0 place-items-center rounded-full bg-[var(--rv-accent-soft)] text-sm font-black text-[var(--rv-accent)]">{{ initialOf(u) }}</span>
+                  <div class="min-w-0">
+                    <p class="flex items-center gap-1.5 truncate font-bold text-[var(--rv-text)]">
+                      {{ fullName(u) }}
+                      <span v-if="isSelf(u)" class="text-[11px] font-black text-[var(--rv-accent)]">(شما)</span>
+                    </p>
+                    <p class="truncate text-xs text-[var(--rv-faint)]" dir="ltr">{{ u.email }}</p>
+                  </div>
+                </div>
               </td>
-              <td class="px-3 py-3">
-                <label class="flex min-h-11 items-center gap-2 py-1">
-                  <input v-model="draftFor(user).is_staff" type="checkbox" :disabled="user.id === meId">
-                  <span>مدیر (staff)</span>
-                </label>
-                <label v-if="authStore.user?.is_superuser" class="flex min-h-11 items-center gap-2 py-1">
-                  <input v-model="draftFor(user).is_superuser" type="checkbox" :disabled="user.id === meId">
-                  <span>ابرکاربر</span>
-                </label>
-                <label class="flex min-h-11 items-center gap-2 py-1">
-                  <input v-model="draftFor(user).is_verified" type="checkbox">
-                  <span>تأییدشده</span>
-                </label>
+              <td>
+                <div class="flex flex-wrap gap-1">
+                  <RvBadge v-if="u.is_superuser" tone="danger">ابرکاربر</RvBadge>
+                  <RvBadge v-else-if="u.is_staff" tone="violet">مدیر</RvBadge>
+                  <RvBadge v-else tone="neutral">کاربر</RvBadge>
+                  <RvBadge v-if="u.is_verified" tone="info" dot>تأیید</RvBadge>
+                </div>
               </td>
-              <td class="px-3 py-3">
-                <label class="flex min-h-11 items-center gap-2">
-                  <input v-model="draftFor(user).is_active" type="checkbox" :disabled="user.id === meId">
-                  <span>{{ draftFor(user).is_active ? 'فعال' : 'غیرفعال' }}</span>
-                </label>
-                <p v-if="user.locked_until" class="mt-1 text-xs text-amber-700">قفل تا {{ formatDate(user.locked_until) }}</p>
-              </td>
-              <td class="px-3 py-3 text-xs text-[var(--admin-muted)]">
-                <p>{{ formatDate(user.last_login) }}</p>
-                <p class="mt-1">عضویت: {{ formatDate(user.date_joined) }}</p>
-              </td>
-              <td class="px-3 py-3">
-                <input
-                  v-model="draftFor(user).password"
-                  type="password"
-                  class="admin-input w-40"
-                  placeholder="اختیاری"
-                  autocomplete="new-password"
-                >
-              </td>
-              <td class="px-3 py-3">
-                <AdminButton size="sm" :loading="savingId === user.id" @click="saveUser(user)">
-                  <Save class="size-3.5" /> ذخیره
-                </AdminButton>
-              </td>
-            </tr>
-            <tr v-if="!users.length">
-              <td colspan="6" class="px-3 py-10 text-center text-[var(--admin-muted)]">
-                <Users class="mx-auto size-8 opacity-40" />
-                <p class="mt-2">کاربری پیدا نشد.</p>
+              <td><RvBadge :tone="u.is_active ? 'success' : 'neutral'" dot>{{ u.is_active ? 'فعال' : 'غیرفعال' }}</RvBadge></td>
+              <td class="whitespace-nowrap text-[var(--rv-muted)]">{{ joinedDate(u.date_joined) }}</td>
+              <td>
+                <div class="flex items-center justify-center gap-1">
+                  <button
+                    type="button" class="rv-icon-btn rv-focus" :disabled="busy[u.id] || isSelf(u)"
+                    :title="u.is_staff ? 'برداشتن دسترسی مدیریت' : 'دادن دسترسی مدیریت'"
+                    :style="u.is_staff ? { color: 'var(--rv-violet)' } : {}"
+                    @click="toggleStaff(u)"
+                  >
+                    <ShieldCheck class="size-4" />
+                  </button>
+                  <button
+                    type="button" class="rv-icon-btn rv-focus"
+                    :class="u.is_active ? 'rv-icon-btn--danger' : ''"
+                    :disabled="busy[u.id] || isSelf(u)"
+                    :title="u.is_active ? 'غیرفعال‌سازی حساب' : 'فعال‌سازی حساب'"
+                    @click="toggleActive(u)"
+                  >
+                    <component :is="u.is_active ? UserX : UserCheck" class="size-4" />
+                  </button>
+                </div>
               </td>
             </tr>
           </tbody>
         </table>
       </div>
-      <AdminPagination
-        :page="page"
-        :total="total"
-        :page-size="pageSize"
-        :loading="loading"
-        @update:page="page = $event"
-      />
-    </AdminCard>
 
-    <AdminModal :open="createOpen" title="کاربر جدید" @close="createOpen = false">
-      <div class="grid gap-3 p-5 sm:grid-cols-2 sm:p-6">
-        <AdminField label="ایمیل" class="sm:col-span-2">
-          <input v-model="createForm.email" type="email" class="admin-input w-full" dir="ltr">
-        </AdminField>
-        <AdminField label="نام کاربری">
-          <input v-model="createForm.username" class="admin-input w-full" dir="ltr">
-        </AdminField>
-        <AdminField label="رمز عبور">
-          <input v-model="createForm.password" type="password" class="admin-input w-full" autocomplete="new-password">
-        </AdminField>
-        <AdminField label="نام">
-          <input v-model="createForm.first_name" class="admin-input w-full">
-        </AdminField>
-        <AdminField label="نام خانوادگی">
-          <input v-model="createForm.last_name" class="admin-input w-full">
-        </AdminField>
-        <label class="flex items-center gap-2 text-sm"><input v-model="createForm.is_staff" type="checkbox"><Shield class="size-4" /> مدیر</label>
-        <label class="flex items-center gap-2 text-sm"><input v-model="createForm.is_active" type="checkbox"> فعال</label>
-        <label class="flex items-center gap-2 text-sm sm:col-span-2"><input v-model="createForm.is_verified" type="checkbox"> تأییدشده</label>
+      <div v-if="total > PAGE_SIZE" class="flex items-center justify-between gap-3 border-t border-[var(--rv-border)] px-4 py-3">
+        <button type="button" class="rv-btn rv-btn--subtle rv-focus !min-h-9" :disabled="offset === 0 || pending" @click="offset = Math.max(0, offset - PAGE_SIZE)">
+          <ChevronRight class="size-4" /> قبلی
+        </button>
+        <span class="text-xs font-bold text-[var(--rv-muted)]">{{ fa(from) }}–{{ fa(to) }} از {{ fa(total) }}</span>
+        <button type="button" class="rv-btn rv-btn--subtle rv-focus !min-h-9" :disabled="to >= total || pending" @click="offset = offset + PAGE_SIZE">
+          بعدی <ChevronLeft class="size-4" />
+        </button>
       </div>
-      <template #footer>
-        <div class="flex flex-wrap justify-end gap-2">
-          <AdminButton variant="ghost" @click="createOpen = false">انصراف</AdminButton>
-          <AdminButton :loading="creating" :disabled="!createForm.email || !createForm.username || createForm.password.length < 8" @click="createUser">
-            ساخت کاربر
-          </AdminButton>
-        </div>
-      </template>
-    </AdminModal>
+    </RvPanel>
   </div>
 </template>

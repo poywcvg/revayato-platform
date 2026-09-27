@@ -92,8 +92,11 @@ SEARCH_CARD_RE = re.compile(
     r'<h2[^>]*class="[^"]*entry-title[^"]*"[^>]*>(?P<title>.*?)</h2>',
     re.I | re.S,
 )
+# Host-agnostic: the provider's domain is configuration, not part of the link's
+# shape. Pinning it here made every search silently return no cards the day the
+# site moved domains.
 SEARCH_CARD_RE_ALT = re.compile(
-    r'<a[^>]+href="(?P<href>https?://www\.myf2m\.info/\d+/[^"]+/)"[^>]*>',
+    r'<a[^>]+href="(?P<href>https?://[^"/]+/\d+/[^"]+/)"[^>]*>',
     re.I,
 )
 

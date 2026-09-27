@@ -287,7 +287,10 @@ export function buildPlaybackVersions(
   fallbackUrl = '',
 ): PlaybackVersion[] {
   // Drop known-dead Soft CDN mirrors first so Soft/Dub lanes never 410 the player.
-  const live = links.filter(link => isPlayablePlaybackUrl(link.url))
+  // `ignoreExpiry`: a lapsed signature is not a dead file, and dropping those
+  // links here would hide qualities the viewer has — and leave the resolve step
+  // with nothing to re-sign. Freshness is settled at play time, not here.
+  const live = links.filter(link => isPlayablePlaybackUrl(link.url, { ignoreExpiry: true }))
   const usable = live.length ? live : links.filter(link => Boolean(link.url))
   const dubLinks = usable.filter(isDubLink)
   // Prefer real SoftSub encodes for toggleable Persian text.
@@ -298,7 +301,9 @@ export function buildPlaybackVersions(
     ? softEncodeLinks
     : usable.filter(link => !isDubLink(link) && isSoftsubLink(link))
   const otherLinks = usable.filter(link => !isDubLink(link) && !isSoftsubLink(link))
-  const safeFallback = isPlayablePlaybackUrl(fallbackUrl) ? fallbackUrl : (live.length ? '' : fallbackUrl)
+  const safeFallback = isPlayablePlaybackUrl(fallbackUrl, { ignoreExpiry: true })
+    ? fallbackUrl
+    : (live.length ? '' : fallbackUrl)
 
   const versions: PlaybackVersion[] = []
 

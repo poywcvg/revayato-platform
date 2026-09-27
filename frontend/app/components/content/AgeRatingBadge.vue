@@ -1,11 +1,12 @@
 <script setup lang="ts">
 import type { AgeRating } from "~/types";
-defineProps<{ rating: AgeRating; showLabel?: boolean }>();
+defineProps<{ rating: AgeRating | ""; showLabel?: boolean }>();
 </script>
 
 <template>
   <span
-    class="inline-flex items-center gap-1 rounded-lg px-2.5 py-1 text-[11px] font-black text-[#0b1713] ring-1 ring-inset"
+    v-if="rating"
+    class="inline-flex items-center gap-1 rounded-lg px-2.5 py-1 text-xs font-black text-[#0b1713] ring-1 ring-inset"
     :class="
       rating === '18+'
         ? 'bg-error/90 ring-error'

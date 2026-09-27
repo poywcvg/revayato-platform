@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<data-extraction-rules>
+    <cloud-backup>
+        <exclude domain="sharedpref" path="revayato_auth.preferences_pb" />
+        <exclude domain="file" path="datastore/revayato_auth.preferences_pb" />
+    </cloud-backup>
+    <device-transfer>
+        <exclude domain="sharedpref" path="revayato_auth.preferences_pb" />
+        <exclude domain="file" path="datastore/revayato_auth.preferences_pb" />
+    </device-transfer>
+</data-extraction-rules>

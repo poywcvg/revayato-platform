@@ -10,6 +10,7 @@ export default defineEventHandler((event) => {
     'Allow: /',
     'Disallow: /api/',
     'Disallow: /admin/',
+    'Disallow: /admin',
     'Disallow: /auth/',
     'Disallow: /profile/',
     'Disallow: /watch-party/',

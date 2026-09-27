@@ -168,3 +168,29 @@ export function countryFlagSrc(code: string) {
   if (!/^[A-Z]{2}$/.test(normalized) || normalized === 'SU') return ''
   return `https://flagcdn.com/${normalized.toLowerCase()}.svg`
 }
+
+/**
+ * How Persian searchers name a country's cinema: «فیلم کره‌ای», «سریال ترکی»,
+ * «فیلم هندی» — the adjective, not «فیلم‌های محصول کره جنوبی». Landing-page
+ * titles use it when known and fall back to «محصول {country}» otherwise.
+ */
+const countryDemonyms: Record<string, string> = {
+  US: 'آمریکایی', GB: 'انگلیسی', FR: 'فرانسوی', IN: 'هندی', JP: 'ژاپنی',
+  CA: 'کانادایی', KR: 'کره‌ای', DE: 'آلمانی', CN: 'چینی', TR: 'ترکی',
+  IT: 'ایتالیایی', ES: 'اسپانیایی', BE: 'بلژیکی', AU: 'استرالیایی', HK: 'هنگ‌کنگی',
+  IE: 'ایرلندی', SE: 'سوئدی', DK: 'دانمارکی', NL: 'هلندی', MX: 'مکزیکی',
+  PL: 'لهستانی', CH: 'سوئیسی', RU: 'روسی', NO: 'نروژی', ID: 'اندونزیایی',
+  BR: 'برزیلی', TH: 'تایلندی', FI: 'فنلاندی', AR: 'آرژانتینی', ZA: 'آفریقای جنوبی',
+  IR: 'ایرانی', TW: 'تایوانی', PH: 'فیلیپینی', EG: 'مصری', NZ: 'نیوزیلندی',
+  AT: 'اتریشی', PT: 'پرتغالی', GR: 'یونانی', CZ: 'چکی', HU: 'مجارستانی',
+  IL: 'اسرائیلی', AE: 'اماراتی', SA: 'سعودی', PK: 'پاکستانی', MY: 'مالزیایی',
+}
+
+export function countryDemonym(code = '') {
+  return countryDemonyms[code.trim().toUpperCase()] || ''
+}
+
+/** True for a real ISO code this app can name (landing pages 404 anything else). */
+export function isKnownCountryCode(code = '') {
+  return Boolean(countryNames[code.trim().toUpperCase()])
+}

@@ -77,7 +77,7 @@ onMounted(analyze)
             <p class="flex items-center gap-1.5 text-xs font-black text-brand">
               <CinematicIcon name="map" class="size-4" />نقشه سلیقه
             </p>
-            <span class="inline-flex items-center gap-1 rounded-full bg-elevated px-2.5 py-1 text-[10px] font-bold text-secondary ring-1 ring-line">
+            <span class="inline-flex items-center gap-1 rounded-full bg-elevated px-2.5 py-1 text-[11px] font-bold text-secondary ring-1 ring-line">
               <CinematicIcon name="play" class="size-3" />{{ playbackLabel }}
             </span>
           </div>
@@ -95,7 +95,7 @@ onMounted(analyze)
         <div class="ai-insight__message">
           <div class="flex items-center gap-2 text-xs font-black text-brand"><CinematicIcon name="sparkles" class="size-4" />جمع‌بندی دستیار روایتو</div>
           <p class="mt-3 whitespace-pre-line text-sm leading-8 text-secondary">{{ insight.message }}</p>
-          <p v-if="!insight.ai_available" class="mt-3 text-[11px] leading-5 text-muted">سرویس زبانی موقتاً در دسترس نبود؛ این جمع‌بندی با موتور پیشنهاد رفتارمحور روایتو ساخته شده است.</p>
+          <p v-if="!insight.ai_available" class="mt-3 text-xs leading-5 text-muted">سرویس زبانی موقتاً در دسترس نبود؛ این جمع‌بندی با موتور پیشنهاد رفتارمحور روایتو ساخته شده است.</p>
         </div>
 
         <div v-if="recommendations.length" class="mt-5">
@@ -128,14 +128,14 @@ onMounted(analyze)
 .ai-insight__metrics div { border-radius: 1rem; background: var(--theme-bg-elevated); padding: .8rem; text-align: center; }
 .ai-insight__metrics strong,.ai-insight__metrics span { display: block; }
 .ai-insight__metrics strong { color: var(--theme-text-primary); font-size: 1rem; font-weight: 900; }
-.ai-insight__metrics span { margin-top: .2rem; color: var(--theme-text-muted); font-size: .62rem; }
+.ai-insight__metrics span { margin-top: .2rem; color: var(--theme-text-muted); font-size: 0.75rem; }
 
 .ai-insight__taste { margin-top: 1rem; border-radius: 1.15rem; background: color-mix(in srgb, var(--theme-bg-canvas) 75%, transparent); padding: .9rem 1rem; box-shadow: inset 0 0 0 1px var(--theme-border); }
 .ai-taste-bar { display: grid; grid-template-columns: minmax(4.5rem, 7rem) minmax(0, 1fr) 2rem; align-items: center; gap: .5rem; }
-.ai-taste-bar__label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--theme-text-secondary); font-size: .7rem; font-weight: 700; }
+.ai-taste-bar__label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--theme-text-secondary); font-size: 0.75rem; font-weight: 700; }
 .ai-taste-bar__track { height: .5rem; border-radius: 999px; background: color-mix(in srgb, var(--theme-text-muted) 22%, transparent); overflow: hidden; }
 .ai-taste-bar__fill { display: block; height: 100%; border-radius: 999px; background: linear-gradient(90deg, color-mix(in srgb, var(--theme-accent-primary) 70%, white), var(--theme-accent-primary)); transition: width 700ms cubic-bezier(.22, 1, .36, 1); }
-.ai-taste-bar__value { text-align: left; color: var(--theme-text-muted); font-size: .62rem; }
+.ai-taste-bar__value { text-align: left; color: var(--theme-text-muted); font-size: 0.75rem; }
 
 .ai-insight__message { margin-top: 1rem; border-radius: 1.15rem; background: color-mix(in srgb, var(--theme-bg-canvas) 75%, transparent); padding: 1rem; box-shadow: inset 0 0 0 1px var(--theme-border); }
 .ai-pick { display: flex; min-width: 0; align-items: center; gap: .75rem; border-radius: 1rem; background: var(--theme-bg-elevated); padding: .6rem; box-shadow: inset 0 0 0 1px var(--theme-border); transition: transform 150ms ease, box-shadow 150ms ease; }

@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">روایتو</string>
+    <string name="nav_home">خانه</string>
+    <string name="nav_search">جستجو</string>
+    <string name="nav_library">کتابخانه</string>
+    <string name="nav_watch_party">تماشای گروهی</string>
+    <string name="nav_profile">پروفایل</string>
+    <string name="download_channel_name">دانلودهای روایتو</string>
+</resources>

@@ -24,14 +24,24 @@ from .services import (
 class WatchPartyConsumer(AsyncJsonWebsocketConsumer):
     CHAT_LIMIT = (5, 10)
     PLAYBACK_LIMIT = (36, 6)
+    REACTION_LIMIT = (12, 8)
     SYNC_PERSIST_SECONDS = 8
     SYNC_PERSIST_POSITION_DELTA = 0.75
+
+    # Ephemeral "float over the video" reactions. Kept to a fixed emoji set so a
+    # client can't smuggle arbitrary text through this un-persisted channel.
+    ALLOWED_REACTIONS = frozenset({'❤️', '😂', '😮', '😢', '👏', '🔥', '🎉', '👍'})
 
     async def connect(self):
         self.user = self.scope.get('user')
         self.invite_code = self.scope['url_route']['kwargs']['invite_code']
         self.group_name = f'watchparty.{self.invite_code}'
-        self._rate_windows = {'chat': deque(), 'playback': deque(), 'latency': deque()}
+        self._rate_windows = {
+            'chat': deque(),
+            'playback': deque(),
+            'latency': deque(),
+            'reaction': deque(),
+        }
         self._connected = False
 
         if not self.user or not self.user.is_authenticated:
@@ -90,6 +100,9 @@ class WatchPartyConsumer(AsyncJsonWebsocketConsumer):
         if event_type == 'chat.message':
             await self._handle_chat(content)
             return
+        if event_type == 'reaction.send':
+            await self._handle_reaction(content)
+            return
         if event_type in {'playback.play', 'playback.pause', 'playback.seek', 'playback.sync'}:
             await self._handle_playback(event_type, content)
             return
@@ -124,6 +137,25 @@ class WatchPartyConsumer(AsyncJsonWebsocketConsumer):
         await self.channel_layer.group_send(self.group_name, {
             'type': 'watchparty.event',
             'payload': {'type': 'chat.message', 'message': message},
+        })
+
+    async def _handle_reaction(self, content):
+        # Reactions are fire-and-forget: no DB row, no host gate, broadcast to
+        # everyone (the sender included, so all screens animate the same burst).
+        if not self._allow('reaction', *self.REACTION_LIMIT):
+            return
+        emoji = str(content.get('emoji') or '').strip()
+        if emoji not in self.ALLOWED_REACTIONS:
+            return
+        await self.channel_layer.group_send(self.group_name, {
+            'type': 'watchparty.event',
+            'payload': {
+                'type': 'reaction',
+                'emoji': emoji,
+                # Precomputed at connect — building it here would touch the DB
+                # (profile/avatar) from the async loop and raise.
+                'user': getattr(self, '_user_payload', None),
+            },
         })
 
     async def _handle_playback(self, event_type, content):
@@ -193,6 +225,9 @@ class WatchPartyConsumer(AsyncJsonWebsocketConsumer):
         member.last_seen_at = timezone.now()
         member.save(update_fields=['is_online', 'last_seen_at'])
         state = self._serialize_room_state(room, member)
+        # Cache the user's public payload so the async reaction path can attach it
+        # without re-hitting the DB (profile/avatar) from the event loop.
+        self._user_payload = state['current_member']['user']
         return state, None
 
     @database_sync_to_async

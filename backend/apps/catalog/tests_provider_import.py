@@ -180,7 +180,11 @@ class ProviderImportApiTests(TestCase):
         self.assertEqual(response.status_code, 200)
         job.refresh_from_db()
         self.assertTrue(job.cancel_requested)
-        self.assertEqual(job.status, ProviderImportJob.Status.CANCEL_REQUESTED)
+        # Cancel is decisive: the row is closed immediately (and the Celery task
+        # revoked) so a stale job whose worker already died cannot keep the admin
+        # UI locked. Cooperative workers still observe ``cancel_requested``.
+        self.assertEqual(job.status, ProviderImportJob.Status.CANCELLED)
+        self.assertIsNotNone(job.finished_at)
 
     def test_logs_sanitized_and_download_url_not_serialized(self):
         self.client.force_authenticate(self.staff)

@@ -4,7 +4,9 @@ import test from 'node:test'
 
 const css = readFileSync(new URL('../app/assets/css/main.css', import.meta.url), 'utf8')
 const toaster = readFileSync(new URL('../app/components/ui/AppNotifications.vue', import.meta.url), 'utf8')
-const episodes = readFileSync(new URL('../app/components/content/EpisodeList.vue', import.meta.url), 'utf8')
+// EpisodeList.vue is gone; the rule it guarded — a dark-isolated thumbnail
+// inside light-themed card chrome — now lives on the continue-watching card.
+const mediaCard = readFileSync(new URL('../app/components/content/ContinueWatchingCard.vue', import.meta.url), 'utf8')
 const catalogDetail = readFileSync(new URL('../app/components/content/CatalogDetail.vue', import.meta.url), 'utf8')
 
 function themeBlock(selector) {
@@ -65,9 +67,14 @@ test('cinematic surfaces reset light theme palette before rendering media text',
 
 test('toaster stays dark-only; media overlays keep cinematic dark isolation', () => {
   assert.match(toaster, /theme="dark"/)
-  assert.match(episodes, /theme-media-dark relative aspect-video/)
-  assert.match(episodes, /bg-elevated text-secondary ring-1 ring-line/)
-  assert.doesNotMatch(episodes, /<EmptyState[^>]+dark\s*\/>/)
-  assert.match(catalogDetail, /<article class="media-detail overflow-clip"/)
+  // The artwork is dark whatever the site theme is...
+  assert.match(mediaCard, /theme-media-dark relative aspect-video/)
+  // ...and the isolation stops at the artwork: the text under it reads from the
+  // light tokens, so the card is not a dark island in a light page.
+  const cardChrome = mediaCard.slice(mediaCard.indexOf('</div>\n    <div class="flex items-center'))
+  assert.match(cardChrome, /text-ink/)
+  assert.match(cardChrome, /text-muted/)
+  assert.doesNotMatch(cardChrome, /theme-media-dark/)
+  assert.match(catalogDetail, /<article class="media-detail[ "]/)
   assert.doesNotMatch(catalogDetail, /<article class="[^\"]*theme-media-dark/)
 })

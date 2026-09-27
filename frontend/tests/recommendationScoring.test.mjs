@@ -195,7 +195,11 @@ test('deep watch behavior promotes similar unseen titles over unrelated populari
   const result = rankRecommendations([source, popular, similar], preferences, events, [], 3, now)
 
   assert.equal(result[0].item.slug, similar.slug)
-  assert.match(result[0].item.recommendation_reason, /اکشن|کارگردان|حال‌وهوای/)
+  // The reason has to name what earned the promotion. A single deep watch is
+  // not yet enough affinity for a genre or a director line, so what it names
+  // is the watched title itself — never generic popularity.
+  assert.match(result[0].item.recommendation_reason, /نزدیک به «عنوان 1»|اکشن|کارگردان|حال‌وهوای/)
+  assert.doesNotMatch(result[0].item.recommendation_reason, /انتخاب‌های امروز|پیشنهاد روایتو/)
 })
 
 test('recent behavior has materially more influence than stale behavior', () => {

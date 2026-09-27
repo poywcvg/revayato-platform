@@ -5,12 +5,15 @@ from __future__ import annotations
 import logging
 import re
 import shutil
+import socket
+import ssl
 import subprocess
 import tempfile
 from pathlib import Path
 from urllib.parse import urlsplit
 
 from django.conf import settings
+from django.core.cache import cache
 from django.core.files.base import ContentFile
 from django.core.files.storage import default_storage
 
@@ -628,6 +631,26 @@ def _source_url_identity(url: str) -> str:
     return f'{parsed.netloc.lower()}{parsed.path}'.lower().rstrip('/')
 
 
+def _with_preferred_source(bound_sources: list[str], preferred_source_url: str = '') -> list[str]:
+    """Move the URL the viewer is actually playing to the front of the bindings.
+
+    The player pairs cues to the ``source_url`` that matches the active stream
+    (highest sync confidence). Reordering only (no injection) keeps a release
+    the matcher rejected from inheriting cues it cannot sync with.
+    """
+    preferred = str(preferred_source_url or '').strip()
+    if not preferred or not preferred.startswith(('http://', 'https://')):
+        return list(bound_sources)
+    if looks_like_dub_link({'url': preferred, 'label': preferred}):
+        return list(bound_sources)
+    preferred_id = _source_url_identity(preferred)
+    if not preferred_id:
+        return list(bound_sources)
+    ordered = [u for u in bound_sources if _source_url_identity(u) == preferred_id]
+    ordered += [u for u in bound_sources if _source_url_identity(u) != preferred_id]
+    return ordered or list(bound_sources)
+
+
 def _prioritize_extract_sources(
     sources: list[dict],
     preferred_source_url: str = '',
@@ -779,17 +802,68 @@ def _season_episode_key(item: dict) -> tuple[int, int] | None:
     return (max(1, season or 1), episode)
 
 
+def _pack_episode_keys(links: list[dict]) -> list[tuple[int, int] | None]:
+    """Key every link of one pack at once, in order, ``None`` where unkeyable.
+
+    :func:`_season_episode_key` reads one link on its own, and for all but a
+    handful of packs that is the whole story. What it cannot see is the one
+    thing that proves it wrong: a provider page that gives *two different
+    files* the same «قسمت» number. From that point on every label runs one
+    episode behind the file it names, and a per-link reader has no way to
+    notice — it faithfully files each link under a number the page made up.
+    That is how «فندک و شاهزاده خانم» ended up with 34 rows each holding the
+    next episode's video.
+
+    Seen as a pack, it is unmissable: two links carry the same metadata key
+    and their *file names* state different episodes. They cannot both be
+    right, and the disagreement is itself the evidence — the page's numbering
+    collided with itself. For that pack, and only that pack, the file name
+    wins: it is the statement the host made about the bytes, while the label
+    is the statement the page made about its own list.
+
+    The restraint matters as much as the rule. Of 2,281 packs on production
+    only 14 collide; the other 2,267 are returned exactly as
+    :func:`_season_episode_key` read them. In particular a provider numbering
+    a serial straight through — «اشرف رویا», whose ``S01E26`` is the
+    catalogue's S02E13 — never collides, so its keys are left alone rather
+    than "corrected" into a season that does not exist here.
+    """
+    from apps.catalog.media_verification import stated_episode_identity
+
+    items = list(links or [])
+    keys: list[tuple[int, int] | None] = [
+        _season_episode_key(item) if isinstance(item, dict) else None
+        for item in items
+    ]
+
+    # What each file name says about itself, for the links that say anything.
+    stated: dict[int, tuple[int | None, int]] = {}
+    for index, item in enumerate(items):
+        if keys[index] is None:
+            continue
+        said = stated_episode_identity(str(item.get('url') or item.get('key') or ''))
+        if said:
+            stated[index] = said
+
+    named_by_key: dict[tuple[int, int], set[int]] = {}
+    for index, said in stated.items():
+        named_by_key.setdefault(keys[index], set()).add(said[1])
+    if not any(len(names) > 1 for names in named_by_key.values()):
+        return keys
+
+    for index, (said_season, said_episode) in stated.items():
+        season = said_season or (keys[index] or (1, 0))[0] or 1
+        keys[index] = (max(1, int(season)), int(said_episode))
+    return keys
+
+
 def _links_for_episode(links: list[dict], season_number: int, episode_number: int) -> list[dict]:
-    matched = []
-    for item in links or []:
-        if not isinstance(item, dict):
-            continue
-        key = _season_episode_key(item)
-        if not key:
-            continue
-        if key == (season_number, episode_number):
-            matched.append(item)
-    return matched
+    items = list(links or [])
+    return [
+        item
+        for item, key in zip(items, _pack_episode_keys(items))
+        if key == (season_number, episode_number)
+    ]
 
 
 # Text codecs the HTML5 player can eventually show (via WebVTT).
@@ -834,6 +908,98 @@ def _ffmpeg_network_args(*, with_reconnect: bool = True) -> list[str]:
     return args
 
 
+def _source_reachable(source_url: str, *, timeout: float = 4.0) -> bool:
+    """Fast TCP+TLS reachability probe for a provider host.
+
+    Some SoftSub CDNs (e.g. starsdl.top / dlservers.top) currently RESET the TLS
+    handshake for this datacenter's egress — TCP connects, but the ClientHello is
+    dropped, so ffprobe/ffmpeg only discover the block after a 22s read timeout
+    and then four blind stream-map attempts (~90s each). That single dead source
+    can burn ~6 minutes of the SoftSub worker and stall the whole queue behind it.
+
+    Doing one ~4s connect first lets an unreachable source fail in seconds so the
+    worker moves straight on to a reachable sidecar provider (Subzone). Results are
+    cached briefly and keyed by host:port — negatives longer, since a path-level
+    block does not flip second to second, positives short so a slow host recovers.
+    Anything we cannot classify returns True (never block extraction on doubt).
+    """
+    try:
+        parts = urlsplit(source_url)
+    except ValueError:
+        return True
+    host = parts.hostname
+    if not host:
+        return True
+    port = parts.port or (443 if parts.scheme == 'https' else 80)
+    cache_key = f'catalog:subs:reach:{host}:{port}'
+    cached = cache.get(cache_key)
+    if cached is not None:
+        return bool(cached)
+
+    ok = True
+    try:
+        sock = socket.create_connection((host, port), timeout=timeout)
+        try:
+            if parts.scheme == 'https':
+                # No cert/hostname verification: we only care whether the peer
+                # completes a TLS handshake, not that the cert is trusted — a
+                # reset here is the exact signal that the host is unreachable.
+                ctx = ssl.create_default_context()
+                ctx.check_hostname = False
+                ctx.verify_mode = ssl.CERT_NONE
+                ctx.wrap_socket(sock, server_hostname=host).close()
+            else:
+                sock.close()
+        except (ssl.SSLError, OSError):
+            ok = False
+            try:
+                sock.close()
+            except OSError:
+                pass
+    except (OSError, ValueError):
+        ok = False
+
+    cache.set(cache_key, ok, 300 if not ok else 90)
+    return ok
+
+
+# A host that answers TLS but never finishes streaming (s8.parsdl.top in
+# 2026-09) passes _source_reachable and then costs a full ffmpeg timeout per
+# file — 35 of them in six hours starved the SoftSub queue. Two timeouts bench
+# the host for a while so the worker reaches Subzone and the next title instead.
+_SLOW_HOST_STRIKES = 2
+_SLOW_HOST_TTL = 30 * 60
+
+
+def _slow_host_key(source_url: str) -> str:
+    try:
+        host = (urlsplit(source_url).hostname or '').lower()
+    except ValueError:
+        host = ''
+    return f'catalog:subs:slow:{host}' if host else ''
+
+
+def _note_slow_host(source_url: str) -> None:
+    key = _slow_host_key(source_url)
+    if not key:
+        return
+    try:
+        if not cache.add(key, 1, _SLOW_HOST_TTL):
+            cache.incr(key)
+    except Exception:  # noqa: BLE001 - a cache hiccup must never fail extraction
+        pass
+
+
+def _host_benched_as_slow(source_url: str) -> bool:
+    key = _slow_host_key(source_url)
+    if not key:
+        return False
+    try:
+        return int(cache.get(key) or 0) >= _SLOW_HOST_STRIKES
+    except (TypeError, ValueError):
+        return False
+
+
 def extract_webvtt_from_url(
     source_url: str,
     *,
@@ -849,6 +1015,15 @@ def extract_webvtt_from_url(
     # Skip hosts that currently 410 every signed SoftSub URL.
     host = urlsplit(source_url).netloc.lower()
     if any(marker in host for marker in _DEAD_SOFTSUB_HOST_MARKERS):
+        return None
+    # Skip hosts whose TLS handshake is being reset for our egress: without this
+    # ffprobe/ffmpeg would spend minutes timing out per source and starve the
+    # SoftSub queue. A reachable sidecar provider (Subzone) is tried afterwards.
+    if not _source_reachable(source_url):
+        logger.info('subtitle source unreachable (fast-skip) %s', source_url[:120])
+        return None
+    if _host_benched_as_slow(source_url):
+        logger.info('subtitle source host benched after timeouts (fast-skip) %s', source_url[:120])
         return None
     path = urlsplit(source_url).path.lower().split('?', 1)[0]
 
@@ -873,7 +1048,7 @@ def extract_webvtt_from_url(
         probe_budget = min(22, max(10, int(timeout_seconds or 60) // 4))
     else:
         probe_budget = min(90, max(30, timeout_seconds // 2))
-    streams = _ffprobe_subtitle_streams(source_url, timeout_seconds=probe_budget)
+    probed, streams = _probe_subtitle_streams(source_url, timeout_seconds=probe_budget)
     ranked_streams = _rank_subtitle_streams(streams)
     if ranked_streams:
         # Language tags are often missing or wrong. Validate the extracted text
@@ -890,6 +1065,13 @@ def extract_webvtt_from_url(
 
         # ffprobe found concrete text streams; blind alias remaps only repeat
         # those reads and cannot turn a non-Persian stream into Persian.
+        return None
+
+    # ffprobe successfully enumerated the container and it holds no convertible
+    # text subtitle (zero subs, or bitmap-only PGS/DVD tracks). The blind mappers
+    # below all target subtitle streams expecting text output, so they would only
+    # spend four more network round-trips re-confirming "matches no streams".
+    if probed:
         return None
 
     # Some CDNs reject ffprobe's access pattern but accept ffmpeg. Prefer Persian
@@ -1020,9 +1202,19 @@ def _download_bytes(url: str, *, timeout_seconds: int = 45) -> bytes | None:
         return None
 
 
-def _ffprobe_subtitle_streams(source_url: str, *, timeout_seconds: int = 30) -> list[dict]:
+def _probe_subtitle_streams(source_url: str, *, timeout_seconds: int = 30) -> tuple[bool, list[dict]]:
+    """Probe a container's subtitle streams. Returns ``(probed, streams)``.
+
+    ``probed`` is True only when ffprobe actually inspected the container
+    (exit 0 with valid JSON). It is False when ffprobe is unavailable, timed
+    out, was killed, or the CDN rejected its access pattern — the cases where
+    a blind ffmpeg stream-map fallback is still worth attempting. When
+    ``probed`` is True but no usable text stream is present, the container
+    definitively has no convertible subtitles, so the blind mappers would only
+    spend more network time re-confirming "matches no streams".
+    """
     if not shutil.which('ffprobe'):
-        return []
+        return False, []
     command = [
         'ffprobe', '-hide_banner', '-loglevel', 'error',
         *_ffmpeg_network_args(with_reconnect=False),
@@ -1040,15 +1232,15 @@ def _ffprobe_subtitle_streams(source_url: str, *, timeout_seconds: int = 30) -> 
         )
     except (OSError, subprocess.TimeoutExpired) as exc:
         logger.info('ffprobe subtitle streams failed for %s: %s', source_url[:120], exc)
-        return []
+        return False, []
     if completed.returncode != 0:
-        return []
+        return False, []
     try:
         import json
 
         payload = json.loads((completed.stdout or b'{}').decode('utf-8', errors='ignore') or '{}')
     except Exception:
-        return []
+        return False, []
     streams = []
     for item in payload.get('streams') or []:
         try:
@@ -1062,7 +1254,12 @@ def _ffprobe_subtitle_streams(source_url: str, *, timeout_seconds: int = 30) -> 
             'language': str(tags.get('language') or '').lower(),
             'title': str(tags.get('title') or ''),
         })
-    return streams
+    return True, streams
+
+
+def _ffprobe_subtitle_streams(source_url: str, *, timeout_seconds: int = 30) -> list[dict]:
+    """Backward-compatible wrapper returning only the enumerated stream list."""
+    return _probe_subtitle_streams(source_url, timeout_seconds=timeout_seconds)[1]
 
 
 def _pick_subtitle_stream(streams: list[dict]) -> dict | None:
@@ -1303,6 +1500,7 @@ def _run_ffmpeg_raw(
         )
     except subprocess.TimeoutExpired:
         logger.warning('subtitle extract timed out for %s', source_url[:120])
+        _note_slow_host(source_url)
         try:
             if out_path.exists():
                 out_path.unlink(missing_ok=True)
@@ -1323,11 +1521,85 @@ def _run_ffmpeg_raw(
     return data
 
 
-def _store_webvtt(payload: bytes, *, filename: str) -> str:
+def _measured_runtime(obj, *, episode=None) -> float:
+    """This encode's ffprobe-measured runtime, ``0.0`` when never measured.
+
+    Read from the stored media check, so it costs one indexed query and never
+    reaches the network. Never raises: a subtitle must not be lost because the
+    runtime lookup had a bad day.
+    """
+    try:
+        from apps.catalog.media_verification import measured_duration
+
+        return measured_duration(obj, episode=episode)
+    except Exception:  # noqa: BLE001
+        logger.debug('subtitle: runtime lookup failed', exc_info=True)
+        return 0.0
+
+
+def _store_webvtt(payload: bytes, *, filename: str, duration: float = 0.0) -> str:
+    """Verify the cue file, then store it. Returns ``''`` when it is rejected.
+
+    Every subtitle the catalog has ever served passed through here, and until
+    now it passed through unread. :mod:`subtitle_verify` opens it: enough cues
+    to be a subtitle, Persian text rather than an English file wearing a فارسی
+    label, a translation rather than a channel advert, and cues that fit the
+    runtime ffprobe measured for this encode. A clean framerate mismatch is
+    rescaled and the *corrected* bytes are what get written.
+
+    ``duration`` is the measured runtime in seconds; ``0.0`` (no verified media
+    check yet) keeps every other check and skips only the timing one.
+    """
+    from apps.catalog import subtitle_verify
+
+    report = subtitle_verify.verify_payload(payload, duration=duration)
+    if report['verdict'] == 'failed':
+        logger.info(
+            'subtitle rejected before storage (%s): %s [cues=%s coverage=%.2f]',
+            filename, report['reason'], report['cues'], report['coverage'],
+        )
+        return ''
+    payload = report['payload']
+
     key = f'catalog/subtitles/{filename}'
     if default_storage.exists(key):
         default_storage.delete(key)
     return default_storage.save(key, ContentFile(payload))
+
+
+def _fps_prealigned_payload(payload: bytes, *, subtitle_release: str, video_reference: str) -> bytes:
+    """Linearly rescale VTT cues for a known framerate mismatch, else return as-is.
+
+    A subtitle authored for a 25 fps PAL encode drifts ~4% on a 23.976 fps source.
+    When *both* framerates are confidently readable from release tags and differ,
+    map the cues onto the target framerate at ingestion so the drift never reaches
+    a viewer. Deliberately conservative: unknown/equal framerates are a no-op, so
+    a wrong guess is impossible — the crowd layer still corrects any residual.
+    """
+    try:
+        from apps.catalog.subtitle_sync import (
+            detect_fps_from_release,
+            fps_rescale_factor,
+            shift_and_scale_webvtt,
+        )
+
+        src_fps = detect_fps_from_release(subtitle_release)
+        dst_fps = detect_fps_from_release(video_reference)
+        scale = fps_rescale_factor(src_fps, dst_fps)
+        if scale == 1.0:
+            return payload
+        text = payload.decode('utf-8')
+        rescaled = shift_and_scale_webvtt(text, scale=scale)
+        if rescaled == text:
+            return payload
+        logger.info(
+            'subtitle-sync: FPS pre-align %.3f→%.3f (×%.5f) release=%r',
+            src_fps, dst_fps, scale, str(subtitle_release)[:80],
+        )
+        return rescaled.encode('utf-8')
+    except Exception:  # noqa: BLE001 — pre-alignment is best-effort, never fatal
+        logger.debug('subtitle-sync: FPS pre-align skipped', exc_info=True)
+        return payload
 
 
 def _track_payload(
@@ -1548,7 +1820,7 @@ def _non_conflicting_release_sources(release_name: str, urls) -> list[str]:
     return _release_compatible_sources(release_name, urls, minimum_score=None)
 
 
-def _attach_subtitlestar_subtitle(movie, links: list[dict], *, timeout_seconds: int) -> bool:
+def _attach_subtitlestar_subtitle(movie, links: list[dict], *, timeout_seconds: int, preferred_source_url: str = '') -> bool:
     """Attach an exact IMDb-matched SubtitleStar sidecar to online playback."""
     from apps.catalog.subtitle_star import find_movie_subtitle
 
@@ -1559,7 +1831,7 @@ def _attach_subtitlestar_subtitle(movie, links: list[dict], *, timeout_seconds: 
         movie,
         video_urls=video_urls,
         # Keep lookups snappy — long timeouts stall SoftSub backfills for hours.
-        timeout_seconds=min(25, max(8, int(timeout_seconds or 25))),
+        timeout_seconds=min(25, max(1, int(timeout_seconds or 25))),
     )
     if match is None:
         return False
@@ -1571,8 +1843,15 @@ def _attach_subtitlestar_subtitle(movie, links: list[dict], *, timeout_seconds: 
         )
         return False
 
+    payload = _fps_prealigned_payload(
+        payload,
+        subtitle_release=match.release_name,
+        video_reference=(video_urls[0] if video_urls else ''),
+    )
     filename = f'tmdb-{movie.tmdb_id or movie.pk}-fa-subtitlestar.vtt'
-    saved = _store_webvtt(payload, filename=filename)
+    saved = _store_webvtt(payload, filename=filename, duration=_measured_runtime(movie))
+    if not saved:
+        return False
     # Keep only release-compatible URLs chosen by the provider matcher. Appending
     # every movie URL here would put BluRay cues on WEB/Dub encodes and desync them.
     preferred = _ranked_subtitlestar_stream_urls(links)
@@ -1597,6 +1876,7 @@ def _attach_subtitlestar_subtitle(movie, links: list[dict], *, timeout_seconds: 
         sync_confidence = 'title-fallback'
     if not bound_sources:
         return False
+    bound_sources = _with_preferred_source(bound_sources, preferred_source_url)
     tracks: list[dict] = []
     for index, source_url in enumerate(bound_sources, start=1):
         track = _track_payload(
@@ -1627,30 +1907,66 @@ def _attach_subtitlestar_subtitle(movie, links: list[dict], *, timeout_seconds: 
     return True
 
 
-def _attach_subzone_subtitle(movie, links: list[dict], *, timeout_seconds: int) -> bool:
-    """Attach a Subzone.ir Persian sidecar when SubtitleStar misses."""
+def _attach_subzone_subtitle(movie, links: list[dict], *, timeout_seconds: int, preferred_source_url: str = '') -> bool:
+    """Attach a Subzone.ir Persian sidecar when SubtitleStar/SubDL miss."""
     from apps.catalog.subzone import find_movie_subtitle
 
+    return _attach_sidecar_subtitle(
+        movie, links, provider='subzone', finder=find_movie_subtitle,
+        timeout_seconds=timeout_seconds, preferred_source_url=preferred_source_url,
+    )
+
+
+def _attach_subdl_subtitle(movie, links: list[dict], *, timeout_seconds: int, preferred_source_url: str = '') -> bool:
+    """Attach a SubDL Persian sidecar found by exact IMDb/TMDb id (API key required)."""
+    from apps.catalog.subdl import find_movie_subtitle, subdl_enabled
+
+    if not subdl_enabled():
+        return False
+    return _attach_sidecar_subtitle(
+        movie, links, provider='subdl', finder=find_movie_subtitle,
+        timeout_seconds=timeout_seconds, preferred_source_url=preferred_source_url,
+    )
+
+
+def _attach_sidecar_subtitle(
+    movie,
+    links: list[dict],
+    *,
+    provider: str,
+    finder,
+    timeout_seconds: int,
+    preferred_source_url: str = '',
+) -> bool:
+    """Shared attach for sidecar providers: normalize → verify Persian → FPS
+    pre-align → store VTT → bind to the encodes it syncs with → save."""
     video_urls = _ranked_subtitlestar_stream_urls(links) or _ranked_movie_stream_urls(links)
     if not video_urls:
         return False
-    match = find_movie_subtitle(
+    match = finder(
         movie,
         video_urls=video_urls,
-        timeout_seconds=min(18, max(6, int(timeout_seconds or 12))),
+        timeout_seconds=min(18, max(1, int(timeout_seconds or 12))),
     )
     if match is None:
         return False
     payload = normalize_subtitle_payload(match.payload, filename=match.filename)
     if not _is_usable_persian_webvtt(payload):
         logger.info(
-            'Subzone returned an unsupported subtitle for movie=%s filename=%s',
-            getattr(movie, 'pk', None), match.filename,
+            '%s returned an unsupported subtitle for movie=%s filename=%s',
+            provider, getattr(movie, 'pk', None), match.filename,
         )
         return False
 
-    filename = f'tmdb-{movie.tmdb_id or movie.pk}-fa-subzone.vtt'
-    saved = _store_webvtt(payload, filename=filename)
+    payload = _fps_prealigned_payload(
+        payload,
+        subtitle_release=match.release_name,
+        video_reference=(video_urls[0] if video_urls else ''),
+    )
+    filename = f'tmdb-{movie.tmdb_id or movie.pk}-fa-{provider}.vtt'
+    saved = _store_webvtt(payload, filename=filename, duration=_measured_runtime(movie))
+    if not saved:
+        return False
     preferred = _ranked_subtitlestar_stream_urls(links)
     bound_sources = _strict_release_sources(match.release_name, (
         u for u in match.source_urls
@@ -1673,17 +1989,18 @@ def _attach_subzone_subtitle(movie, links: list[dict], *, timeout_seconds: int) 
         sync_confidence = 'title-fallback'
     if not bound_sources:
         return False
+    bound_sources = _with_preferred_source(bound_sources, preferred_source_url)
     tracks: list[dict] = []
     for index, source_url in enumerate(bound_sources, start=1):
         track = _track_payload(
             saved,
             source_url,
-            track_id=f'fa-subzone-{index}',
+            track_id=f'fa-{provider}-{index}',
             source_priority=3,
             sync_confidence=sync_confidence,
         )
         track.update({
-            'provider': 'subzone',
+            'provider': provider,
             'provider_page': match.page_url[:1000],
             'release': match.release_name[:300],
             'imdb_id': match.imdb_id,
@@ -1717,7 +2034,9 @@ def _save_movie_softsub_track(movie, payload: bytes, *, source_url: str, provide
         ) or source_url
 
     filename = f'tmdb-{movie.tmdb_id or movie.pk}-fa.vtt'
-    saved = _store_webvtt(payload, filename=filename)
+    saved = _store_webvtt(payload, filename=filename, duration=_measured_runtime(movie))
+    if not saved:
+        return False
     movie.subtitle_tracks = [
         _track_payload(
             saved,
@@ -1764,7 +2083,13 @@ def _attach_ffmpeg_softsub_movie(
     source_url = ''
     if sources:
         attempts = sources[:2]
-        per_attempt = min(70, max(30, int(timeout_seconds or 90) // max(1, len(attempts))))
+        # Snappy urgent-player demux stays short (latency matters on the request
+        # thread). The background worker lane (snappy=False) may spend minutes on a
+        # slow remote MKV whose Persian subtitle packets are interleaved across the
+        # whole file — that is the "extract softsub from the film itself" path and
+        # it must not be strangled by the 70s urgent ceiling.
+        per_attempt_cap = 70 if snappy else max(70, int(timeout_seconds or 90))
+        per_attempt = min(per_attempt_cap, max(30, int(timeout_seconds or 90) // max(1, len(attempts))))
         for source in attempts:
             source_url = _http_url(source)
             if not source_url:
@@ -1783,7 +2108,10 @@ def _attach_ffmpeg_softsub_movie(
             source_url = video_url
             payload = extract_webvtt_from_url(
                 video_url,
-                timeout_seconds=min(65, max(28, int(timeout_seconds or 90))),
+                timeout_seconds=(
+                    min(65, max(28, int(timeout_seconds or 90)))
+                    if snappy else max(65, int(timeout_seconds or 90) // 2)
+                ),
                 snappy=snappy,
             )
 
@@ -1804,12 +2132,18 @@ def attach_extracted_subtitle(
     timeout_seconds: int = 300,
     allow_ffmpeg: bool = False,
     prefer_embedded: bool = False,
+    snappy: bool = True,
     preferred_source_url: str = '',
 ) -> bool:
     """Attach a Persian WebVTT from Soft encode ffmpeg, SubtitleStar, or Subzone.
 
     Urgent playback reports prefer embedded demux whenever a Soft encode exists,
     so the player gets frame-accurate cues from the same release/container.
+
+    ``snappy`` (default True) keeps the urgent in-request lane short. The
+    background SoftSub worker passes ``snappy=False`` so embedded demux of the
+    film's own container gets a real per-source budget (minutes, not seconds)
+    instead of timing out at the urgent 70s ceiling.
     """
     links = [item for item in (movie.download_links or []) if isinstance(item, dict)]
     if movie.subtitle_tracks and not force:
@@ -1832,23 +2166,35 @@ def attach_extracted_subtitle(
     # Embedded-first: demux from Soft CDN first (accurate + usually faster
     # than waiting on SubtitleStar misses), then fall back to sidecars.
     if prefer_embedded and can_ffmpeg:
-        ffmpeg_budget = min(95, max(40, budget if budget >= 40 else 75))
+        ffmpeg_budget = (
+            min(95, max(40, budget if budget >= 40 else 75))
+            if snappy else max(120, budget)
+        )
         if _attach_ffmpeg_softsub_movie(
             movie,
             links,
             timeout_seconds=ffmpeg_budget,
-            snappy=True,
+            snappy=snappy,
             preferred_source_url=preferred_source_url,
         ):
             return True
 
-    # Fast path for open-player ensure: Star first, Subzone immediately after a miss.
+    # Fast path for open-player ensure: Star first, then SubDL and Subzone right after a miss.
     star_budget = min(budget, max(6, budget * 2 // 3)) if budget <= 20 else min(25, budget)
-    if _attach_subtitlestar_subtitle(movie, links, timeout_seconds=star_budget):
+    if _attach_subtitlestar_subtitle(
+        movie, links, timeout_seconds=star_budget, preferred_source_url=preferred_source_url,
+    ):
         return True
 
     remaining = max(6, budget - min(star_budget, 8)) if budget <= 20 else min(18, max(8, budget // 2))
-    if _attach_subzone_subtitle(movie, links, timeout_seconds=remaining):
+    # SubDL: exact IMDb-id API lookup, the precise sidecar source when keyed.
+    if _attach_subdl_subtitle(
+        movie, links, timeout_seconds=remaining, preferred_source_url=preferred_source_url,
+    ):
+        return True
+    if _attach_subzone_subtitle(
+        movie, links, timeout_seconds=remaining, preferred_source_url=preferred_source_url,
+    ):
         return True
 
     # SoftSub ffmpeg after sidecars when we did not already try the embedded path.
@@ -1865,7 +2211,7 @@ def attach_extracted_subtitle(
     if _attach_ffmpeg_softsub_movie(
         movie,
         links,
-        timeout_seconds=min(120, max(45, budget)),
+        timeout_seconds=(min(120, max(45, budget)) if snappy else max(120, budget)),
         snappy=False,
         preferred_source_url=preferred_source_url,
     ):
@@ -1942,6 +2288,10 @@ def attach_extracted_subtitle_to_episode(
                 'Rejected unusable/non-Persian embedded subtitle episode=%s',
                 getattr(episode, 'pk', None),
             )
+        # Embedded demux produced nothing usable (unreachable SoftSub CDN, no text
+        # track, or non-Persian). The reachable Subzone sidecar fallback runs once
+        # per series, batched across all still-missing episodes, in
+        # attach_series_softsub_tracks — far cheaper than one search per episode.
         return False
     paired_source_url = source_url
     if _is_sidecar_subtitle_url(source_url):
@@ -1953,7 +2303,12 @@ def attach_extracted_subtitle_to_episode(
 
     season_no = getattr(episode.season, 'season_number', 1) or 1
     filename = f'series-{episode.season.series_id}-s{season_no}e{episode.episode_number}-fa.vtt'
-    saved = _store_webvtt(payload, filename=filename)
+    saved = _store_webvtt(
+        payload, filename=filename,
+        duration=_measured_runtime(episode.season.series, episode=episode),
+    )
+    if not saved:
+        return False
     episode.subtitle_tracks = [
         _track_payload(
             saved,
@@ -1993,10 +2348,8 @@ def _episode_video_map(series, links: list[dict]) -> dict[tuple[int, int], list[
     from apps.catalog.models import Episode
 
     videos: dict[tuple[int, int], list[str]] = {}
-    for item in links or []:
-        if not isinstance(item, dict):
-            continue
-        key = _season_episode_key(item)
+    items = list(links or [])
+    for item, key in zip(items, _pack_episode_keys(items)):
         if not key:
             continue
         url = _http_url(item)
@@ -2024,7 +2377,13 @@ def _episode_video_map(series, links: list[dict]) -> dict[tuple[int, int], list[
             ranked = _ranked_episode_stream_urls(scoped)
             if ranked:
                 videos[key] = list(dict.fromkeys([*ranked, *videos[key]]))
-    return {key: urls for key, urls in videos.items() if urls}
+    # The first URL is the timing reference (FPS pre-align, release matching)
+    # and a dub is a re-cut audio track with its own release name — it never
+    # carries the subtitle's timing, so it goes last.
+    return {
+        key: sorted(urls, key=lambda url: looks_like_dub_link({'url': url, 'label': url}))
+        for key, urls in videos.items() if urls
+    }
 
 
 def _attach_subtitlestar_series(
@@ -2034,15 +2393,29 @@ def _attach_subtitlestar_series(
     force: bool = False,
     timeout_seconds: int = 60,
     limit: int | None = None,
+    preferred_episode_id: int = 0,
 ) -> dict:
-    """Attach SubtitleStar Persian sidecars to episodes missing online tracks."""
+    """Attach SubtitleStar Persian sidecars to episodes missing online tracks.
+
+    ``preferred_episode_id`` is the episode open in a player: it is looked up
+    first and is never cut by ``limit``, whatever its position in the links.
+    """
+    from django.core.cache import cache
     from apps.catalog.models import Episode
     from apps.catalog.subtitle_star import find_series_episode_subtitles
 
     result = {'looked_up': False, 'attached': 0, 'matches': 0}
-    star_enabled = bool(getattr(settings, 'SUBTITLESTAR_ENABLED', True))
+    # An open SubtitleStar circuit must skip only SubtitleStar, not the whole
+    # provider stage: Subzone remains an independent fallback for the open
+    # player and should still get a chance to attach episode tracks.
+    star_enabled = bool(
+        getattr(settings, 'SUBTITLESTAR_ENABLED', True)
+        and not cache.get('catalog:subtitlestar:circuit-open')
+    )
     subzone_enabled = bool(getattr(settings, 'SUBZONE_ENABLED', True))
-    if not star_enabled and not subzone_enabled:
+    from apps.catalog.subdl import subdl_enabled
+    subdl_on = subdl_enabled()
+    if not star_enabled and not subzone_enabled and not subdl_on:
         return result
     if not normalize_imdb_id_safe(series) and not (
         str(getattr(series, 'original_title', '') or getattr(series, 'title', '') or '').strip()
@@ -2052,6 +2425,21 @@ def _attach_subtitlestar_series(
 
     missing: dict[tuple[int, int], list[str]] = {}
     episode_videos = _episode_video_map(series, links)
+    preferred_key = None
+    if preferred_episode_id:
+        preferred = (
+            Episode.objects.filter(pk=int(preferred_episode_id), season__series_id=series.pk)
+            .select_related('season').first()
+        )
+        if preferred is not None:
+            preferred_key = (
+                int(getattr(preferred.season, 'season_number', 1) or 1),
+                int(preferred.episode_number or 0),
+            )
+            if preferred_key not in episode_videos and str(preferred.video_url or '').startswith(('http://', 'https://')):
+                episode_videos[preferred_key] = [str(preferred.video_url)]
+    if preferred_key in episode_videos:
+        episode_videos = {preferred_key: episode_videos[preferred_key], **episode_videos}
     for key, urls in episode_videos.items():
         season_no, episode_no = key
         episode = (
@@ -2106,11 +2494,21 @@ def _attach_subtitlestar_series(
                 provider, series.pk, match.season_number, match.episode_number, match.filename,
             )
             return False
+        episode_urls = episode_videos.get((match.season_number, match.episode_number), [])
+        payload = _fps_prealigned_payload(
+            payload,
+            subtitle_release=match.release_name,
+            video_reference=(episode_urls[0] if episode_urls else ''),
+        )
         filename = (
             f'series-{series.pk}-s{match.season_number}e{match.episode_number}-fa-{provider}.vtt'
         )
-        saved = _store_webvtt(payload, filename=filename)
-        episode_urls = episode_videos.get((match.season_number, match.episode_number), [])
+        saved = _store_webvtt(
+            payload, filename=filename,
+            duration=_measured_runtime(series, episode=episode),
+        )
+        if not saved:
+            return False
         bound_sources = _strict_release_sources(match.release_name, (
             url for url in match.source_urls
             if url and not looks_like_dub_link({'url': url, 'label': url})
@@ -2172,33 +2570,44 @@ def _attach_subtitlestar_series(
                     if callable(save):
                         save(update_fields=['has_subtitle', 'updated_at'])
 
-    # Subzone fills episodes SubtitleStar still missed.
+    # Sidecar providers fill episodes SubtitleStar still missed: SubDL first
+    # (exact IMDb-id API), then Subzone (canonical season pages + verification).
     still_missing = {
         key: urls for key, urls in missing.items()
         if key not in attached_keys
     }
-    if still_missing and subzone_enabled:
+    sidecar_finders = []
+    if subdl_on:
+        from apps.catalog.subdl import find_series_episode_subtitles as find_subdl_episode_subtitles
+        sidecar_finders.append(('subdl', find_subdl_episode_subtitles))
+    if subzone_enabled:
         from apps.catalog.subzone import find_series_episode_subtitles as find_subzone_episode_subtitles
-        subzone_matches = find_subzone_episode_subtitles(
+        sidecar_finders.append(('subzone', find_subzone_episode_subtitles))
+    for provider_name, finder in sidecar_finders:
+        if not still_missing:
+            break
+        provider_matches = finder(
             series,
             episode_videos=still_missing,
             timeout_seconds=min(30, max(6, int(timeout_seconds or 30) // 2)),
         )
-        result['matches'] += len(subzone_matches)
-        for match in subzone_matches:
-            if _persist_match(match, provider='subzone'):
-                result['attached'] += 1
-                if result['attached'] == 1:
-                    try:
-                        from apps.catalog.cache import bump_catalog_cache_version
-                        bump_catalog_cache_version()
-                    except Exception:
-                        pass
-                    if not getattr(series, 'has_subtitle', False):
-                        series.has_subtitle = True
-                        save = getattr(series, 'save', None)
-                        if callable(save):
-                            save(update_fields=['has_subtitle', 'updated_at'])
+        result['matches'] += len(provider_matches)
+        for match in provider_matches:
+            if not _persist_match(match, provider=provider_name):
+                continue
+            still_missing.pop((match.season_number, match.episode_number), None)
+            result['attached'] += 1
+            if result['attached'] == 1:
+                try:
+                    from apps.catalog.cache import bump_catalog_cache_version
+                    bump_catalog_cache_version()
+                except Exception:
+                    pass
+                if not getattr(series, 'has_subtitle', False):
+                    series.has_subtitle = True
+                    save = getattr(series, 'save', None)
+                    if callable(save):
+                        save(update_fields=['has_subtitle', 'updated_at'])
     return result
 
 
@@ -2256,16 +2665,15 @@ def ensure_episodes_from_download_links(series) -> int:
     from apps.catalog.models import Episode, Season
 
     links = [item for item in (series.download_links or []) if isinstance(item, dict)]
-    keys: set[tuple[int, int]] = set()
-    for item in links:
-        key = _season_episode_key(item)
-        if key:
-            keys.add(key)
+    keys = {key for key in _pack_episode_keys(links) if key}
     if not keys:
         return 0
 
     created = 0
     touched_season_ids: set[int] = set()
+    # How many episodes of this series may be tested inline before the rest are
+    # handed to the sweep. See CATALOG_EPISODE_GATE_PER_IMPORT.
+    gate_budget = max(0, int(getattr(settings, 'CATALOG_EPISODE_GATE_PER_IMPORT', 6)))
     for season_no, episode_no in sorted(keys):
         scoped = _links_for_episode(links, season_no, episode_no)
         preferred = _prefer_episode_stream_url(scoped)
@@ -2326,6 +2734,45 @@ def ensure_episodes_from_download_links(series) -> int:
             ):
                 episode.video_url = preferred
                 episode_fields.append('video_url')
+        # This is the one playback link still chosen by file name, and
+        # deliberately so: a season pack is forty episodes, and probing every
+        # one of them inline would turn a crawl into an hour of network waits.
+        # What must not happen is a *new* URL inheriting the old one's verdict,
+        # so any change resets the row to unverified and the playback sweep
+        # (which orders by playback_checked_at, nulls first) tests it next.
+        if 'video_url' in episode_fields:
+            from apps.catalog import playback_gate
+            from apps.catalog.models import PlaybackMode
+
+            # Test the link before the episode is served with it, for as many
+            # episodes as the budget allows. gate_links re-picks among this
+            # episode's own scoped candidates, so a dead or undecodable
+            # file name loses to a mirror that answers — and, since the gate
+            # is called with allow_clear=False, a bad network minute here can
+            # never blank an episode.
+            gated = False
+            if gate_budget > 0 and playback_gate.gate_enabled():
+                gate_budget -= 1
+                try:
+                    _choice, gate_fields = playback_gate.gate_links(
+                        episode, playback_gate.candidate_links(series, episode),
+                    )
+                    episode_fields.extend(gate_fields)
+                    gated = True
+                except Exception:
+                    logger.exception(
+                        'playback gate failed for episode %s; leaving it to the sweep',
+                        episode.pk,
+                    )
+            if not gated:
+                # Out of budget, or the gate is switched off. Say so rather than
+                # let the row keep a verdict earned by a URL it no longer holds:
+                # unverified with a null cursor is the front of the sweep queue.
+                if episode.playback_mode != PlaybackMode.UNVERIFIED:
+                    episode.playback_mode = PlaybackMode.UNVERIFIED
+                    episode_fields.append('playback_mode')
+                episode.playback_checked_at = None
+                episode_fields.append('playback_checked_at')
         if episode_fields:
             episode.save(update_fields=[*dict.fromkeys(episode_fields), 'updated_at'])
         if season_fields:
@@ -2349,6 +2796,7 @@ def attach_series_softsub_tracks(
     limit: int | None = None,
     allow_ffmpeg: bool = False,
     prefer_embedded: bool = False,
+    snappy: bool = True,
     preferred_episode_id: int = 0,
     preferred_source_url: str = '',
 ) -> dict:
@@ -2413,10 +2861,9 @@ def attach_series_softsub_tracks(
 
         soft_episode_keys: list[tuple[int, int]] = []
         seen_keys: set[tuple[int, int]] = set()
-        for item in links:
+        for item, key in zip(links, _pack_episode_keys(links)):
             if not looks_like_softsub_link(item):
                 continue
-            key = _season_episode_key(item)
             if not key or key in seen_keys:
                 continue
             seen_keys.add(key)
@@ -2474,7 +2921,13 @@ def attach_series_softsub_tracks(
                 result['skipped'] += 1
                 continue
             result['processed'] += 1
-            ep_timeout = min(70 if prefer_embedded else 90, int(timeout_seconds or 90))
+            # Background worker (snappy=False) gives each episode's own container a
+            # real demux budget; the urgent in-request lane keeps the 70/90s cap so
+            # the player request never blocks on a slow remote MKV.
+            ep_timeout = (
+                min(70 if prefer_embedded else 90, int(timeout_seconds or 90))
+                if snappy else max(90, int(timeout_seconds or 90))
+            )
             if attach_extracted_subtitle_to_episode(
                 episode, scoped, force=force_this_episode, timeout_seconds=ep_timeout,
                 preferred_source_url=(
@@ -2492,7 +2945,10 @@ def attach_series_softsub_tracks(
     # SubtitleStar — one season ZIP can cover many episodes in seconds.
     # Skip while the circuit is open so Soft ffmpeg can still run without waiting
     # on guaranteed 403s.
-    if subtitlestar_eligible and not cache.get('catalog:subtitlestar:circuit-open'):
+    if subtitlestar_eligible and (
+        not cache.get('catalog:subtitlestar:circuit-open')
+        or bool(getattr(settings, 'SUBZONE_ENABLED', True))
+    ):
         star = _attach_subtitlestar_series(
             series,
             links,
@@ -2501,6 +2957,7 @@ def attach_series_softsub_tracks(
             force=False if prefer_embedded else force,
             timeout_seconds=timeout_seconds,
             limit=limit,
+            preferred_episode_id=preferred_episode_id,
         )
         result['subtitlestar_attached'] = int(star.get('attached') or 0)
         result['subtitlestar_matches'] = int(star.get('matches') or 0)

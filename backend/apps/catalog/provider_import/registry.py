@@ -4,12 +4,14 @@ from .avasarami import AvasaramiConnector
 from .base import BaseProviderConnector
 from .exceptions import ProviderNotConfigured
 from .providers.dornatv import DornatvConnector
+from .providers.kargadan import KargadanConnector
 from .providers.myf2m import MyF2MConnector
 
 _REGISTRY = {
     'avasarami': AvasaramiConnector,
     'myf2m': MyF2MConnector,
     'dornatv': DornatvConnector,
+    'kargadan': KargadanConnector,
 }
 
 

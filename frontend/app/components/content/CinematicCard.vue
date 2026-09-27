@@ -46,7 +46,7 @@ const cardRating = computed(() => {
         <div class="pointer-events-none absolute right-2.5 top-2.5 z-10 flex max-w-[calc(100%-3.5rem)] flex-col items-end gap-1.5">
           <span
             v-if="item.imdb_rank"
-            class="rounded-md bg-[#f5c518] px-1.5 py-0.5 text-[10px] font-black tabular-nums text-night-950 shadow-sm"
+            class="rounded-md bg-[#f5c518] px-1.5 py-0.5 text-[11px] font-black tabular-nums text-night-950 shadow-sm"
             dir="ltr"
           >IMDb #{{ item.imdb_rank }}</span>
           <span class="memory-card__type">{{ item.type === 'movie' ? 'فیلم' : 'سریال' }}</span>
@@ -75,7 +75,7 @@ const cardRating = computed(() => {
           class="cinematic-card__synopsis memory-card__synopsis pointer-events-none absolute inset-x-0 bottom-0 z-10 hidden px-3.5 pb-14 pt-12 sm:block"
           aria-hidden="true"
         >
-          <p class="line-clamp-3 text-[11px] font-semibold leading-5 text-[rgb(var(--palette-ink-rgb)/94%)]">{{ summary }}</p>
+          <p class="line-clamp-3 text-xs font-semibold leading-5 text-[rgb(var(--palette-ink-rgb)/94%)]">{{ summary }}</p>
         </div>
 
         <div v-if="item.progress_percent" class="absolute inset-x-0 bottom-0 z-20 h-1 bg-line/35">
@@ -84,7 +84,7 @@ const cardRating = computed(() => {
       </CinematicImage>
 
       <div class="memory-card__body">
-        <p v-if="reason" class="mb-1 line-clamp-2 text-[10px] font-bold leading-4 text-primary-300">{{ reason }}</p>
+        <p v-if="reason" class="mb-1 line-clamp-2 text-[11px] font-bold leading-4 text-primary-300">{{ reason }}</p>
         <h3 class="memory-card__title font-latin" dir="ltr">{{ displayTitle }}</h3>
         <div class="memory-card__meta">
           <span v-if="item.year" class="tabular-nums">{{ item.year }}</span>
@@ -130,7 +130,7 @@ const cardRating = computed(() => {
   align-items: center;
   border-radius: .65rem;
   padding: .28rem .55rem;
-  font-size: .625rem;
+  font-size: 0.75rem;
   font-weight: 900;
   letter-spacing: .02em;
   color: rgb(var(--palette-ink-rgb) / 92%);
@@ -183,7 +183,7 @@ const cardRating = computed(() => {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font-size: .6875rem;
+  font-size: 0.75rem;
   font-weight: 700;
   color: var(--theme-text-muted);
 }
@@ -194,7 +194,7 @@ const cardRating = computed(() => {
   align-items: center;
   gap: .45rem;
   margin-top: .4rem;
-  font-size: .6875rem;
+  font-size: 0.75rem;
   font-weight: 600;
   color: var(--theme-text-secondary);
 }

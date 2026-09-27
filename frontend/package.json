@@ -9,7 +9,7 @@
     "lint": "eslint app",
     "preview": "nuxt preview",
     "postinstall": "nuxt prepare",
-    "test": "node --experimental-strip-types --test tests/",
+    "test": "node --experimental-strip-types --test \"tests/*.test.mjs\"",
     "test:auth": "node --experimental-strip-types --test tests/authPersistence.test.mjs",
     "test:recommendations": "node --experimental-strip-types --test tests/recommendationScoring.test.mjs",
     "test:search": "node --experimental-strip-types --test tests/searchRank.test.mjs",
@@ -17,7 +17,6 @@
   },
   "dependencies": {
     "@fontsource/plus-jakarta-sans": "^5.3.0",
-    "@fontsource/vazirmatn": "^5.3.0",
     "@iconify/vue": "^5.0.1",
     "@nuxt/fonts": "^0.14.0",
     "@nuxt/image": "^2.0.0",

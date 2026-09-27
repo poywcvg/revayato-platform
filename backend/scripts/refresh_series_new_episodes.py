@@ -36,6 +36,12 @@ def main() -> int:
     from apps.catalog.models import Episode, Series
     from apps.catalog.provider_import.catalog_lookup import crawl_myf2m_downloads_for_series
     from apps.catalog.provider_import.exceptions import ProviderImportError
+    from apps.catalog.refresh_rotation import (
+        forget_failure,
+        is_rotating_failure,
+        recently_failed,
+        remember_failure,
+    )
     from apps.catalog.top_catalog import _suppress_provider_publish_signals
 
     parser = argparse.ArgumentParser(description=__doc__)
@@ -48,6 +54,15 @@ def main() -> int:
         type=int,
         default=0,
         help='Only series whose start_year or end_year is >= this (e.g. 2025 for current airing)',
+    )
+    parser.add_argument(
+        '--order',
+        choices=('hot', 'popular'),
+        default='hot',
+        help=(
+            'hot = this week\'s trending + currently airing series first (capped, '
+            'rested), then -popularity; popular = -popularity only'
+        ),
     )
     args = parser.parse_args()
     workers = max(1, min(8, int(args.workers)))
@@ -68,6 +83,15 @@ def main() -> int:
         ]
     if args.popularity_min:
         series_rows = [s for s in series_rows if float(s.popularity or 0) >= args.popularity_min]
+    # Titles the provider just refused rest for a while; otherwise the most
+    # popular taken-down series keep their slots in every round.
+    resting = recently_failed('series', [s.pk for s in series_rows])
+    if resting:
+        series_rows = [s for s in series_rows if s.pk not in resting]
+    if args.order == 'hot':
+        from apps.catalog.hot_titles import hot_head
+
+        series_rows = hot_head(series_rows, 'series', limit=args.limit or len(series_rows))
     if args.limit:
         series_rows = series_rows[: max(1, args.limit)]
 
@@ -79,7 +103,11 @@ def main() -> int:
         'episodes_before': before_eps,
         'created_total': 0,
     }
-    print(f'refresh_series={len(series_rows)} episodes_before={before_eps} workers={workers}', flush=True)
+    print(
+        f'refresh_series={len(series_rows)} episodes_before={before_eps} workers={workers} '
+        f'resting={len(resting)}',
+        flush=True,
+    )
 
     pace_lock = threading.Lock()
     next_request_at = [0.0]
@@ -104,8 +132,11 @@ def main() -> int:
             )
             series.refresh_from_db(fields=['download_links', 'updated_at', 'has_subtitle', 'is_dubbed'])
             eps_after = Episode.objects.filter(season__series_id=series_id).count()
+            forget_failure('series', series_id)
             return 'ok', result.get('imported_count') or len(series.download_links or []), max(0, eps_after - eps_before)
         except ProviderImportError as exc:
+            if is_rotating_failure(exc):
+                remember_failure('series', series_id)
             return 'fail', getattr(exc, 'code', ''), str(exc)
         except Exception as exc:
             return 'error', type(exc).__name__, str(exc)

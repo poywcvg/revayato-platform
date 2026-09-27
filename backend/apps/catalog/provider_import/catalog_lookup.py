@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import re
 from urllib.parse import urlsplit
 
@@ -511,7 +512,7 @@ def ensure_myf2m_provider() -> ProviderSource:
         defaults={
             'name': 'Film2Media (myf2m)',
             'provider_type': ProviderSource.ProviderType.STATIC_LINKS,
-            'base_url': getattr(settings, 'MYF2M_BASE_URL', 'https://www.myf2m.info'),
+            'base_url': getattr(settings, 'MYF2M_BASE_URL', 'https://www.myf2ms.top'),
             'auth_type': ProviderSource.AuthType.NONE,
             'is_active': True,
             'rate_limit_per_minute': getattr(settings, 'MYF2M_RATE_LIMIT_PER_MINUTE', 30),
@@ -527,26 +528,134 @@ def ensure_myf2m_provider() -> ProviderSource:
     return provider
 
 
-def _auto_resolve_myf2m_movie_target(connector, movie: Movie) -> str:
+def _myf2m_movie_targets(connector, movie: Movie) -> list[str]:
     query = {
         'title': movie.title,
         'original_title': movie.original_title,
         'year': movie.release_year,
         'titles': [t for t in (movie.original_title, movie.title) if t],
     }
-    hits = connector.search_movie(query) or []
-    return hits[0].provider_item_id if hits else ''
+    return [hit.provider_item_id for hit in (connector.search_movie(query) or []) if hit.provider_item_id]
 
 
-def _auto_resolve_myf2m_series_target(connector, series: Series) -> str:
+def _myf2m_series_targets(connector, series: Series) -> list[str]:
     query = {
         'title': series.title,
         'original_title': series.original_title,
         'year': series.start_year,
         'titles': [t for t in (series.original_title, series.title) if t],
     }
-    hits = connector.search_series(query) or []
-    return hits[0].provider_item_id if hits else ''
+    return [hit.provider_item_id for hit in (connector.search_series(query) or []) if hit.provider_item_id]
+
+
+def _auto_resolve_myf2m_movie_target(connector, movie: Movie) -> str:
+    return next(iter(_myf2m_movie_targets(connector, movie)), '')
+
+
+def _auto_resolve_myf2m_series_target(connector, series: Series) -> str:
+    return next(iter(_myf2m_series_targets(connector, series)), '')
+
+
+logger = logging.getLogger(__name__)
+
+
+_HEADING_YEAR_RE = re.compile(r'\b(19\d{2}|20\d{2})\b')
+
+
+def _identity_conflict(crawled: dict, expected_imdb: str, expected_year: int | None = None) -> bool:
+    """True when the page says it is a different title than the one we hold.
+
+    Film2Media is found by title + year, which is how two films sharing a name
+    (or a remake and its original) end up swapped. Two signals, strongest first:
+
+    * The page's IMDb links. When the page names IMDb titles and ours is not
+      among them, it is someone else's page.
+    * The page heading (``Masters of the Universe 2026``). Every page carries
+      one; the current layout links no IMDb title at all, so for movies this is
+      the check that actually runs. A year more than one off is a different
+      film (festival vs. release year explains one). Only ever given for movies:
+      a series heading may carry a later season's year.
+
+    A page with neither signal proves nothing and is let through to the other
+    guards.
+    """
+    expected = (expected_imdb or '').strip().lower()
+    found = {str(value).lower() for value in (crawled.get('imdb_ids') or [])}
+    if expected and found:
+        return expected not in found
+    if expected_year:
+        years = _HEADING_YEAR_RE.findall(str(crawled.get('page_heading') or ''))
+        if years:
+            return abs(int(years[-1]) - int(expected_year)) > 1
+    return False
+
+
+def _crawl_with_healed_path(
+    connector,
+    *,
+    target: str,
+    content_type: str,
+    resolve,
+    explicit: bool,
+    expected_imdb: str = '',
+    expected_year: int | None = None,
+    alternatives=None,
+) -> dict:
+    """Crawl a provider detail page, re-resolving a permalink that has died.
+
+    A stored ``page_path`` is not permanent. Film2Media has both moved domain and
+    rewritten its permalinks (Persian slug → ``/{id}/{latin-slug}/``), and a dead
+    permalink 301s to ``/profile/`` instead of returning 404 — so the crawl fails
+    with ``myf2m_page_required`` forever. Measured on production, one refresh
+    round failed 200 of 200 titles that way, which means published films kept
+    pointing at links nothing could ever renew.
+
+    Re-resolving by search once turns that permanent failure into a self-heal:
+    the fresh page path comes back with the imported links and replaces the dead
+    one. Only attempted when the caller supplied the path (a search-resolved
+    target that fails has nothing better to fall back to).
+
+    With ``expected_imdb``, a page that belongs to a different IMDb title is
+    refused, and the remaining search results (``alternatives``) are tried in
+    order before giving up — the right page is usually the second hit, not
+    missing.
+    """
+    try:
+        crawled = connector.crawl_download_links(target, content_type=content_type)
+    except ProviderImportError as exc:
+        if not explicit or getattr(exc, 'code', '') != 'myf2m_page_required':
+            raise
+        healed = (resolve() or '').strip()
+        if not healed or healed == target.strip():
+            raise
+        logger.info('myf2m.page_path_healed type=%s from=%s to=%s', content_type, target, healed)
+        target = healed
+        crawled = connector.crawl_download_links(healed, content_type=content_type)
+
+    if not _identity_conflict(crawled, expected_imdb, expected_year):
+        return crawled
+    tried = {target.strip(), str(crawled.get('page_path') or '').strip()}
+    logger.warning(
+        'myf2m.identity_mismatch type=%s page=%s page_imdb=%s heading=%r expected=%s year=%s',
+        content_type, target, ','.join(crawled.get('imdb_ids') or []),
+        crawled.get('page_heading') or '', expected_imdb, expected_year or '',
+    )
+    for candidate in (alternatives() if alternatives else []) or []:
+        candidate = (candidate or '').strip()
+        if not candidate or candidate in tried:
+            continue
+        tried.add(candidate)
+        try:
+            other = connector.crawl_download_links(candidate, content_type=content_type)
+        except ProviderImportError:
+            continue
+        if not _identity_conflict(other, expected_imdb, expected_year):
+            logger.info('myf2m.identity_resolved type=%s from=%s to=%s', content_type, target, candidate)
+            return other
+    raise ProviderImportError(
+        f'Film2Media page {target} belongs to a different title than {expected_imdb or expected_year}.',
+        code='myf2m_identity_mismatch',
+    )
 
 
 def crawl_myf2m_downloads_for_movie(
@@ -572,7 +681,16 @@ def crawl_myf2m_downloads_for_movie(
                 'Provide a myf2m page URL or ensure the title matches a Film2Media listing.',
                 code='myf2m_page_required',
             )
-        crawled = connector.crawl_download_links(target, content_type='movie')
+        crawled = _crawl_with_healed_path(
+            connector,
+            target=target,
+            content_type='movie',
+            resolve=lambda: _auto_resolve_myf2m_movie_target(connector, movie),
+            explicit=bool((page_url or provider_item_id or '').strip()),
+            expected_imdb=movie.imdb_id or '',
+            expected_year=movie.release_year or (movie.release_date.year if movie.release_date else None),
+            alternatives=lambda: _myf2m_movie_targets(connector, movie),
+        )
     except ProviderImportError:
         raise
     except Exception as exc:
@@ -592,6 +710,20 @@ def crawl_myf2m_downloads_for_movie(
     normalized = normalize_download_links(available)
     if not normalized:
         raise ProviderImportError('Parsed myf2m links were empty after normalization.', code='myf2m_links_empty')
+
+    # Same two guards the shared storage path applies: reject links whose CDN
+    # path proves they belong to another title, then drop the ones the host says
+    # are gone. This path used to write straight to download_links, so neither
+    # guard had ever seen a myf2m movie import.
+    from apps.catalog.provider_import.link_apply import guard_provider_links
+
+    normalized, _bad, dead = guard_provider_links(movie, normalized)
+    if not normalized:
+        raise ProviderImportError(
+            'Every myf2m link failed the pre-storage media check.'
+            if dead else 'Parsed myf2m links were empty after normalization.',
+            code='myf2m_links_dead' if dead else 'myf2m_links_empty',
+        )
 
     previous_download_urls = {
         str(item.get('url') or '').strip()
@@ -613,18 +745,18 @@ def crawl_myf2m_downloads_for_movie(
     if not movie.quality and normalized[0].get('quality'):
         movie.quality = normalized[0]['quality']
 
-    preferred = _prefer_streamable_download(list(movie.download_links or []))
-    if preferred and (
-        not previous_video
-        or previous_video in previous_download_urls
-        or previous_video == preferred
-    ):
-        movie.video_url = preferred
+    # Tested, not guessed: the player only gets a source that answered a probe,
+    # supports byte ranges and holds a codec a browser decodes. See playback_gate.
+    gate_fields: list[str] = []
+    if not previous_video or previous_video in previous_download_urls:
+        from apps.catalog import playback_gate
+
+        _choice, gate_fields = playback_gate.gate_links(movie, movie.download_links or [])
 
     flag_fields = apply_availability_flags(movie, movie.download_links)
-    movie.save(update_fields=[
-        'download_links', 'quality', 'video_url', 'updated_at', *flag_fields,
-    ])
+    movie.save(update_fields=list(dict.fromkeys([
+        'download_links', 'quality', 'updated_at', *gate_fields, *flag_fields,
+    ])))
 
     should_queue_subtitle = (
         download_links_imply_softsub(movie.download_links or [])
@@ -687,7 +819,15 @@ def crawl_myf2m_downloads_for_series(
                 'Provide a myf2m series URL or ensure the title matches a Film2Media listing.',
                 code='myf2m_page_required',
             )
-        crawled = connector.crawl_download_links(target, content_type='series')
+        crawled = _crawl_with_healed_path(
+            connector,
+            target=target,
+            content_type='series',
+            resolve=lambda: _auto_resolve_myf2m_series_target(connector, series),
+            explicit=bool((page_url or provider_item_id or '').strip()),
+            expected_imdb=series.imdb_id or '',
+            alternatives=lambda: _myf2m_series_targets(connector, series),
+        )
     except ProviderImportError:
         raise
     except Exception as exc:

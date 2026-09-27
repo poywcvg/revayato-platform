@@ -4,6 +4,7 @@ import type {
   AnalyticsEvent,
   AnalyticsEventInput,
   ContentType,
+  EventType,
   Movie,
   RecommendationPreferences,
 } from '~/types'
@@ -112,6 +113,8 @@ function normalizeStoredEvent(value: unknown): AnalyticsEvent | null {
   if (typeof input.user_id === 'number' && Number.isFinite(input.user_id)) event.user_id = Math.max(1, Math.trunc(input.user_id))
   if (typeof input.anonymous_session_id === 'string') event.anonymous_session_id = sanitizeText(input.anonymous_session_id, 80)
   if (typeof input.is_empty_query === 'boolean') event.is_empty_query = input.is_empty_query
+  if (typeof input.quality === 'string') event.quality = sanitizeText(input.quality, 40)
+  if (input.platform === 'web' || input.platform === 'android') event.platform = input.platform
   return event
 }
 
@@ -230,6 +233,8 @@ export function useAnalyticsEvent() {
     if (input.filter_name) event.filter_name = sanitizeText(input.filter_name, 60)
     if (input.filter_value) event.filter_value = sanitizeText(input.filter_value, 120)
     if (input.sort) event.sort = sanitizeText(input.sort, 60)
+    if (input.quality) event.quality = sanitizeText(input.quality, 40)
+    if (input.platform === 'web' || input.platform === 'android') event.platform = input.platform
     if (typeof input.is_empty_query === 'boolean') event.is_empty_query = input.is_empty_query
 
     const previous = events.value.at(-1)
@@ -357,6 +362,21 @@ export function useAnalyticsEvent() {
     return track({ event_type: 'sort_apply', sort, content_type: contentType })
   }
 
+  function trackAppInstall(stage: 'prompt' | 'click' | 'dismiss') {
+    return track({ event_type: `app_install_${stage}` as EventType })
+  }
+
+  function trackDownload(item: TrackableContent, quality?: string) {
+    return track({
+      event_type: 'download',
+      title_id: item.id,
+      title_slug: item.slug,
+      content_type: item.type,
+      quality: quality || '',
+      platform: 'web',
+    })
+  }
+
   async function syncPendingEvents(): Promise<AnalyticsSyncResult> {
     if (!authStore.isAuthenticated
       || !personalizationEnabled.value
@@ -375,12 +395,21 @@ export function useAnalyticsEvent() {
         if (cursorIndex >= 0) pending = pending.slice(cursorIndex + 1)
       }
       for (const event of pending) {
-        await api(config.public.eventsEndpoint, {
-          method: 'POST',
-          body: event,
-          headers: { 'X-Personalization-Consent': 'granted' },
-        })
-        sent += 1
+        try {
+          await api(config.public.eventsEndpoint, {
+            method: 'POST',
+            body: event,
+            headers: { 'X-Personalization-Consent': 'granted' },
+          })
+          sent += 1
+        }
+        catch (error) {
+          // A 400 is permanent for that event (e.g. an old Persian slug). Retrying it
+          // would pin the cursor and block every later event, so step past it.
+          const status = Number((error as { status?: number, statusCode?: number })?.status
+            ?? (error as { statusCode?: number })?.statusCode ?? 0)
+          if (status !== 400 && status !== 422) throw error
+        }
         if (import.meta.client) localStorage.setItem(SYNC_CURSOR_STORAGE_KEY, event.event_id)
       }
       return { sent, remaining: Math.max(0, pending.length - sent) }
@@ -435,6 +464,8 @@ export function useAnalyticsEvent() {
     trackPersonClick,
     trackFilterApply,
     trackSortApply,
+    trackAppInstall,
+    trackDownload,
     syncPendingEvents,
   }
 }

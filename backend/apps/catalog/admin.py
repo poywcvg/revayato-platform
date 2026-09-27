@@ -4,10 +4,38 @@ from django.utils.translation import gettext_lazy as _
 
 from .ingestion import upsert_tmdb_movie
 from .models import (
-    Actor, CatalogImporterSettings, CatalogSyncCandidate, CatalogSyncRun, Country, Director, Episode, Genre, Movie,
-    MovieActor, MovieSyncAudit, PlaybackSubtitleGap, Season, Series, SeriesActor, Tag,
+    Actor, CatalogImporterSettings, CatalogSyncCandidate, CatalogSyncRun, ContentIssueReport, Country, Director,
+    Episode, Genre, MediaCheck, Movie, MovieActor, MovieSyncAudit, PlaybackSourceGap, PlaybackSubtitleGap,
+    Season, Series, SeriesActor, Tag,
 )
 from .tmdb import TMDBError, configured_tmdb_client
+
+#: Rows above this in one bulk publish are taken on trust — a staff click must
+#: not turn into a hundred sequential network probes.
+_BULK_VERIFY_LIMIT = 25
+
+
+def _screen_for_publish(queryset):
+    """Split a bulk-publish selection into (publishable pks, rejected titles).
+
+    Only a *positive* "the file is gone" verdict holds a title back; anything
+    unreachable from this datacenter still publishes, because a staff member
+    selecting rows by hand is a deliberate decision and doubt is not evidence.
+    """
+    from apps.catalog.media_verification import verify_target, verification_enabled
+
+    rows = list(queryset.only('pk', 'title')[: _BULK_VERIFY_LIMIT + 1])
+    if not verification_enabled() or len(rows) > _BULK_VERIFY_LIMIT:
+        return list(queryset.values_list('pk', flat=True)), ''
+
+    publishable, rejected = [], []
+    for obj in rows:
+        verdict = verify_target(obj)
+        if verdict['status'] == 'failed':
+            rejected.append(obj.title)
+        else:
+            publishable.append(obj.pk)
+    return publishable, '، '.join(rejected[:8])
 
 
 class MovieActorInline(admin.TabularInline):
@@ -163,7 +191,7 @@ class MovieAdmin(admin.ModelAdmin):
         'title', 'original_title', 'slug', 'description', 'short_description',
         'imdb_id', 'tmdb_id', 'meta_title',
     ]
-    prepopulated_fields = {'slug': ('title',)}
+    prepopulated_fields = {'slug': ('original_title',)}
     filter_horizontal = ['genres', 'directors', 'countries', 'tags']
     inlines = [MovieActorInline]
     date_hierarchy = 'release_date'
@@ -300,8 +328,13 @@ class MovieAdmin(admin.ModelAdmin):
 
     @admin.action(description=_('Publish selected movies'))
     def make_published(self, request, queryset):
-        updated = queryset.update(is_published=True, publication_status=Movie.PublicationStatus.PUBLISHED)
+        publishable, rejected = _screen_for_publish(queryset)
+        updated = Movie.objects.filter(pk__in=publishable).update(
+            is_published=True, publication_status=Movie.PublicationStatus.PUBLISHED,
+        )
         self.message_user(request, _(f'Published {updated} movie(s).'), messages.SUCCESS)
+        if rejected:
+            self.message_user(request, _(f'Skipped (sources are gone): {rejected}'), messages.WARNING)
 
     @admin.action(description=_('Unpublish selected movies (set as draft)'))
     def make_draft(self, request, queryset):
@@ -370,14 +403,18 @@ class SeriesAdmin(admin.ModelAdmin):
         'is_dubbed', 'has_subtitle', 'is_uncensored', 'genres',
     ]
     search_fields = ['title', 'original_title', 'description', 'imdb_id', 'tmdb_id']
-    prepopulated_fields = {'slug': ('title',)}
+    prepopulated_fields = {'slug': ('original_title',)}
     filter_horizontal = ['genres', 'directors', 'countries', 'tags']
     inlines = [SeriesActorInline, SeasonInline]
     actions = ['make_published', 'make_draft']
 
     @admin.action(description=_('Publish selected series'))
     def make_published(self, request, queryset):
-        queryset.update(is_published=True)
+        publishable, rejected = _screen_for_publish(queryset)
+        updated = Series.objects.filter(pk__in=publishable).update(is_published=True)
+        self.message_user(request, _(f'Published {updated} series.'), messages.SUCCESS)
+        if rejected:
+            self.message_user(request, _(f'Skipped (sources are gone): {rejected}'), messages.WARNING)
 
     @admin.action(description=_('Unpublish selected series'))
     def make_draft(self, request, queryset):
@@ -416,6 +453,79 @@ class PlaybackSubtitleGapAdmin(admin.ModelAdmin):
     list_filter = ('status', 'content_type')
     search_fields = ('slug', 'title', 'object_id')
     readonly_fields = [field.name for field in PlaybackSubtitleGap._meta.fields]
+
+    def has_add_permission(self, request):
+        return False
+
+
+@admin.register(PlaybackSourceGap)
+class PlaybackSourceGapAdmin(admin.ModelAdmin):
+    list_display = (
+        'content_type', 'object_id', 'title', 'status', 'reason',
+        'report_count', 'last_result', 'updated_at',
+    )
+    list_filter = ('status', 'content_type', 'reason')
+    search_fields = ('slug', 'title', 'object_id')
+    readonly_fields = [field.name for field in PlaybackSourceGap._meta.fields]
+
+    def has_add_permission(self, request):
+        return False
+
+
+@admin.register(ContentIssueReport)
+class ContentIssueReportAdmin(admin.ModelAdmin):
+    list_display = (
+        'content_type', 'object_id', 'episode_id', 'title', 'problem_type',
+        'status', 'report_count', 'attempts', 'remediation_action', 'last_result', 'updated_at',
+    )
+    list_filter = ('status', 'problem_type', 'content_type')
+    search_fields = ('slug', 'title', 'object_id', 'detail')
+    readonly_fields = [field.name for field in ContentIssueReport._meta.fields]
+    actions = ['remediate_now']
+
+    @admin.action(description='تلاش برای رفع خودکار گزارش‌های انتخاب‌شده')
+    def remediate_now(self, request, queryset):
+        from .content_remediation import remediate_report
+
+        resolved = 0
+        for report in queryset:
+            outcome = remediate_report(report, force=True)
+            if outcome.get('status') == ContentIssueReport.Status.RESOLVED:
+                resolved += 1
+        messages.success(request, f'{queryset.count()} گزارش پردازش شد، {resolved} مورد حل شد.')
+
+    def has_add_permission(self, request):
+        return False
+
+
+@admin.register(MediaCheck)
+class MediaCheckAdmin(admin.ModelAdmin):
+    """Read-only view of what the pre-publish probe actually found."""
+
+    list_display = (
+        'content_type', 'object_id', 'episode_id', 'status', 'playable',
+        'downloadable', 'reason', 'checked_urls', 'dead_urls', 'attempts', 'checked_at',
+    )
+    list_filter = ('status', 'playable', 'downloadable', 'content_type')
+    search_fields = ('object_id', 'reason')
+    readonly_fields = [field.name for field in MediaCheck._meta.fields]
+    actions = ['recheck_now']
+
+    @admin.action(description='تست دوبارهٔ پخش و دانلود')
+    def recheck_now(self, request, queryset):
+        from .media_verification import verify_target
+        from .models import Episode
+
+        passed = 0
+        for record in queryset:
+            model = Movie if record.content_type == MediaCheck.ContentType.MOVIE else Series
+            obj = model.objects.filter(pk=record.object_id).first()
+            if obj is None:
+                continue
+            episode = Episode.objects.filter(pk=record.episode_id).first() if record.episode_id else None
+            verdict = verify_target(obj, episode=episode, use_cache=False)
+            passed += int(verdict['status'] == MediaCheck.Status.PASSED)
+        messages.success(request, f'{queryset.count()} مورد تست شد، {passed} مورد سالم بود.')
 
     def has_add_permission(self, request):
         return False

@@ -27,6 +27,7 @@ interface ApiCatalogSearchResponse {
 const props = defineProps<{ type?: ContentType; discovery?: boolean }>();
 const route = useRoute();
 const router = useRouter();
+const nuxtApp = useNuxtApp();
 const config = useRuntimeConfig();
 const { api } = useApi();
 const { catalog, genres, pending: catalogPending, error: catalogError, loadFromApi } = useCatalog();
@@ -219,7 +220,7 @@ const sortOptions = [
   { value: "year", label: "جدیدترین اکران", description: "تازه‌ترین سال ساخت" },
   { value: "imdb_top", label: "IMDb Top 250", description: "رتبه‌بندی رسمی Top 250 IMDb" },
   { value: "featured", label: "منتخب‌ها", description: "بر اساس کیفیت و انتخاب تحریریه" },
-  { value: "popular", label: "محبوب‌ترین", description: "بر اساس بازدید و پسند کاربران" },
+  { value: "popular", label: "محبوب‌ترین", description: "بر اساس امتیاز کاربران سایت" },
   { value: "rating", label: "بیشترین امتیاز", description: "بالاترین امتیاز منتقدان و کاربران" },
   { value: "trending", label: "ترند", description: "پرطرفدار و تازه در حال رشد" },
 ] as const;
@@ -383,7 +384,14 @@ const hasRefinementFilters = computed(() => activeFilterChips.value.some(chip =>
 // ---------------------------------------------------------------------------
 // Filter panel / drawer state
 // ---------------------------------------------------------------------------
-const panelOpen = ref(props.discovery);
+// A URL that already carries a refinement is a filtered page, so it opens with
+// its filters on show. This is what the header's genre menu produces: it links
+// to /movies?genre=drama, and with the panel starting closed the viewer landed
+// on a silently narrowed grid whose only clue was a count on the «فیلترها»
+// button — no way to see which genre was applied, widen it, or stack a year on
+// top without first discovering that button. Reading the arrival state once
+// (ref, not computed) keeps every later open/close the viewer's own.
+const panelOpen = ref(props.discovery || hasRefinementFilters.value);
 const drawerOpen = ref(false);
 const searchFieldFocused = ref(false);
 const recentSearches = useRecentSearches();
@@ -868,7 +876,17 @@ watch(totalPages, (pages) => {
 });
 
 // SSR the active page so /movies and /series are not an empty shell until hydration.
-await loadRemoteResults();
+// Await on the server AND while hydrating (the remote results live in plain refs, so
+// the hydrating client must repopulate them to match the server DOM). On a client
+// SPA navigation, do NOT block the page swap — `pending` already drives a skeleton,
+// and awaiting here only froze the outgoing page under the out-in page transition
+// (navigation felt stuck until results arrived). Fetch in the background instead.
+if (import.meta.server || nuxtApp.isHydrating) {
+  await loadRemoteResults();
+}
+else {
+  void loadRemoteResults();
+}
 
 onMounted(() => {
   // Browse pages use the remote paginated API; avoid the heavy full-catalog fan-out.
@@ -905,7 +923,7 @@ onMounted(() => {
     >
       <div class="grid gap-3 lg:grid-cols-[minmax(0,1fr)_190px_auto] lg:items-center">
         <div class="relative">
-          <p class="mb-1.5 text-[11px] font-black text-muted">جستجو در فهرست</p>
+          <p class="mb-1.5 text-xs font-black text-muted">جستجو در فهرست</p>
           <SearchBar
             v-model="filters.query"
             :large="discovery"
@@ -928,12 +946,12 @@ onMounted(() => {
             >
               <template v-if="recentSearches.searches.value.length">
                 <div class="flex items-center justify-between px-4 pt-3 pb-1">
-                  <p class="flex items-center gap-1.5 text-[11px] font-black text-muted">
+                  <p class="flex items-center gap-1.5 text-xs font-black text-muted">
                     <CinematicIcon name="history" class="size-3.5" />جستجوهای اخیر
                   </p>
                   <button
                     type="button"
-                    class="min-h-8 text-[11px] font-bold text-muted transition hover:text-primary-300"
+                    class="min-h-8 text-xs font-bold text-muted transition hover:text-primary-300"
                     @mousedown.prevent="recentSearches.clear()"
                   >
                     پاک کردن
@@ -962,7 +980,7 @@ onMounted(() => {
                 </button>
               </template>
               <template v-if="trendingQueries.length">
-                <p class="flex items-center gap-1.5 px-4 pt-3 pb-2 text-[11px] font-black text-muted">
+                <p class="flex items-center gap-1.5 px-4 pt-3 pb-2 text-xs font-black text-muted">
                   <CinematicIcon name="trend" class="size-3.5 text-brand" />پرجستجوهای این روزها
                 </p>
                 <div class="flex flex-wrap gap-2 px-4 pb-3.5">
@@ -981,11 +999,11 @@ onMounted(() => {
           </Transition>
         </div>
         <div>
-          <span class="mb-1.5 block text-[11px] font-black text-muted">مرتب‌سازی</span>
+          <span class="mb-1.5 block text-xs font-black text-muted">مرتب‌سازی</span>
           <UiSelect v-model="filters.sort" :options="sortOptions" label="مرتب‌سازی نتایج" icon="sliders" />
         </div>
         <div class="lg:self-end">
-          <span class="mb-1.5 hidden text-[11px] font-black text-transparent lg:block" aria-hidden="true">.</span>
+          <span class="mb-1.5 hidden text-xs font-black text-transparent lg:block" aria-hidden="true">.</span>
           <button
             type="button"
             class="inline-flex h-12 w-full items-center justify-center gap-2 rounded-xl px-5 text-sm font-black transition lg:h-12"
@@ -1001,7 +1019,7 @@ onMounted(() => {
             فیلترها
             <span
               v-if="activeFilters"
-              class="rounded-md bg-black/20 px-1.5 py-0.5 text-[10px] tabular-nums"
+              class="rounded-md bg-black/20 px-1.5 py-0.5 text-[11px] tabular-nums"
             >{{ activeFilters.toLocaleString("fa-IR") }}</span>
           </button>
         </div>
@@ -1022,7 +1040,7 @@ onMounted(() => {
           @change="applyFieldChange"
         />
       <div v-if="hasRefinementFilters" class="flex items-center justify-between border-t border-line px-4 py-2.5">
-          <p class="text-[11px] font-bold text-muted">{{ activeFilters.toLocaleString("fa-IR") }} فیلتر فعال</p>
+          <p class="text-xs font-bold text-muted">{{ activeFilters.toLocaleString("fa-IR") }} فیلتر فعال</p>
           <button
             type="button"
             class="min-h-9 text-xs font-black text-primary-300 transition hover:text-primary-200"
@@ -1108,7 +1126,7 @@ onMounted(() => {
             <div class="flex items-center justify-between border-b border-line px-4 py-3.5">
               <p class="flex items-center gap-2 text-sm font-black text-ink">
                 <CinematicIcon name="sliders" class="size-4.5 text-brand" />فیلترها
-                <span v-if="activeFilters" class="rounded-md bg-primary-500/14 px-1.5 py-0.5 text-[10px] text-primary-300">{{ activeFilters.toLocaleString("fa-IR") }}</span>
+                <span v-if="activeFilters" class="rounded-md bg-primary-500/14 px-1.5 py-0.5 text-[11px] text-primary-300">{{ activeFilters.toLocaleString("fa-IR") }}</span>
               </p>
               <button
                 type="button"
@@ -1180,7 +1198,7 @@ onMounted(() => {
           >
         </p>
       </div>
-      <span class="shrink-0 text-[11px] font-bold text-muted">مرتب‌شده بر اساس {{ activeSortLabel }}</span>
+      <span class="shrink-0 text-xs font-bold text-muted">مرتب‌شده بر اساس {{ activeSortLabel }}</span>
     </div>
     <div
       v-if="!pending && showingRelatedResults"

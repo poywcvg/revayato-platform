@@ -12,7 +12,7 @@ useHead({
     <header class="auth-layout__header">
       <NuxtLink to="/" class="auth-brand" aria-label="روایتو، صفحه اصلی">
         <span class="auth-brand__mark" aria-hidden="true">
-          <img src="/assets/brand/logo.svg" alt="" width="45" height="45" decoding="async">
+          <BrandMark />
         </span>
         <span>
           <strong>روایتو</strong>
@@ -113,7 +113,7 @@ useHead({
   overflow: hidden;
 }
 
-.auth-brand__mark img {
+.auth-brand__mark svg {
   width: 100%;
   height: 100%;
   object-fit: contain;
@@ -132,7 +132,7 @@ useHead({
 
 .auth-brand small {
   color: var(--theme-text-muted);
-  font-size: .65rem;
+  font-size: 0.75rem;
 }
 
 .auth-home-link {
@@ -185,7 +185,7 @@ useHead({
   align-items: center;
   gap: 7px;
   color: var(--theme-text-muted);
-  font-size: .66rem;
+  font-size: 0.75rem;
 }
 
 .auth-security-note :deep(svg) {

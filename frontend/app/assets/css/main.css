@@ -1,5 +1,53 @@
 @import "tailwindcss";
 
+/* Yekan Plus = the single UI face; Yekan Boom = page titles only.
+   Yekan ships as one bold master, so lighter cuts are derived from it:
+   regular (up to 400) for running text, medium (500-600) for labels and small
+   UI text, and the original bold from 700 up.
+   Its letters sit ~25% smaller than other Persian faces at the same font-size,
+   hence size-adjust. unicode-range keeps it to Persian script + punctuation:
+   Latin letters and ASCII digits fall through to Plus Jakarta Sans (Yekan has
+   no Latin glyphs). */
+@font-face {
+  font-family: "Yekan Plus";
+  src: url("/fonts/yekan-plus-regular.woff") format("woff");
+  font-weight: 100 400;
+  font-style: normal;
+  font-display: swap;
+  size-adjust: 116%;
+  unicode-range: U+0020-002F, U+003A-0040, U+005B-0060, U+007B-007E, U+00A0, U+00AB, U+00BB, U+00D7, U+00F7, U+0600-06FF, U+200C-2010, U+2013-2014, U+2018-201D, U+2022, U+2026, U+2039-203A, U+FB50-FDFF, U+FE70-FEFF;
+}
+
+@font-face {
+  font-family: "Yekan Plus";
+  src: url("/fonts/yekan-plus-medium.woff") format("woff");
+  font-weight: 500 600;
+  font-style: normal;
+  font-display: swap;
+  size-adjust: 116%;
+  unicode-range: U+0020-002F, U+003A-0040, U+005B-0060, U+007B-007E, U+00A0, U+00AB, U+00BB, U+00D7, U+00F7, U+0600-06FF, U+200C-2010, U+2013-2014, U+2018-201D, U+2022, U+2026, U+2039-203A, U+FB50-FDFF, U+FE70-FEFF;
+}
+
+@font-face {
+  font-family: "Yekan Plus";
+  src: url("/fonts/yekan-plus.woff") format("woff");
+  font-weight: 700 900;
+  font-style: normal;
+  font-display: swap;
+  size-adjust: 116%;
+  unicode-range: U+0020-002F, U+003A-0040, U+005B-0060, U+007B-007E, U+00A0, U+00AB, U+00BB, U+00D7, U+00F7, U+0600-06FF, U+200C-2010, U+2013-2014, U+2018-201D, U+2022, U+2026, U+2039-203A, U+FB50-FDFF, U+FE70-FEFF;
+}
+
+@font-face {
+  font-family: "Yekan Boom";
+  src: url("/fonts/yekan-boom.woff") format("woff");
+  font-weight: 100 900;
+  font-style: normal;
+  font-display: swap;
+  size-adjust: 116%;
+  unicode-range: U+0020-002F, U+003A-0040, U+005B-0060, U+007B-007E, U+00A0, U+00AB, U+00BB, U+00D7, U+00F7, U+0600-06FF, U+200C-2010, U+2013-2014, U+2018-201D, U+2022, U+2026, U+2039-203A, U+FB50-FDFF, U+FE70-FEFF;
+}
+
 @theme {
   /* Semantic palette: Obsidian + Burnt Copper + Deep Crimson. */
   --color-canvas: var(--theme-bg-main);
@@ -81,9 +129,10 @@
   --color-cinema-surface: var(--theme-bg-surface);
   --color-cinema-card: var(--theme-bg-elevated);
   --color-cinema-muted: color-mix(in srgb, var(--theme-text-muted) 75%, var(--theme-text-secondary));
-  /* Vazirmatn is the single UI face for Persian chrome and form controls. */
-  --font-sans: "Vazirmatn", Tahoma, system-ui, sans-serif;
-  --font-latin: "Plus Jakarta Sans", "Vazirmatn", Tahoma, system-ui, sans-serif;
+  /* Yekan Plus is the single UI face for Persian chrome and form controls. */
+  --font-sans: "Yekan Plus", "Plus Jakarta Sans", Tahoma, system-ui, sans-serif;
+  --font-latin: "Plus Jakarta Sans", "Yekan Plus", Tahoma, system-ui, sans-serif;
+  --font-display: "Yekan Boom", "Yekan Plus", "Plus Jakarta Sans", Tahoma, system-ui, sans-serif;
   /* Motion Design: Tailwind v4 theme mirror so `duration-motion-base`,
      `ease-out`, `ease-in-out`, `ease-spring` utilities resolve. */
   --duration-motion-fast: 120ms;
@@ -269,8 +318,9 @@
 :root {
   color-scheme: dark;
   font-synthesis: none;
-  --font-ui: "Vazirmatn", Tahoma, Arial, system-ui, sans-serif;
-  --font-latin-ui: "Plus Jakarta Sans", Tahoma, Arial, system-ui, sans-serif;
+  --font-ui: "Yekan Plus", "Plus Jakarta Sans", Tahoma, Arial, system-ui, sans-serif;
+  --font-latin-ui: "Plus Jakarta Sans", "Yekan Plus", Tahoma, Arial, system-ui, sans-serif;
+  --font-display-ui: "Yekan Boom", "Yekan Plus", "Plus Jakarta Sans", Tahoma, Arial, system-ui, sans-serif;
   /* Body chrome matches streaming-site layout: body #1d1c21, cards #0d0d0d, white text.
      Accents stay mint for Revayato brand. */
   --palette-sand: #b0e4cc;
@@ -290,6 +340,10 @@
   --theme-bg-surface: #0d0d0d;
   --theme-bg-elevated: #141414;
   --theme-border: #484848;
+  /* Brand mark (warm arch + flame): the arch follows the ground, the flame never changes. */
+  --brand-arch-top: #fff1dc;
+  --brand-arch-bottom: #ffc76b;
+  --brand-latin: #f2b45a;
   --theme-border-strong: #5c5c5c;
   --theme-control-bg: #0d0d0d;
   --theme-surface-hover: #1a1a1a;
@@ -441,6 +495,9 @@
 
 html[data-theme="light"] {
   color-scheme: light;
+  --brand-arch-top: #24150f;
+  --brand-arch-bottom: #5a3322;
+  --brand-latin: #9a4e24;
   /* Porcelain + pine + burnt copper. All normal text/accent pairs meet WCAG AA;
      immersive artwork is isolated by .theme-media-dark below. */
   --palette-sand: #176b50;
@@ -750,6 +807,10 @@ html::-webkit-scrollbar-thumb:hover {
   background: var(--revayato-scrollbar-thumb-hover);
 }
 
+h1 {
+  font-family: var(--font-display-ui);
+}
+
 h1,
 h2,
 h3,
@@ -902,16 +963,17 @@ a {
 }
 
 /*
- * Route transitions: short out-in fade + tiny rise.
- * Keep durations tight so navigation stays snappy on mobile.
+ * Route transitions: fast RTL-aware horizontal slide. Only compositor-friendly
+ * properties move, keeping navigation responsive on lower-end phones.
  */
 :root {
-  --page-transition-enter: 180ms;
-  --page-transition-leave: 110ms;
+  --page-transition-enter: 155ms;
+  --page-transition-leave: 42ms;
   --page-transition-ease: cubic-bezier(0.22, 1, 0.36, 1);
 }
 
 .cinema-page-enter-active {
+  will-change: opacity, transform;
   transition:
     opacity var(--page-transition-enter) var(--page-transition-ease),
     transform var(--page-transition-enter) var(--page-transition-ease);
@@ -919,6 +981,7 @@ a {
 
 .cinema-page-leave-active {
   pointer-events: none;
+  will-change: opacity, transform;
   transition:
     opacity var(--page-transition-leave) ease-out,
     transform var(--page-transition-leave) ease-out;
@@ -926,12 +989,12 @@ a {
 
 .cinema-page-enter-from {
   opacity: 0;
-  transform: translate3d(0, 0.4rem, 0);
+  transform: translate3d(-1.15rem, 0, 0);
 }
 
 .cinema-page-leave-to {
   opacity: 0;
-  transform: translate3d(0, -0.2rem, 0);
+  transform: translate3d(.45rem, 0, 0);
 }
 
 .cinema-page-enter-to,
@@ -942,7 +1005,7 @@ a {
 
 .cinema-layout-enter-active,
 .cinema-layout-leave-active {
-  transition: opacity 140ms var(--page-transition-ease);
+  transition: opacity 80ms var(--page-transition-ease);
 }
 
 .cinema-layout-enter-from,
@@ -958,6 +1021,10 @@ html[data-page-navigating] body {
 html[data-page-navigating],
 html[data-page-navigating] body {
   overflow-anchor: none;
+}
+
+html[data-page-navigating] body {
+  overflow-x: clip;
 }
 
 /* In-page hash / anchor jumps — route changes still force auto scroll-to-top. */
@@ -1107,8 +1174,8 @@ html[data-page-navigating] body {
   background: color-mix(in srgb, var(--theme-bg-soft) 42%, transparent);
   border-color: color-mix(in srgb, var(--theme-border) 80%, transparent);
   box-shadow: none;
-  backdrop-filter: blur(24px) saturate(1.2);
-  -webkit-backdrop-filter: blur(24px) saturate(1.2);
+  backdrop-filter: blur(12px) saturate(1.2);
+  -webkit-backdrop-filter: blur(12px) saturate(1.2);
 }
 
 .cinematic-header--overlay {
@@ -1543,7 +1610,7 @@ html[data-theme="light"] .cinematic-card__synopsis p {
   gap: .45rem;
   padding: .35rem .5rem .45rem;
   color: var(--theme-text-muted);
-  font-size: .625rem;
+  font-size: 0.75rem;
   font-weight: 800;
 }
 

@@ -2,6 +2,10 @@
 
 from __future__ import annotations
 
+import logging
+from datetime import timedelta
+
+from django.conf import settings
 from django.utils import timezone
 
 from apps.catalog.models import (
@@ -22,6 +26,8 @@ from .exceptions import (
 )
 from .matcher import match_movie, match_series, movie_has_available_archive
 from .registry import get_connector
+
+logger = logging.getLogger(__name__)
 
 
 def ensure_avasarami_provider() -> ProviderSource:
@@ -187,6 +193,59 @@ def _fail_job(job, message, credential_status=ProviderCredential.Status.INVALID)
     except ProviderCredential.DoesNotExist:
         pass
     return {'status': job.status, 'error': job.error_message}
+
+
+STALE_JOB_TIMEOUT_MINUTES = 60
+
+
+def reap_stale_import_jobs(*, timeout_minutes: int = 0) -> dict:
+    """Fail import jobs whose worker died, so the provider is not locked forever.
+
+    ``catalog_import_start`` answers 409 ``job_active`` whenever the provider has a
+    job in QUEUED/RUNNING/CANCEL_REQUESTED. Nothing moves a job out of those states
+    except the task itself, so a worker that is recycled, OOM-killed or redeployed
+    mid-run leaves a row that no longer has a task behind it — and every later
+    import for that provider is refused from then on. Observed in production on
+    2026-09-24: one ``sync_all`` job sat RUNNING with a 3.9h-old heartbeat and
+    blocked the whole Dornatv/myf2m import lane.
+
+    Progress touches ``updated_at`` on every item, so a live job heartbeats
+    continuously and is never reaped; only a genuinely abandoned one goes stale.
+    """
+    timeout = int(timeout_minutes or getattr(
+        settings, 'CATALOG_IMPORT_JOB_STALE_MINUTES', STALE_JOB_TIMEOUT_MINUTES))
+    cutoff = timezone.now() - timedelta(minutes=max(1, timeout))
+    stale = ProviderImportJob.objects.filter(
+        status__in=[
+            ProviderImportJob.Status.QUEUED,
+            ProviderImportJob.Status.RUNNING,
+            ProviderImportJob.Status.CANCEL_REQUESTED,
+            ProviderImportJob.Status.VALIDATING,
+            ProviderImportJob.Status.SEARCHING,
+            ProviderImportJob.Status.TRANSFERRING,
+        ],
+        updated_at__lt=cutoff,
+    )
+    reaped = []
+    for job in stale:
+        stalled_for = (timezone.now() - job.updated_at).total_seconds() / 60.0
+        job.status = ProviderImportJob.Status.FAILED
+        job.error_message = (
+            f'Reaped after {stalled_for:.0f} min without progress — the worker running '
+            f'this job is gone. Processed {job.processed_items} item(s) before stalling.'
+        )[:500]
+        job.finished_at = timezone.now()
+        job.current_item_label = ''
+        job.save(update_fields=[
+            'status', 'error_message', 'finished_at', 'current_item_label', 'updated_at',
+        ])
+        append_log(job, 'error', job.error_message)
+        logger.warning(
+            'provider_import.job_reaped id=%s provider=%s stalled_minutes=%.0f processed=%s',
+            job.pk, getattr(job.provider, 'slug', '?'), stalled_for, job.processed_items,
+        )
+        reaped.append(str(job.pk))
+    return {'reaped': len(reaped), 'job_ids': reaped, 'timeout_minutes': timeout}
 
 
 def _mark_cancelled(job):

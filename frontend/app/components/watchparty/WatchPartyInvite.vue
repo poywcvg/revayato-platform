@@ -52,9 +52,9 @@ onBeforeUnmount(() => {
     <div class="flex items-center justify-between gap-3">
       <div>
         <p id="party-invite-title" class="text-xs font-black text-white">دعوت به اتاق</p>
-        <p class="mt-0.5 text-[11px] leading-5 text-white/40">فقط کسانی که لینک دارند وارد می‌شوند.</p>
+        <p class="mt-0.5 text-xs leading-5 text-white/40">فقط کسانی که لینک دارند وارد می‌شوند.</p>
       </div>
-      <span class="font-latin rounded-lg bg-wine/80 px-2 py-1 text-[10px] font-bold text-white/70 ring-1 ring-crimson/25">
+      <span class="font-latin rounded-lg bg-wine/80 px-2 py-1 text-[11px] font-bold text-white/70 ring-1 ring-crimson/25">
         {{ inviteCode.slice(0, 8) }}
       </span>
     </div>
@@ -64,7 +64,7 @@ onBeforeUnmount(() => {
         readonly
         dir="ltr"
         aria-label="لینک دعوت"
-        class="min-h-11 w-full rounded-xl border border-white/10 bg-black/40 px-3 text-left font-latin text-[11px] text-white/55 outline-none focus:border-info/40 focus:ring-2 focus:ring-info/15"
+        class="min-h-11 w-full rounded-xl border border-white/10 bg-black/40 px-3 text-left font-latin text-xs text-white/55 outline-none focus:border-info/40 focus:ring-2 focus:ring-info/15"
         @focus="($event.target as HTMLInputElement).select()"
       >
     </div>

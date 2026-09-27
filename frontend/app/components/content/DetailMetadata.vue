@@ -65,7 +65,7 @@ const facts = computed(() => {
       class="min-w-36 shrink-0 snap-start rounded-2xl p-3 sm:min-w-0"
       style="background: rgb(255 255 255 / 5.5%); box-shadow: inset 0 0 0 1px rgb(255 255 255 / 10%)"
     >
-      <dt class="flex items-center gap-1.5 text-[10px] font-bold" style="color: var(--text-muted, #7a8681)">
+      <dt class="flex items-center gap-1.5 text-[11px] font-bold" style="color: var(--text-muted, #7a8681)">
         <CinematicIcon
           :name="fact.icon"
           class="size-3.5"

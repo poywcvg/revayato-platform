@@ -178,7 +178,7 @@
   flex-wrap: wrap;
   align-items: center;
   gap: .35rem .5rem;
-  font-size: .7rem;
+  font-size: 0.75rem;
   font-weight: 700;
   color: var(--text-muted);
 }
@@ -295,7 +295,7 @@
   gap: .35rem;
   padding-inline: .7rem;
   border-radius: .8rem;
-  font-size: .68rem;
+  font-size: 0.75rem;
   font-weight: 900;
   color: var(--page-bg);
   background: rgb(var(--media-accent-rgb) / 92%);
@@ -311,7 +311,7 @@
   align-items: center;
   padding: .3rem .55rem;
   border-radius: .55rem;
-  font-size: .62rem;
+  font-size: 0.75rem;
   font-weight: 900;
   color: var(--page-bg);
   background: rgb(var(--media-accent-rgb) / 90%);
@@ -414,7 +414,7 @@
   min-height: 1.85rem;
   padding-inline: .65rem;
   border-radius: .55rem;
-  font-size: .68rem;
+  font-size: 0.75rem;
   font-weight: 800;
   border: 1px solid transparent;
 }
@@ -552,7 +552,7 @@
 
   .media-hero__crumb {
     gap: .2rem .35rem;
-    font-size: .65rem;
+    font-size: 0.75rem;
   }
 
   .media-hero__crumb a {
@@ -824,7 +824,7 @@
 }
 
 .media-rating-card__label {
-  font-size: .65rem;
+  font-size: 0.75rem;
   font-weight: 800;
   letter-spacing: .02em;
   color: var(--text-muted);
@@ -842,7 +842,7 @@
 }
 
 .media-rating-card__hint {
-  font-size: .62rem;
+  font-size: 0.75rem;
   font-weight: 600;
   color: var(--text-muted);
 }
@@ -1029,7 +1029,7 @@
 
 .media-info-cell dt {
   margin: 0;
-  font-size: .68rem;
+  font-size: 0.75rem;
   font-weight: 800;
   color: var(--text-muted);
 }
@@ -1206,7 +1206,7 @@ html[data-theme="light"] .media-info-link {
 .media-cast__role {
   display: block;
   width: 100%;
-  font-size: .65rem;
+  font-size: 0.75rem;
   font-weight: 600;
   color: var(--text-muted);
   overflow: hidden;
@@ -1271,6 +1271,58 @@ html[data-theme="light"] .media-info-link {
   font-size: .75rem;
   font-weight: 800;
   color: var(--text-muted);
+}
+
+/* Editor's-pick review: a warm rating-toned frame lifts it above the rest. */
+.media-comment--featured {
+  border-color: color-mix(in srgb, var(--accent-rating) 55%, var(--border-color));
+  background:
+    linear-gradient(180deg, color-mix(in srgb, var(--accent-rating) 12%, transparent), transparent 60%),
+    var(--surface-2);
+  box-shadow: 0 14px 34px -22px color-mix(in srgb, var(--accent-rating) 80%, transparent);
+}
+
+.media-comment__pick {
+  display: inline-flex;
+  align-items: center;
+  gap: .25rem;
+  margin-top: .15rem;
+  font-size: 0.75rem;
+  font-weight: 900;
+  color: var(--accent-rating);
+}
+
+/* Official team reply threaded under a user's review. */
+.media-comment__reply {
+  margin-top: .85rem;
+  border-radius: .85rem;
+  padding: .7rem .85rem;
+  background: color-mix(in srgb, var(--media-accent) 10%, var(--surface-1));
+  border: 1px solid color-mix(in srgb, var(--media-accent) 32%, var(--border-color));
+  border-inline-start: 3px solid var(--media-accent);
+}
+
+.media-comment__reply-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: .5rem;
+}
+
+.media-comment__reply-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: .3rem;
+  font-size: 0.75rem;
+  font-weight: 900;
+  color: var(--media-accent);
+}
+
+.media-comment__reply-body {
+  margin-top: .4rem;
+  font-size: .75rem;
+  line-height: 1.7;
+  color: var(--text-secondary);
 }
 
 .media-comment-compose {

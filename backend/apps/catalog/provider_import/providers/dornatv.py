@@ -11,6 +11,7 @@ import time
 from dataclasses import dataclass, field
 from urllib.parse import quote_plus, urljoin, urlsplit
 
+from celery.exceptions import SoftTimeLimitExceeded
 from django.conf import settings
 from django.core.cache import cache
 
@@ -215,6 +216,13 @@ class DornatvConnector:
         self._last_request_at = time.monotonic()
         try:
             response = client.request(method, path, **kwargs)
+        except SoftTimeLimitExceeded:
+            # Celery's time-limit signal can land anywhere, and it lands here most
+            # often simply because this is where the wall-clock time is spent. It is
+            # control flow, not a provider fault: relabelling it as
+            # ``dornatv request failed`` sent us looking for a network problem that
+            # did not exist while the real cause was an unbounded tick.
+            raise
         except Exception as exc:  # pragma: no cover
             raise ProviderImportError(
                 f'dornatv request failed: {exc}',

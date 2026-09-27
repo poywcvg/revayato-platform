@@ -60,6 +60,17 @@ def normalize_subtitle_track(track: dict[str, Any] | None) -> dict[str, Any] | N
     if source_priority > 0:
         row['source_priority'] = min(source_priority, 99)
 
+    # Cumulative timing correction already BAKED into the stored VTT timestamps
+    # by the auto-sync verifier (crowd consensus / FPS rescale). Informational —
+    # the served file is already shifted, so players must NOT re-apply it; it is
+    # kept for transparency, an "auto-synced" badge, and re-baking math.
+    try:
+        sync_offset = round(float(track.get('sync_offset')), 3)
+    except (TypeError, ValueError):
+        sync_offset = 0.0
+    if sync_offset:
+        row['sync_offset'] = max(-120.0, min(120.0, sync_offset))
+
     for num_key in ('season_number', 'episode_number'):
         raw = track.get(num_key)
         try:
@@ -92,15 +103,33 @@ def normalize_subtitle_tracks(value: Any) -> list[dict[str, Any]]:
     return normalized
 
 
+def subtitle_sync_signature(key: str) -> str:
+    """Stable short signature of a served subtitle file (its storage key).
+
+    Ties crowd sync votes to the exact VTT a viewer watched: when the verifier
+    re-bakes or replaces the file the key changes, the signature changes, and
+    every prior vote is transparently invalidated. Import-light (stdlib only) so
+    it is safe to call from the storage contract.
+    """
+    import hashlib
+
+    digest = hashlib.sha1(str(key or '').encode('utf-8')).hexdigest()
+    return digest[:16]
+
+
 def publicize_subtitle_tracks(tracks: Any) -> list[dict[str, Any]]:
     """Convert stored tracks to the public player contract (``src`` URLs)."""
     public: list[dict[str, Any]] = []
     for track in normalize_subtitle_tracks(tracks or []):
-        src = media_url(track.get('key') or track.get('src')) or None
+        key = track.get('key') or track.get('src')
+        src = media_url(key) or None
         if not src:
             continue
         row = {k: v for k, v in track.items() if k not in {'key', 'src'}}
         row['src'] = src
+        # Signature the player echoes back with a sync vote so the server can
+        # bind the report to this exact file version.
+        row['sync_sig'] = subtitle_sync_signature(key)
         public.append(row)
     return public
 

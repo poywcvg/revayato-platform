@@ -1,4 +1,4 @@
-import type { AgeRating, CastMember, ContentFormat, ContentType, CrewMember, DownloadLink, Genre, Movie, PlaybackTextTrack } from '~/types'
+import type { AgeRating, CastMember, ContentFormat, ContentType, CrewMember, DownloadLink, Genre, Movie, PlaybackMode, PlaybackTextTrack } from '~/types'
 import { getCatalogGenre } from '~/data/genres'
 import { localizeCountry } from '~/data/countries'
 import { preferEnglishName } from '~/utils/displayNames'
@@ -32,6 +32,7 @@ interface ApiEpisode {
   duration_minutes?: number | null
   poster?: string | null
   video_url?: string
+  playback_mode?: string
   download_url?: string | null
   subtitle_tracks?: ApiSubtitleTrack[]
   is_published?: boolean
@@ -86,6 +87,7 @@ export interface ApiCatalogItem {
   backdrop?: string | null
   trailer_url?: string
   video_url?: string
+  playback_mode?: string
   download_url?: string | null
   download_links?: Array<{
     label?: string
@@ -110,9 +112,11 @@ export interface ApiCatalogItem {
   imdb_rank?: number | null
   rating_average?: number | string | null
   site_rating?: number | string | null
+  site_rating_count?: number | null
   ratings?: unknown[]
   imdb_id?: string | null
   tmdb_id?: number | null
+  seo_custom?: { title?: boolean; description?: boolean }
   age_rating?: string
   language?: string
   content_format?: string
@@ -138,10 +142,24 @@ export interface ApiListResponse<T> {
   results?: T[]
 }
 
-function normalizeAgeRating(value?: string): AgeRating {
-  const rating = value?.replace(/[^0-9]/g, '')
-  if (rating === '18') return '18+'
-  if (rating === '15' || rating === '16' || rating === '17') return '15+'
+// The API sends the rating board's own certification (R, PG-13, TV-MA, 15, R15+…).
+// Mirrors backend apps/catalog/age_ratings.py — change both together.
+const LETTER_AGE_BANDS: Record<string, AgeRating> = {
+  'g': '12+', 'pg': '12+', 'pg-13': '12+', 'u': '12+', 'uc': '12+', 'all': '12+', 'al': '12+',
+  'tv-y': '12+', 'tv-y7': '12+', 'tv-y7-fv': '12+', 'tv-g': '12+', 'tv-pg': '12+', 'tv-14': '15+',
+  'm': '15+', 'ma': '18+', 'r': '18+', 'nc-17': '18+', 'x': '18+', 'tv-ma': '18+', 'r18': '18+',
+}
+
+export function normalizeAgeRating(value?: string | null): AgeRating | '' {
+  const raw = (value || '').trim().toLowerCase()
+  if (!raw) return ''
+  if (raw === '12+' || raw === '15+' || raw === '18+') return raw
+  if (LETTER_AGE_BANDS[raw]) return LETTER_AGE_BANDS[raw]
+  const digits = raw.match(/\d+/g)
+  if (!digits) return ''
+  const age = Number(digits[digits.length - 1])
+  if (age >= 18) return '18+'
+  if (age >= 14) return '15+'
   return '12+'
 }
 
@@ -165,6 +183,14 @@ export function adaptApiGenre(genre: ApiGenre): Genre {
     series_count: seriesCount,
     title_count: titleCount,
   }
+}
+
+const PLAYBACK_MODES: PlaybackMode[] = ['direct', 'gateway', 'unverified', 'none']
+
+/** Keep an unrecognized verdict out of the player: unknown means behave as before. */
+function normalizePlaybackMode(value?: string): PlaybackMode | undefined {
+  const mode = String(value || '').trim().toLowerCase() as PlaybackMode
+  return PLAYBACK_MODES.includes(mode) ? mode : undefined
 }
 
 function normalizeContentFormat(value?: string): ContentFormat {
@@ -293,6 +319,7 @@ export function adaptApiCatalogItem(item: ApiCatalogItem, type: ContentType, med
       thumbnail_url: resolvePublicMediaUrl(episode.poster, mediaBase, '/placeholder-poster.svg'),
       hls_url: resolvePublicMediaUrl(episode.video_url, mediaBase, '')
         || resolvePublicMediaUrl(episode.download_url, mediaBase, ''),
+      playback_mode: normalizePlaybackMode(episode.playback_mode),
       download_url: resolvePublicMediaUrl(episode.download_url, mediaBase, '') || null,
       subtitle_tracks: episodeTracks,
     }
@@ -417,6 +444,12 @@ export function adaptApiCatalogItem(item: ApiCatalogItem, type: ContentType, med
     backdrop_url: backdropUrl,
     trailer_url: resolvePublicMediaUrl(item.trailer_url, mediaBase, ''),
     hls_url: hlsUrl,
+    // Only meaningful while hls_url is the source the backend actually tested.
+    // Falling back to a download link means we are off that verdict, so the
+    // player must go back to discovering the problem the old way.
+    playback_mode: resolvedVideo && hlsUrl === resolvedVideo
+      ? normalizePlaybackMode(item.playback_mode)
+      : undefined,
     rating: Number.isFinite(rating) ? rating : 0,
     imdb_rating: trustedImdb,
     imdb_rank: (() => {
@@ -457,6 +490,12 @@ export function adaptApiCatalogItem(item: ApiCatalogItem, type: ContentType, med
     seo_title: item.seo_title || persianTitle || englishTitle,
     seo_description: item.seo_description || '',
     seo_keywords: item.seo_keywords || [],
+    seo_custom: {
+      title: Boolean(item.seo_custom?.title),
+      description: Boolean(item.seo_custom?.description),
+    },
+    imdb_id: item.imdb_id || null,
+    tmdb_id: item.tmdb_id || null,
     recommendation_reason: item.is_featured ? 'انتخاب ویژه تحریریه' : undefined,
     audio_languages: isDubbed
       ? ['دوبله فارسی', ...(spokenLanguage ? [spokenLanguage] : [])]
@@ -550,6 +589,8 @@ export function adaptApiCatalogListItem(
     popularity: Number(item.popularity || 0),
     view_count: Number(item.view_count || 0),
     like_count: Number(item.like_count || 0),
+    site_rating: item.site_rating == null ? null : Number(item.site_rating),
+    site_rating_count: Number(item.site_rating_count || 0),
     cast: [],
     crew: [],
     download_url: null,

@@ -93,7 +93,7 @@ onBeforeUnmount(() => {
               <strong class="min-w-0 flex-1 truncate text-xs font-black text-white">
                 {{ item.user.display_name }}
               </strong>
-              <span class="inline-flex shrink-0 items-center gap-1 text-[9px] font-bold text-success">
+              <span class="inline-flex shrink-0 items-center gap-1 text-[11px] font-bold text-success">
                 <span class="size-1.5 animate-pulse rounded-full bg-success" />
                 پیام جدید
               </span>
@@ -101,7 +101,7 @@ onBeforeUnmount(() => {
             <span class="mt-1.5 line-clamp-2 block break-words text-xs leading-5 text-white/70">
               {{ item.message }}
             </span>
-            <span class="mt-2 inline-flex items-center gap-1 text-[10px] font-black text-primary-300 opacity-80 transition group-hover:opacity-100">
+            <span class="mt-2 inline-flex items-center gap-1 text-[11px] font-black text-primary-300 opacity-80 transition group-hover:opacity-100">
               مشاهده در گفت‌وگو
               <CinematicIcon name="arrow-left" class="size-3" />
             </span>

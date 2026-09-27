@@ -115,7 +115,9 @@ class MyF2MReconcileTests(TestCase):
         connector.authenticate.return_value = MagicMock(ok=True, message='ok')
         get_connector.return_value = connector
 
-        def movie_side_effect(movie, _connector, replace=True):
+        # ``**kwargs`` absorbs crawler options (``resolve_english`` and any
+        # future flag) so the stub tracks the real signature.
+        def movie_side_effect(movie, _connector, replace=True, **kwargs):
             if movie.pk == self.hollywood.pk:
                 movie.download_links = [{
                     'url': 'https://cdn.example/Inception.1080p.SoftSub.mkv',
@@ -130,7 +132,7 @@ class MyF2MReconcileTests(TestCase):
                 return {'status': 'ok', 'imported_count': 1, 'page_path': '/inception-2010/'}
             return {'status': 'page_not_found'}
 
-        def series_side_effect(series, _connector, replace=True):
+        def series_side_effect(series, _connector, replace=True, **kwargs):
             series.download_links = [{
                 'url': 'https://cdn.example/Lost.S01E01.mkv',
                 'quality': '1080p SoftSub',

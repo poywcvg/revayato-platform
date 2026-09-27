@@ -1,92 +1,41 @@
 <script setup lang="ts">
 const route = useRoute()
-const slug = computed(() => String(route.params.slug))
+const slug = computed(() => decodeRouteSlug(route.params.slug))
 const { movie, refresh, pending } = useMovieBySlug(slug, 'movie')
 
-// Always load detail so download_links / cast are present (list cache omits them).
-await refresh()
+// Page addresses are English; an old (Persian) address still resolves in the API
+// and is answered here with a permanent redirect to the current one.
+let redirecting = false
+function redirectToCanonical(loaded: { slug: string } | null | undefined) {
+  if (!loaded?.slug || loaded.slug === slug.value) return
+  redirecting = true
+  return navigateTo(
+    { path: `/movies/${loaded.slug}`, query: route.query, hash: route.hash },
+    { redirectCode: 301, replace: true },
+  )
+}
 
-if (!movie.value || movie.value.type !== 'movie') {
+// Load full detail (download_links / cast are omitted from the list cache).
+// Block the render ONLY when there is nothing to show yet: on the server (so the
+// SSR HTML + SEO are complete and a hard refresh paints instantly) and on a client
+// deep-link with no cached rail card. When a list card is already cached — the
+// common case, the user tapped a rail — render it immediately and upgrade to the
+// full detail in the background, so client navigation never sits frozen behind the
+// (slow) detail API under the out-in page transition.
+if (import.meta.server || !movie.value) {
+  await redirectToCanonical(await refresh())
+}
+else {
+  void refresh().then((loaded) => { void redirectToCanonical(loaded) })
+}
+
+if (!redirecting && (!movie.value || movie.value.type !== 'movie')) {
   throw createError({ statusCode: 404, message: 'فیلم پیدا نشد' })
 }
 
-const castNames = computed(() => (movie.value?.cast || []).slice(0, 8).map(person => person.name).filter(Boolean))
-const downloadQualities = computed(() => movie.value?.download_qualities || [])
-const seoTitle = computed(() => movie.value?.seo_title || movie.value?.title || 'فیلم')
-const seoDescription = computed(() => {
-  if (movie.value?.seo_description) return movie.value.seo_description
-  const base = (movie.value?.description || '').slice(0, 160)
-  const bits = []
-  if (castNames.value.length) bits.push(`بازیگران: ${castNames.value.join('، ')}`)
-  if (downloadQualities.value.length) bits.push(`دانلود: ${downloadQualities.value.join('، ')}`)
-  return `${base}${bits.length ? ` ${bits.join(' ')}` : ''}`.slice(0, 320)
-})
-const seoKeywords = computed(() => {
-  const fromApi = movie.value?.seo_keywords || []
-  const local = [
-    movie.value?.title,
-    movie.value?.original_title,
-    movie.value?.has_downloads ? 'دانلود' : '',
-    ...downloadQualities.value,
-    ...castNames.value,
-    ...(movie.value?.genres || []).map(genre => genre.title),
-  ].filter(Boolean) as string[]
-  return [...new Set([...fromApi, ...local])].join(', ')
-})
-
-useSeoMeta({
-  title: seoTitle,
-  description: seoDescription,
-  ogTitle: seoTitle,
-  ogDescription: seoDescription,
-  ogImage: () => movie.value?.backdrop_url,
-  twitterCard: 'summary_large_image',
-  keywords: seoKeywords,
-})
-
-useHead(() => {
-  const item = movie.value
-  if (!item) return {}
-  const site = (item.ratings || []).find(entry => entry.source === 'site' && entry.value > 0)
-  return {
-    script: [{
-      type: 'application/ld+json',
-      children: JSON.stringify({
-        '@context': 'https://schema.org',
-        '@type': 'Movie',
-        name: item.title,
-        alternateName: item.original_title,
-        description: seoDescription.value,
-        image: item.poster_url,
-        dateCreated: item.year ? String(item.year) : undefined,
-        genre: item.genres.map(genre => genre.title),
-        actor: item.cast.slice(0, 10).map(person => ({ '@type': 'Person', name: person.name })),
-        director: item.crew.filter(person => person.job === 'کارگردان' || person.job?.toLowerCase().includes('director')).slice(0, 3).map(person => ({
-          '@type': 'Person',
-          name: person.name,
-        })),
-        // Only website user ratings — never IMDb/TMDB as aggregateRating.
-        aggregateRating: site ? {
-          '@type': 'AggregateRating',
-          ratingValue: site.value,
-          bestRating: site.scale,
-          ...(site.voteCount ? { ratingCount: site.voteCount } : {}),
-        } : undefined,
-        keywords: seoKeywords.value,
-        ...(item.has_downloads ? {
-          offers: {
-            '@type': 'Offer',
-            availability: 'https://schema.org/InStock',
-            category: 'Download',
-            name: downloadQualities.value.length
-              ? `دانلود ${downloadQualities.value.join('، ')}`
-              : 'دانلود مستقیم',
-          },
-        } : {}),
-      }),
-    }],
-  }
-})
+// Title / description / schema.org graph are built in ~/utils/seo so movie and
+// series pages stay identical in structure (and change together).
+useDetailSeo(movie)
 </script>
 
 <template>

@@ -1,4 +1,5 @@
 from datetime import timedelta
+from unittest.mock import patch
 
 from django.test import SimpleTestCase
 from django.utils import timezone
@@ -34,6 +35,15 @@ class _FakeTitle:
 
 
 class TrendingScoreTests(SimpleTestCase):
+    def setUp(self):
+        # ``_slot_jitter`` rotates rails by ±7.5 points per pk and hour. That is
+        # larger than the deliberate gaps asserted below, so these ranking tests
+        # would pass or fail depending on the clock. Neutralize the rotation and
+        # assert the scoring signals themselves.
+        patcher = patch('apps.catalog.trending._slot_jitter', return_value=0.0)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
     def test_playable_dub_softsub_beats_bare_popularity(self):
         now = timezone.now()
         bare = _FakeTitle(pk=1, popularity=200, view_count=10, updated_at=now, created_at=now - timedelta(days=20))

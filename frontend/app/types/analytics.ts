@@ -23,6 +23,10 @@ export const analyticsEventTypes = [
   'click_director',
   'filter_apply',
   'sort_apply',
+  'app_install_prompt',
+  'app_install_click',
+  'app_install_dismiss',
+  'download',
 ] as const
 
 export type EventType = typeof analyticsEventTypes[number]
@@ -48,6 +52,8 @@ export interface AnalyticsEventInput {
   timestamp?: string
   user_id?: number
   is_empty_query?: boolean
+  quality?: string
+  platform?: 'web' | 'android'
 }
 
 export interface AnalyticsEvent extends AnalyticsEventInput {
@@ -174,6 +180,12 @@ export interface AnalyticsActiveUserRow {
   watch_time_minutes: number
   watch_time_hours: number
   events: number
+  plays?: number
+  completes?: number
+  rooms_hosted?: number
+  likes?: number
+  ratings?: number
+  interactions?: number
   last_seen: string | null
 }
 
@@ -190,6 +202,18 @@ export interface AnalyticsUsersData {
     users: number
     active_in_period: number
     new_in_period: number
+    new_today?: number
+    returning_in_period?: number
+    dau?: number
+    wau?: number
+    mau?: number
+    active?: number
+    inactive?: number
+    verified?: number
+    unverified?: number
+    staff?: number
+    verified_rate?: number
+    stickiness?: number
   }
 }
 
@@ -233,6 +257,111 @@ export interface AnalyticsContentData {
     series_published: number
     episodes_published: number
   }
+  stats?: AnalyticsContentViewStats
+}
+
+export interface AnalyticsContentTopByViews {
+  id: number
+  title: string
+  slug: string
+  content_type: 'movie' | 'series' | string
+  view_count: number
+}
+
+export interface AnalyticsContentViewStats {
+  movie_views: number
+  series_views: number
+  total_views: number
+  movie_titles_viewed: number
+  series_titles_viewed: number
+  movie_views_in_period: number
+  series_views_in_period: number
+  top_movies: AnalyticsContentTopByViews[]
+  top_series: AnalyticsContentTopByViews[]
+}
+
+export interface AnalyticsDownloadsData {
+  summary: {
+    total_all_time: number
+    total_period: number
+    delta_percent: number | null
+    unique_users: number
+    unique_sessions: number
+    per_user: number
+  }
+  over_time: AnalyticsSeriesPoint[]
+  top_titles: Array<{
+    id: number
+    title: string
+    slug: string
+    content_type: 'movie' | 'series' | string
+    downloads: number
+  }>
+  by_quality: AnalyticsNamedValue[]
+  by_platform: AnalyticsNamedValue[]
+  by_type: AnalyticsNamedValue[]
+  tracking_active: boolean
+}
+
+export interface AnalyticsFunnelStage {
+  id: string
+  label: string
+  value: number
+  pct_of_top: number | null
+  step_conversion: number | null
+}
+
+export interface AnalyticsBehaviorData {
+  summary: {
+    tracked_events: number
+    active_users: number
+    anonymous_sessions: number
+    events_per_active: number | null
+    engagement_actions: {
+      likes: number
+      ratings: number
+      watchlist: number
+      shares: number
+      downloads: number
+      trailers: number
+    }
+  }
+  funnel: {
+    stages: AnalyticsFunnelStage[]
+    play_through_rate: number | null
+    completion_rate: number | null
+  }
+  discovery: {
+    searches: number
+    unique_terms: number
+    result_clicks: number
+    click_through_rate: number | null
+    zero_result_searches: number
+    zero_result_rate: number | null
+    top_terms: Array<{ term: string, count: number, zero_result_count: number }>
+  }
+  sessions: {
+    sessions: number
+    avg_events_per_session: number
+    median_events_per_session: number
+    avg_duration_minutes: number
+    bounce_rate: number | null
+    depth_distribution: AnalyticsNamedValue[]
+  }
+  action_mix: AnalyticsNamedValue[]
+  content_interest: AnalyticsNamedValue[]
+  heatmap: AnalyticsContentData['heatmap']
+  retention: {
+    dau: number
+    wau: number
+    mau: number
+    stickiness: number | null
+    wow_retention_rate: number | null
+    wow_prior_cohort: number
+    wow_retained: number
+  }
+  top_active_users: AnalyticsActiveUserRow[]
+  realtime: AnalyticsRealtime
 }
 
 export interface AnalyticsEngagementData {

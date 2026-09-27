@@ -1,0 +1,258 @@
+/*
+ * روایتو کنترل — Admin design system.
+ *
+ * A self-contained, always-dark "control room" theme scoped to `.rv-admin`, so
+ * the panel never inherits or fights the public site's theme switching. Layout
+ * is done with Tailwind utilities in templates; this file owns the tokens, a few
+ * component primitives, scrollbars and motion.
+ */
+
+.rv-admin {
+  /* ---- ground & surfaces ---- */
+  --rv-bg: #09090e;
+  --rv-bg-soft: #0e0e15;
+  --rv-surface: #14141d;
+  --rv-surface-2: #1b1b27;
+  --rv-surface-3: #232331;
+  --rv-border: rgba(255, 255, 255, 0.07);
+  --rv-border-strong: rgba(255, 255, 255, 0.13);
+
+  /* ---- text ---- */
+  --rv-text: #f5f5f7;
+  --rv-muted: #9a9aa8;
+  --rv-faint: #61616f;
+
+  /* ---- accent: cinema ember ---- */
+  --rv-accent: #fb2c5a;
+  --rv-accent-hover: #ff456e;
+  --rv-accent-soft: rgba(251, 44, 90, 0.14);
+  --rv-accent-line: rgba(251, 44, 90, 0.30);
+  --rv-accent-glow: rgba(251, 44, 90, 0.45);
+  --rv-on-accent: #ffffff;
+
+  /* ---- semantic ---- */
+  --rv-success: #2fd27a;
+  --rv-success-soft: rgba(47, 210, 122, 0.14);
+  --rv-warning: #f7b32b;
+  --rv-warning-soft: rgba(247, 179, 43, 0.14);
+  --rv-danger: #ff5470;
+  --rv-danger-soft: rgba(255, 84, 112, 0.14);
+  --rv-info: #4aa8ff;
+  --rv-info-soft: rgba(74, 168, 255, 0.14);
+  --rv-violet: #a480ff;
+  --rv-violet-soft: rgba(164, 128, 255, 0.14);
+
+  /* ---- geometry & motion ---- */
+  --rv-radius: 16px;
+  --rv-radius-sm: 11px;
+  --rv-radius-lg: 22px;
+  --rv-radius-full: 999px;
+  --rv-shadow: 0 1px 2px rgba(0, 0, 0, 0.4), 0 12px 32px -12px rgba(0, 0, 0, 0.6);
+  --rv-shadow-lg: 0 24px 64px -20px rgba(0, 0, 0, 0.75);
+  --rv-ring: 0 0 0 1px var(--rv-border);
+  --rv-t-fast: 130ms cubic-bezier(0.22, 1, 0.36, 1);
+  --rv-t: 220ms cubic-bezier(0.22, 1, 0.36, 1);
+  --rv-sidebar-w: 264px;
+
+  background: var(--rv-bg);
+  color: var(--rv-text);
+  color-scheme: dark;
+  font-feature-settings: "ss01";
+  min-height: 100vh;
+}
+
+/* Ambient glow behind the whole shell — subtle depth, painted once. */
+.rv-admin__aura {
+  position: fixed;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+  background:
+    radial-gradient(1100px 520px at 85% -8%, rgba(251, 44, 90, 0.10), transparent 60%),
+    radial-gradient(900px 500px at 8% 4%, rgba(74, 168, 255, 0.06), transparent 55%);
+}
+
+/* ---------- primitives ---------- */
+
+.rv-card {
+  background: var(--rv-surface);
+  border: 1px solid var(--rv-border);
+  border-radius: var(--rv-radius);
+  box-shadow: var(--rv-shadow);
+}
+
+.rv-card--glass {
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.025), rgba(255, 255, 255, 0)) , var(--rv-surface);
+}
+
+.rv-focus:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 2px var(--rv-bg), 0 0 0 4px var(--rv-accent-line);
+  border-radius: var(--rv-radius-sm);
+}
+
+/* Buttons ------------------------------------------------------- */
+.rv-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  min-height: 2.6rem;
+  padding: 0 1rem;
+  border-radius: var(--rv-radius-sm);
+  font-weight: 800;
+  font-size: 0.82rem;
+  line-height: 1;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: background var(--rv-t-fast), border-color var(--rv-t-fast), transform var(--rv-t-fast), color var(--rv-t-fast);
+  border: 1px solid transparent;
+}
+.rv-btn:active { transform: translateY(1px); }
+.rv-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+
+.rv-btn--primary {
+  background: var(--rv-accent);
+  color: var(--rv-on-accent);
+  box-shadow: 0 8px 24px -10px var(--rv-accent-glow);
+}
+.rv-btn--primary:hover:not(:disabled) { background: var(--rv-accent-hover); }
+
+.rv-btn--ghost {
+  background: var(--rv-surface-2);
+  color: var(--rv-text);
+  border-color: var(--rv-border);
+}
+.rv-btn--ghost:hover:not(:disabled) { background: var(--rv-surface-3); border-color: var(--rv-border-strong); }
+
+.rv-btn--subtle {
+  background: transparent;
+  color: var(--rv-muted);
+}
+.rv-btn--subtle:hover:not(:disabled) { background: var(--rv-surface-2); color: var(--rv-text); }
+
+.rv-btn--danger {
+  background: var(--rv-danger-soft);
+  color: var(--rv-danger);
+  border-color: transparent;
+}
+.rv-btn--danger:hover:not(:disabled) { background: rgba(255, 84, 112, 0.22); }
+
+/* Inputs -------------------------------------------------------- */
+.rv-input {
+  width: 100%;
+  min-height: 2.6rem;
+  padding: 0 0.85rem;
+  background: var(--rv-bg-soft);
+  border: 1px solid var(--rv-border);
+  border-radius: var(--rv-radius-sm);
+  color: var(--rv-text);
+  font-size: 0.85rem;
+  font-weight: 600;
+  transition: border-color var(--rv-t-fast), box-shadow var(--rv-t-fast);
+}
+.rv-input::placeholder { color: var(--rv-faint); font-weight: 500; }
+.rv-input:focus {
+  outline: none;
+  border-color: var(--rv-accent-line);
+  box-shadow: 0 0 0 3px var(--rv-accent-soft);
+}
+select.rv-input { cursor: pointer; appearance: none; padding-inline-end: 2rem; }
+
+/* A textarea needs the vertical padding a single-line input does not, and has
+   to grow past the input's fixed height. */
+textarea.rv-input {
+  min-height: 5rem;
+  height: auto;
+  padding: 0.6rem 0.85rem;
+  line-height: 1.9;
+  resize: vertical;
+}
+
+/* Field label ---------------------------------------------------- */
+.rv-label {
+  display: block;
+  font-size: 0.75rem;
+  font-weight: 800;
+  color: var(--rv-muted);
+}
+
+/* Icon button --------------------------------------------------- */
+.rv-icon-btn {
+  display: inline-grid;
+  place-items: center;
+  width: 2rem;
+  height: 2rem;
+  border-radius: var(--rv-radius-sm);
+  color: var(--rv-muted);
+  background: transparent;
+  border: 1px solid transparent;
+  cursor: pointer;
+  transition: background var(--rv-t-fast), color var(--rv-t-fast), border-color var(--rv-t-fast);
+}
+.rv-icon-btn:hover:not(:disabled) { background: var(--rv-surface-3); color: var(--rv-text); }
+.rv-icon-btn:disabled { opacity: 0.45; cursor: not-allowed; }
+.rv-icon-btn--danger:hover:not(:disabled) { background: var(--rv-danger-soft); color: var(--rv-danger); }
+
+/* Table --------------------------------------------------------- */
+.rv-table { width: 100%; border-collapse: separate; border-spacing: 0; }
+.rv-table thead th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  text-align: start;
+  font-size: 0.75rem;
+  font-weight: 800;
+  letter-spacing: 0.02em;
+  color: var(--rv-faint);
+  text-transform: uppercase;
+  padding: 0.65rem 0.9rem;
+  background: var(--rv-surface);
+  border-bottom: 1px solid var(--rv-border);
+  white-space: nowrap;
+}
+.rv-table tbody td {
+  padding: 0.7rem 0.9rem;
+  font-size: 0.83rem;
+  border-bottom: 1px solid var(--rv-border);
+  vertical-align: middle;
+}
+.rv-table tbody tr { transition: background var(--rv-t-fast); }
+.rv-table tbody tr:hover { background: var(--rv-surface-2); }
+.rv-table tbody tr:last-child td { border-bottom: 0; }
+
+/* Skeleton shimmer ---------------------------------------------- */
+.rv-skeleton {
+  position: relative;
+  overflow: hidden;
+  background: var(--rv-surface-2);
+  border-radius: var(--rv-radius-sm);
+}
+.rv-skeleton::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  transform: translateX(-100%);
+  background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.06), transparent);
+  animation: rv-shimmer 1.4s infinite;
+}
+@keyframes rv-shimmer { 100% { transform: translateX(100%); } }
+
+/* Scrollbars ---------------------------------------------------- */
+.rv-admin ::-webkit-scrollbar { width: 10px; height: 10px; }
+.rv-admin ::-webkit-scrollbar-thumb {
+  background: var(--rv-surface-3);
+  border-radius: 999px;
+  border: 2px solid transparent;
+  background-clip: padding-box;
+}
+.rv-admin ::-webkit-scrollbar-thumb:hover { background: #34343f; background-clip: padding-box; }
+
+/* Enter animation for stacked content --------------------------- */
+@keyframes rv-rise { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
+.rv-rise { animation: rv-rise var(--rv-t) both; }
+
+@media (prefers-reduced-motion: reduce) {
+  .rv-admin *,
+  .rv-admin *::after { animation: none !important; transition: none !important; }
+}

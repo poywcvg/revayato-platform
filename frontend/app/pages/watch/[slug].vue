@@ -1,28 +1,42 @@
 <script setup lang="ts">
-import type { ContentType, DownloadLink, Episode, PlaybackEpisodeOption, PlaybackQuality, PlaybackTextTrack, PlaybackVersion, PlaybackVersionKind } from '~/types'
-import { episodeNumberOf, isPlayablePlaybackUrl, linkMatchesEpisode, pickStreamFriendlyLink, playbackOrigin, prefersBrowserSafeContainers, qualityHeightOf, seasonNumberOf, streamNetworkProfile, warmPlaybackOrigin } from '~/utils/downloadMeta'
+import { reportClientDiag } from '~/utils/clientDiag'
+import type { ContentType, DownloadLink, Episode, PlaybackEpisodeOption, PlaybackQuality, PlaybackTextTrack, PlaybackVersion, PlaybackVersionKind, SubtitleSyncFeedback } from '~/types'
+import { codecLikelyUnsupported, episodeNumberOf, isExpiredPlaybackUrl, isPlayablePlaybackUrl, linkMatchesEpisode, pickStreamFriendlyLink, playbackOrigin, prefersBrowserSafeContainers, qualityHeightOf, seasonNumberOf, streamNetworkProfile, videoCodecFamily, warmPlaybackOrigin } from '~/utils/downloadMeta'
 import { buildPlaybackVersions, isDubLink, isSoftsubLink, linksForVersionKind, pairSubtitleTracksForSource, resolvePlaybackVersion } from '~/utils/playbackVersions'
 import { classifyPlayerToast, type PlayerToastMeta } from '~/utils/playerToast'
+import type { ReportProblemType } from '~/composables/useContentReport'
+import type { StreamGatewaySession } from '~/composables/useStreamGateway'
 import { pickDefaultPlaybackVersion, softsubBannerCopy, subtitleFindingNotice, subtitleReadyNotice, type SoftsubBannerTone } from '~/utils/subtitlePolicy'
 
-definePageMeta({ layout: 'player', pageTransition: false })
+definePageMeta({ layout: 'player', pageTransition: false, ssr: false })
 
 const route = useRoute()
 const router = useRouter()
-const slug = computed(() => String(route.params.slug))
+const slug = computed(() => decodeRouteSlug(route.params.slug))
 const { catalog, loadItemFromApi } = useCatalog()
 const initialItem = catalog.value.find(candidate => candidate.slug === slug.value)
 const requestedType = route.query.type === 'movie' || route.query.type === 'series'
   ? route.query.type as ContentType
   : initialItem?.type
 
-if (requestedType) await loadItemFromApi(slug.value, requestedType)
-else if (!await loadItemFromApi(slug.value, 'movie')) await loadItemFromApi(slug.value, 'series')
+const loadedItem = requestedType
+  ? await loadItemFromApi(slug.value, requestedType)
+  : (await loadItemFromApi(slug.value, 'movie')) || await loadItemFromApi(slug.value, 'series')
+// An old (Persian) address resolves to the row's current English slug: move the
+// player onto it so every later lookup by ``slug`` finds the item.
+if (loadedItem?.slug && loadedItem.slug !== slug.value) {
+  await navigateTo({ path: `/watch/${loadedItem.slug}`, query: route.query, hash: route.hash }, { replace: true })
+}
 
-const item = computed(() => catalog.value.find(candidate => candidate.slug === slug.value) ?? null)
+const item = computed(() => catalog.value.find(candidate => candidate.slug === slug.value)
+  ?? (loadedItem ? catalog.value.find(candidate => candidate.slug === loadedItem.slug && candidate.type === loadedItem.type) : undefined)
+  ?? null)
 const { trackTrailerPlay, trackWatchProgress } = useAnalyticsEvent()
 const watchProgress = useWatchProgress()
 const { ensurePlaybackSubtitles, getPlaybackSubtitleStatus } = usePlaybackSubtitleEnsure()
+const { reportSubtitleSync } = useSubtitleSyncReport()
+const { reportIssue } = useContentReport()
+const { openGatewayStream, isGatewayUrl, gatewayMessageFor } = useStreamGateway()
 
 if (!item.value) throw createError({ statusCode: 404, message: 'محتوا پیدا نشد' })
 
@@ -195,14 +209,186 @@ const activeVersion = computed(() =>
   ),
 )
 
+// Dubbed («دوبله») playback carries Persian in the audio, so the SubtitleStar/Soft
+// importer must NOT run for it — importing here would attach an unwanted subtitle to
+// a dub. Softsub/Hardsub/Original lanes still ensure a sidecar when cues are missing.
+const activeVersionIsDub = computed(() => {
+  const kind = activeVersion.value?.kind || String(route.query.version || '')
+  return kind === 'dub' || kind === 'dubbed'
+})
+
+// --- playback gateway ------------------------------------------------------
+// When a browser cannot open a file directly, the backend rewraps it into HLS
+// on demand. This is a fallback, not a mode: it is only ever reached from
+// handleSourceFailed, and the direct CDN URL stays the first thing tried.
+/** True while a session is being opened, so the player can show progress. */
+const gatewayPending = ref(false)
+/** The session being played. Holds the film's true start/duration, which the
+ *  session's own media timeline does not carry — it always begins at zero. */
+const gatewaySession = ref<StreamGatewaySession | null>(null)
+/** The original CDN URL the running session was opened from. */
+let gatewayOriginUrl = ''
+/** Sources already offered to the gateway, so a failure cannot loop. */
+const gatewayAttempted = new Set<string>()
+/** Live playhead in *film* seconds — where a reopened session resumes. */
+let lastPositionSeconds = 0
+
+/** A URL the backend handed back that beats what the link list can offer. */
+const resolvedSource = ref('')
+
 const playerSource = computed(() => {
   if (mode.value === 'trailer') return item.value?.trailer_url || ''
-  return activeVersion.value?.url
+  // A gateway session outranks every direct mirror. It is only ever opened
+  // after a direct source has already failed in this browser, so falling back
+  // to the link list here would put us straight back on the file that broke.
+  // It deliberately does not travel through ?source=: that query parameter is
+  // validated against the title's own link list, which a gateway URL is not in.
+  if (gatewaySession.value?.playlist) return gatewaySession.value.playlist
+  const picked = activeVersion.value?.url
     || activeRouteSource.value
     || fallbackUrl.value
     || episodeScopedLinks.value[0]?.url
     || ''
+  // A re-signed URL only outranks the viewer's own pick when that pick cannot
+  // play: either there is nothing to play, or its token has lapsed and this one
+  // has not. Otherwise the link list wins, so choosing a quality still means
+  // something. See ensureFreshSource.
+  const resigned = resolvedSource.value
+  if (resigned && (!picked || (isExpiredPlaybackUrl(picked) && !isExpiredPlaybackUrl(resigned)))) {
+    return resigned
+  }
+  return picked
 })
+
+/**
+ * Detect when all download links exist but are expired (CDN signature timeout).
+ * Shows a dedicated "refreshing" banner and auto-reloads after the backend
+ * re-crawls fresh links via the periodic playback refresh task.
+ */
+const expiredLinksNotice = computed(() => {
+  if (mode.value === 'trailer') return null
+  if (playerSource.value) return null
+  const links = item.value?.download_links || []
+  if (!links.length) return null
+  const hasAnyLink = links.some(link => link.url && isPlayablePlaybackUrl(link.url))
+  if (hasAnyLink) return null
+  // All links present but none playable = expired CDN signatures
+  return {
+    title: 'لینک‌ها منقضی شده‌اند',
+    detail: 'لینک‌های پخش به‌روزرسانی می‌شوند… لطفاً چند لحظه صبر کنید.',
+  }
+})
+let expiredRefreshTimer: ReturnType<typeof setTimeout> | undefined
+watch(expiredLinksNotice, (notice) => {
+  if (expiredRefreshTimer) clearTimeout(expiredRefreshTimer)
+  if (notice && item.value) {
+    // Backstop only. The real repair is `ensureFreshSource` below, which asks
+    // the backend to re-sign on demand; this re-read just picks up a refresh
+    // that landed from somewhere else (the sweep, or a hand-off that finished
+    // after we had already been answered).
+    expiredRefreshTimer = setTimeout(() => {
+      if (expiredLinksNotice.value && item.value) {
+        loadItemFromApi(slug.value, item.value.type)
+      }
+    }, 60_000)
+  }
+})
+
+// --- re-signing the source at play time ------------------------------------
+// A signed CDN URL lapses in ~13 h, and until now nothing re-signed it between
+// the crawl and the player, so any title opened half a day after it was crawled
+// failed on a file that was never actually missing. See usePlaybackResolve.
+const {
+  resolve: resolvePlaybackSource,
+  resolving: sourceResolving,
+  resolution: sourceResolution,
+} = usePlaybackResolve()
+/** Sources already sent for re-signing, so a title cannot loop on one failure. */
+const resolveAttempted = new Set<string>()
+
+/** Shown while the backend re-crawls: a wait with a reason, not a dead player. */
+const preparingSource = computed(() => sourceResolving.value && !gatewaySession.value)
+
+/**
+ * One status line for the whole "the source is not ready yet" family.
+ *
+ * The wording matters here: the old copy promised that links "are being
+ * refreshed" whenever none were playable, which pointed at a background task
+ * that could not keep up, so the promise expired with the viewer still staring
+ * at it. Each branch below now says only what is actually true — a re-crawl is
+ * running, a re-crawl ran and did not help, or there is nothing to play.
+ */
+const sourceNotice = computed(() => {
+  if (mode.value === 'trailer') return null
+  if (preparingSource.value) {
+    return {
+      title: 'در حال آماده‌سازی پخش…',
+      detail: 'لینک پخش این عنوان منقضی شده و همین حالا تازه‌سازی می‌شود.',
+    }
+  }
+  const resolution = sourceResolution.value
+  if (resolution && resolution.stale && !resolution.refreshed && playerSource.value) {
+    return {
+      title: 'کیفیت پخش ممکن است پایین‌تر باشد',
+      detail: 'لینک تازه‌ای از سرویس‌دهنده گرفته نشد؛ پخش با آخرین لینک موجود ادامه پیدا می‌کند.',
+    }
+  }
+  return expiredLinksNotice.value
+})
+
+/**
+ * Make sure the URL we are about to play still has a valid signature.
+ *
+ * Cheap and silent in the common case: a URL whose token is still good is not
+ * sent anywhere. Only a lapsed one — or a title with no playable source at all —
+ * costs a round trip.
+ *
+ * On success the *item* is re-read rather than just swapping in the one URL the
+ * backend returned. The re-crawl re-signs every quality, and the viewer may have
+ * chosen one that is not the backend's pick; re-reading keeps their choice and
+ * makes all the other lanes work too.
+ */
+async function ensureFreshSource() {
+  if (mode.value === 'trailer') return
+  const target = item.value
+  if (!target?.id) return
+  if (gatewaySession.value) return
+
+  const current = playerSource.value
+  // A source that is present and unlapsed is the whole point of the fast path.
+  if (current && !isExpiredPlaybackUrl(current)) return
+
+  const key = `${target.type}:${target.id}:${currentEpisode.value?.id || 0}:${current}`
+  if (resolveAttempted.has(key)) return
+  resolveAttempted.add(key)
+
+  const resolved = await resolvePlaybackSource({
+    kind: target.type,
+    id: target.id,
+    episodeId: currentEpisode.value?.id || null,
+  })
+  if (!resolved) return
+
+  if (resolved.refreshed) {
+    // Fresh signatures for every quality, not just the one we asked about.
+    await loadItemFromApi(slug.value, target.type)
+    return
+  }
+
+  // Not refreshed. The backend still handed back a URL — the stale one, or one
+  // a hand-off is still working on. Playing it and failing is no worse than
+  // refusing to try, and it frequently just works: `stale` means the token
+  // lapsed, not that the file is gone.
+  if (resolved.videoUrl && resolved.videoUrl !== current) {
+    resolvedSource.value = resolved.videoUrl
+  }
+}
+
+watch(
+  () => [item.value?.id, currentEpisode.value?.id, mode.value] as const,
+  () => { void ensureFreshSource() },
+  { immediate: true },
+)
 
 const playerSourceQuality = computed(() => {
   const sourceLink = episodeScopedLinks.value.find(link => link.url === playerSource.value)
@@ -273,10 +459,78 @@ let softsubPollTimer: number | undefined
 let softsubRetryTimer: number | undefined
 let softsubReportId: number | null = null
 let softsubEnsureRounds = 0
+// Invalidates late ensure/status responses after an episode or playback-version
+// switch. Without this guard, tracks fetched for the previous episode could be
+// injected into the newly selected episode.
+let softsubRequestEpoch = 0
 const SOFTSUB_ENSURE_MAX_ROUNDS = 4
+// The player reads subtitle tracks muxed inside the MKV it is already
+// streaming. When one is Persian the server hunt is pointless, so the first
+// ensure waits briefly for that probe instead of racing it.
+const EMBEDDED_PROBE_WAIT_MS = 4_000
+let embeddedPersianAvailable = false
+let embeddedProbeSettled = false
+let embeddedProbeTimer: number | undefined
+let pendingSoftsubEnsure: { showBanner?: boolean } | null = null
+// The server already searched every source for this title and found nothing;
+// it answers 'exhausted' until its cooldown ends, so polling would be noise.
+let softsubExhausted = false
 let autoUpgradeDone = false
 let toastSeq = 0
 const failedPlaybackSources = new Set<string>()
+
+// Self-heal guard: once every mirror is unplayable in this browser we ask the
+// backend (once per episode/version) to re-crawl a browser-safe H.264 encode.
+let reportedPlaybackGap = false
+
+// Persistent "this browser can't decode any available encode" panel. Set only
+// when every mirror has been exhausted on a definitively in-browser-unplayable
+// reason (HEVC/AV1 codec, or MKV on Safari/Firefox), so the viewer sees a clear
+// app/download CTA instead of a silent black frame. Transient/network failures
+// keep using the auto-dismissing toast.
+const playbackBlocked = ref<{ family: string, container: string } | null>(null)
+
+const { blocked: regionBlocked, countryName: regionCountryName, dismissed: regionNoticeDismissed, dismissRegionNotice, resolveRegion } = useViewerRegion()
+/**
+ * Hidden for this tab, seeded from the session so a second episode does not
+ * repeat a notice the viewer already read and closed.
+ */
+const regionNoticeHidden = ref(regionNoticeDismissed.value)
+// Not on a trailer: those are served from our own media host, which answers
+// everyone, so a viewer abroad watching one has nothing to fix.
+const regionModalOpen = computed(() => (
+  confirmed.value && mode.value !== 'trailer' && regionBlocked.value && !regionNoticeHidden.value
+))
+
+function closeRegionNotice() {
+  regionNoticeHidden.value = true
+  dismissRegionNotice()
+}
+
+/**
+ * Bring the notice back after a failure the region explains. Playback failing
+ * is new information even to a viewer who dismissed the warning on arrival —
+ * it is the moment the warning turns out to have been about their session.
+ */
+function revealRegionNotice() {
+  if (!regionBlocked.value) return false
+  regionNoticeHidden.value = false
+  return true
+}
+
+/** Highest-quality directly-downloadable mirror for the current episode, so the
+ *  fallback panel can offer "download and play in a local app". */
+const directDownloadLink = computed(() => {
+  const links = episodeScopedLinks.value.filter(link => (
+    Boolean(link.url)
+    && isPlayablePlaybackUrl(link.url)
+    && !/\.(vtt|webvtt|srt|ass|ssa)($|\?)/i.test(link.url)
+    && !/\.m3u8(?:\?|$)/i.test(link.url)
+  ))
+  if (!links.length) return null
+  return [...links]
+    .sort((a, b) => qualityHeightOf(b.quality, b.url) - qualityHeightOf(a.quality, a.url))[0] || null
+})
 
 const playbackEpisodes = computed<PlaybackEpisodeOption[]>(() => orderedEpisodes.value.map(episode => ({
   id: episode.id,
@@ -332,6 +586,7 @@ function selectEpisode(episode: Episode | PlaybackEpisodeOption, notice = '') {
   clearSoftsubBanner()
   resetSoftsubRetry()
   failedPlaybackSources.clear()
+  reportedPlaybackGap = false
   autoUpgradeDone = false
   void router.replace({
     query: {
@@ -439,13 +694,21 @@ function pickUpgradeLink(links: DownloadLink[], currentUrl: string) {
   const max = target + 80
   const candidates = links
     .map(link => ({ link, height: qualityHeightOf(link.quality, link.url) }))
-    .filter(entry => entry.height >= min && entry.height <= max && entry.link.url !== currentUrl)
+    .filter(entry => (
+      entry.height >= min
+      && entry.height <= max
+      && entry.link.url !== currentUrl
+      && !codecLikelyUnsupported(entry.link.url, entry.link.quality, entry.link.label)
+    ))
     .sort((a, b) => Math.abs(a.height - target) - Math.abs(b.height - target))
   return candidates[0]?.link || null
 }
 
 function applySource(url: string, notice?: string) {
   if (!url || url === playerSource.value) return
+  // A fresh source is being tried — retire the "unplayable" panel until (and
+  // unless) this one also fails.
+  playbackBlocked.value = null
   void router.replace({
     query: {
       ...route.query,
@@ -487,9 +750,228 @@ function ensureFastStartSource() {
   }
 }
 
+function handleSubtitleSyncFeedback(feedback: SubtitleSyncFeedback) {
+  const type = item.value?.type
+  if (type !== 'movie' && type !== 'series') return
+  void reportSubtitleSync({
+    type: type as ContentType,
+    objectId: item.value?.id || 0,
+    episodeId: currentEpisode.value?.id || 0,
+    feedback,
+  })
+}
+
+function handleReportIssue(payload: { problemType: ReportProblemType, detail: string }) {
+  const type = item.value?.type
+  if (type !== 'movie' && type !== 'series') return
+  void reportIssue({
+    type: type as ContentType,
+    objectId: item.value?.id || 0,
+    slug: item.value?.slug || slug.value,
+    episodeId: currentEpisode.value?.id || 0,
+    problemType: payload.problemType,
+    version: activeVersion.value?.kind || String(route.query.version || ''),
+    sourceUrl: String(route.query.source || activeVersion.value?.url || playerSource.value || ''),
+    detail: payload.detail,
+  })
+}
+
+/**
+ * No browser-decodable mirror exists for this title in the current browser. Ask
+ * the backend to re-crawl a browser-safe (H.264 MP4/HLS) source so the next
+ * viewer — and this viewer after a refresh — gets a playable encode. Silent and
+ * best-effort; fired at most once per episode/version.
+ */
+function selfHealPlaybackGap() {
+  if (reportedPlaybackGap) return
+  const type = item.value?.type
+  if (type !== 'movie' && type !== 'series') return
+  reportedPlaybackGap = true
+  void reportIssue({
+    type: type as ContentType,
+    objectId: item.value?.id || 0,
+    slug: item.value?.slug || slug.value,
+    episodeId: currentEpisode.value?.id || 0,
+    problemType: 'playback',
+    version: activeVersion.value?.kind || String(route.query.version || ''),
+    sourceUrl: String(route.query.source || playerSource.value || ''),
+    detail: 'auto: no browser-decodable source; requesting H.264 re-crawl',
+  })
+}
+
+/**
+ * Ask the backend to rewrap the failed source into HLS and play that instead.
+ *
+ * Resolves true once a session is playing. Every caller is a dead end in
+ * handleSourceFailed — a file this browser has definitively refused — so a
+ * false here means there really is nothing left to try.
+ */
+async function tryGatewayPlayback(
+  failedUrl: string,
+  options: { position?: number, silent?: boolean, force?: boolean } = {},
+) {
+  if (mode.value === 'trailer' || gatewayPending.value) return false
+  const type = item.value?.type
+  if (!item.value || (type !== 'movie' && type !== 'series')) return false
+  const source = String(failedUrl || '').trim()
+  // A gateway URL must never be fed back into the gateway.
+  if (!source || isGatewayUrl(source)) return false
+
+  const episodeId = type === 'series' ? currentEpisode.value?.id || 0 : 0
+  const kind: ContentType | 'episode' = episodeId ? 'episode' : type
+  const id = episodeId || item.value.id
+  if (!id) return false
+
+  // One attempt per source, or a failing gateway would be retried forever.
+  // Reopening a *working* session at a chunk boundary passes force.
+  const key = `${kind}:${id}:${source}`
+  if (!options.force && gatewayAttempted.has(key)) return false
+  gatewayAttempted.add(key)
+
+  gatewayPending.value = true
+  if (!options.silent) {
+    showPlayerNotice('در حال آماده‌سازی پخش سازگار با این مرورگر…', 15_000)
+  }
+  try {
+    const session = await openGatewayStream({
+      kind,
+      id,
+      url: source,
+      // Nothing has played yet on a first failure, so fall back to the saved
+      // resume point rather than restarting a half-watched film from zero.
+      position: Math.max(0, Math.floor(options.position || resumeSeconds.value || 0)),
+    })
+    gatewayOriginUrl = source
+    gatewaySession.value = session
+    playbackBlocked.value = null
+    if (!options.silent) showPlayerNotice('پخش سازگار با این مرورگر فعال شد.')
+    return true
+  }
+  catch (error) {
+    gatewaySession.value = null
+    showPlayerNotice(gatewayMessageFor((error as { code?: string })?.code || ''))
+    return false
+  }
+  finally {
+    gatewayPending.value = false
+  }
+}
+
+/**
+ * The backend's verdict for the source it actually tested, with that source.
+ *
+ * ``playback_gate`` probes every published link and records what it found, so
+ * for most titles the answer is already known before this page loads. Null
+ * when the player is on something the backend never ruled on — a trailer, a
+ * hand-picked ``?source=``, a mirror chosen after a failure — because a verdict
+ * about one file says nothing about another.
+ */
+const gatedPlayback = computed(() => {
+  if (mode.value === 'trailer') return null
+  const target = item.value?.type === 'series' ? currentEpisode.value : item.value
+  const url = String(target?.hls_url || '').trim()
+  const verdict = target?.playback_mode
+  if (!url || !verdict) return null
+  return { url, verdict }
+})
+
+/**
+ * Should this browser go through the gateway before the first frame?
+ *
+ * Until now the gateway was only ever reached from handleSourceFailed, so a
+ * viewer whose file was never going to play watched the player try, stall and
+ * fail first. When the backend has already proved the file needs a rewrap,
+ * there is nothing to learn from repeating that.
+ */
+function shouldPrerouteGateway() {
+  const gated = gatedPlayback.value
+  if (!gated || gated.verdict !== 'gateway') return false
+  if (gatewaySession.value || gatewayPending.value) return false
+  // The verdict is about the file, not about this browser. Chromium with
+  // hardware HEVC plays plenty of what Safari refuses, and remuxing for it
+  // would buy nothing and cost a session.
+  if (!prefersBrowserSafeContainers() && !codecLikelyUnsupported(gated.url)) return false
+  return playerSource.value === gated.url
+}
+
+watch([playerSource, gatedPlayback], () => {
+  if (!import.meta.client || !shouldPrerouteGateway()) return
+  void tryGatewayPlayback(gatedPlayback.value!.url, { silent: true })
+}, { immediate: true })
+
+/**
+ * A gateway session covers a bounded stretch of film, so reaching its end is
+ * usually a chunk boundary rather than the end of the title. Reopening at the
+ * playhead is the same call a seek makes.
+ */
+async function continueGatewaySession() {
+  const session = gatewaySession.value
+  if (!session || !gatewayOriginUrl) return false
+  // Genuinely finished — within a segment's slack of the real runtime.
+  if (session.duration > 0 && lastPositionSeconds >= session.duration - 10) return false
+  return tryGatewayPlayback(gatewayOriginUrl, {
+    position: lastPositionSeconds,
+    silent: true,
+    force: true,
+  })
+}
+
+/** The viewer aimed at a moment this session does not contain: reopen there. */
+async function handleSeekBeyondWindow(filmSeconds: number) {
+  if (!gatewayOriginUrl) return
+  lastPositionSeconds = filmSeconds
+  showPlayerNotice('در حال انتقال به این لحظه…', 15_000)
+  const moved = await tryGatewayPlayback(gatewayOriginUrl, {
+    position: filmSeconds,
+    silent: true,
+    force: true,
+  })
+  if (!moved) showPlayerNotice('انتقال به این لحظه ممکن نشد. کمی بعد دوباره تلاش کن.')
+}
+
+// A paused viewer stops pulling segments, and a session nobody is requesting is
+// reaped as "viewer left". Re-reading the playlist is the cheapest thing that
+// counts as presence, and it costs one small request a minute.
+let gatewayHeartbeat: ReturnType<typeof setInterval> | undefined
+
+watch(() => gatewaySession.value?.playlist || '', (playlist) => {
+  if (gatewayHeartbeat) clearInterval(gatewayHeartbeat)
+  gatewayHeartbeat = undefined
+  if (!playlist || !import.meta.client) return
+  gatewayHeartbeat = setInterval(() => {
+    fetch(playlist, { method: 'GET', cache: 'no-store', credentials: 'omit' }).catch(() => {})
+  }, 30_000)
+})
+
 function handleSourceFailed(payload: { src: string, code: number }) {
   const failed = String(payload?.src || playerSource.value || '').trim()
+  // The gateway stream itself broke — nearly always a session reaped while the
+  // viewer sat paused. Reopening at the playhead is cheap and invisible. Note
+  // the session has to be cleared before any fallback, or playerSource would
+  // go on preferring the dead playlist over whatever we pick instead.
+  if (failed && isGatewayUrl(failed)) {
+    // A reopen is already in flight for this stream — a chunk boundary or a
+    // seek — and it can legitimately take tens of seconds while ffmpeg warms
+    // up. The player's stall watchdog will have fired by then on a playlist
+    // that is deliberately dead. Leave the session alone: tearing it down here
+    // would cancel nothing (the request is already out) and would drop the
+    // viewer onto a mirror the moment the gateway was about to answer.
+    if (gatewayPending.value) return
+    const origin = gatewayOriginUrl
+    gatewaySession.value = null
+    if (origin) {
+      void tryGatewayPlayback(origin, { position: lastPositionSeconds, silent: true, force: true })
+        .then((ok) => {
+          // Reopening failed: hand the *original* file back to the normal
+          // mirror logic. It cannot recurse here — origin is not a gateway URL.
+          if (!ok) handleSourceFailed({ src: origin, code: Number(payload?.code) || 0 })
+        })
+      return
+    }
+  }
   if (failed) failedPlaybackSources.add(failed)
+  const failedCode = Number(payload?.code) || 0
+  const failedFamily = videoCodecFamily(failed)
   // A network timeout/stall is an origin-level failure. Cycling through six
   // qualities on the same unreachable CDN only turns a 10s deadline into a
   // minute-long spinner, so prefer another mirror immediately.
@@ -502,6 +984,15 @@ function handleSourceFailed(payload: { src: string, code: number }) {
         }
       }
     } catch { /* malformed URLs are already rejected by normal filtering */ }
+  }
+  // Decode/unsupported failures: retire every mirror with the same codec so the
+  // next pick jumps straight to a decodable encode instead of churning HEVC files.
+  if (failed && failedFamily && (failedCode === 3 || failedCode === 4)) {
+    for (const link of episodeScopedLinks.value) {
+      if (link.url && videoCodecFamily(link.url, link.quality, link.label) === failedFamily) {
+        failedPlaybackSources.add(link.url)
+      }
+    }
   }
   const notFailed = (link: DownloadLink) => (
     Boolean(link.url)
@@ -519,11 +1010,39 @@ function handleSourceFailed(payload: { src: string, code: number }) {
     applySource(next.url, 'منبع سازگارتر برای این مرورگر فعال شد')
     return
   }
-  if (prefersBrowserSafeContainers() && /\.mkv(?:\?|$)/i.test(failed)) {
-    showPlayerNotice('فایرفاکس/سافاری فایل MKV را پخش نمی‌کند. کیفیت MP4 را از تنظیمات بزن یا از Chrome استفاده کن.')
+  // Every mirror is spent. When the viewer is somewhere these CDNs do not
+  // serve, that is the likeliest reason and the only one they can act on, so
+  // it is said again here even if they closed the notice on arrival.
+  revealRegionNotice()
+  // Before giving up on this browser, let the backend rewrap the file into
+  // HLS — that is the whole point of the gateway, and it is only reached here,
+  // after a real failure on a real file.
+  if (failedFamily === 'hevc' || failedFamily === 'av1') {
+    showPlayerNotice('این فایل با کُدک HEVC/AV1 انکود شده؛ در حال آماده‌سازی نسخهٔ سازگار با این مرورگر…', 15_000)
+    void tryGatewayPlayback(failed, { position: lastPositionSeconds, silent: true }).then((ok) => {
+      if (ok) return
+      playbackBlocked.value = { family: failedFamily, container: '' }
+      showPlayerNotice('این مرورگر نمی‌تواند این فایل را رمزگشایی کند. نسخهٔ سازگار در حال آماده‌سازی است.')
+      selfHealPlaybackGap()
+    })
     return
   }
-  showPlayerNotice('این مرورگر این فایل را پخش نکرد. کیفیت یا نسخه دیگری را از تنظیمات انتخاب کن.')
+  if (prefersBrowserSafeContainers() && /\.mkv(?:\?|$)/i.test(failed)) {
+    showPlayerNotice('این مرورگر فایل MKV را پخش نمی‌کند؛ در حال آماده‌سازی نسخهٔ سازگار…', 15_000)
+    void tryGatewayPlayback(failed, { position: lastPositionSeconds, silent: true }).then((ok) => {
+      if (ok) return
+      playbackBlocked.value = { family: failedFamily, container: 'mkv' }
+      showPlayerNotice('این نسخه از مرورگر فایل MKV را پخش نمی‌کند. نسخهٔ سازگار در حال آماده‌سازی است؛ به‌روزرسانی مرورگر یا iOS هم مشکل را حل می‌کند.')
+      selfHealPlaybackGap()
+    })
+    return
+  }
+  showPlayerNotice('این مرورگر این فایل را پخش نکرد؛ در حال آماده‌سازی نسخهٔ سازگار…', 15_000)
+  void tryGatewayPlayback(failed, { position: lastPositionSeconds, silent: true }).then((ok) => {
+    if (ok) return
+    showPlayerNotice('این مرورگر این فایل را پخش نکرد. نسخهٔ سازگار به‌صورت خودکار در حال آماده‌سازی است؛ کمی بعد دوباره تلاش کن.')
+    selfHealPlaybackGap()
+  })
 }
 
 function handleBufferHealth(aheadSeconds: number) {
@@ -555,7 +1074,7 @@ function selectQuality(quality: PlaybackQuality) {
   }
   const match = quality === 'auto'
     ? pickBestLink(links)
-    : links.find(link => qualityMatches(link.quality, quality)) || pickBestLink(links)
+    : pickBestLink(links.filter(link => qualityMatches(link.quality, quality))) || pickBestLink(links)
   if (match?.url && match.url !== playerSource.value) {
     applySource(
       match.url,
@@ -580,6 +1099,7 @@ function selectVersion(version: PlaybackVersion) {
 }
 
 function handlePlaybackStart(progress: number) {
+  playbackBlocked.value = null
   if (!item.value) return
   if (mode.value === 'trailer') trackTrailerPlay(item.value)
   else {
@@ -603,18 +1123,32 @@ function handlePlaybackProgress(progress: number) {
 }
 
 function handlePlaybackPosition(snapshot: { position_seconds: number, duration_seconds: number }) {
-  if (!item.value || mode.value !== 'full' || snapshot.duration_seconds <= 0) return
-  const progress = snapshot.position_seconds / snapshot.duration_seconds * 100
-  watchProgress.upsert(
-    item.value,
-    progress,
-    currentEpisode.value?.id,
-    snapshot.position_seconds,
-    snapshot.duration_seconds,
-  )
+  // The player already reports film time, so a gateway session needs no
+  // translation here — it only means this number can outrun the media's own
+  // duration, which is exactly what we want recorded.
+  const position = Math.max(0, Number(snapshot?.position_seconds) || 0)
+  const duration = Math.max(0, Number(snapshot?.duration_seconds) || 0)
+  // Recorded before the guards below, so a gateway reopen always resumes from
+  // where the viewer actually was.
+  lastPositionSeconds = position
+  if (!item.value || mode.value !== 'full' || duration <= 0) return
+  watchProgress.upsert(item.value, position / duration * 100, currentEpisode.value?.id, position, duration)
 }
 
 function handlePlaybackComplete(progress: number) {
+  // A gateway session ends at its chunk boundary, not at the end of the film.
+  // Treating that as "watched" would wipe the progress and auto-advance to the
+  // next episode mid-film, so reopen at the playhead instead.
+  if (gatewaySession.value) {
+    void continueGatewaySession().then((reopened) => {
+      if (!reopened) finishPlayback(progress)
+    })
+    return
+  }
+  finishPlayback(progress)
+}
+
+function finishPlayback(progress: number) {
   if (item.value && mode.value === 'full') {
     trackWatchProgress(item.value, progress, 'complete')
     watchProgress.remove(item.value.id, item.value.type)
@@ -658,9 +1192,70 @@ function scheduleSoftsubRetry() {
   clearSoftsubRetry()
   softsubRetryTimer = window.setTimeout(() => {
     softsubRetryTimer = undefined
-    if (!item.value || activeSubtitleSourceTracks.value.length) return
+    if (!item.value || activeSubtitleSourceTracks.value.length || activeVersionIsDub.value) return
+    if (embeddedPersianAvailable || softsubExhausted) return
     void runPlaybackSubtitleEnsure({ showBanner: false })
   }, backoffMs)
+}
+
+function clearEmbeddedProbeWait() {
+  if (embeddedProbeTimer) window.clearTimeout(embeddedProbeTimer)
+  embeddedProbeTimer = undefined
+}
+
+function resetEmbeddedSubtitleProbe() {
+  clearEmbeddedProbeWait()
+  embeddedPersianAvailable = false
+  embeddedProbeSettled = false
+  pendingSoftsubEnsure = null
+}
+
+function flushPendingSoftsubEnsure() {
+  clearEmbeddedProbeWait()
+  const pending = pendingSoftsubEnsure
+  pendingSoftsubEnsure = null
+  if (!pending || embeddedPersianAvailable) return
+  if (!item.value || activeSubtitleSourceTracks.value.length || activeVersionIsDub.value) return
+  void runPlaybackSubtitleEnsure(pending)
+}
+
+/** Entry point for the automatic subtitle hunt: holds it until the player has
+ *  looked inside the file (or a short timeout), then runs it only if needed. */
+function requestPlaybackSubtitleEnsure(options: { showBanner?: boolean } = {}) {
+  if (embeddedPersianAvailable) return
+  if (embeddedProbeSettled) {
+    void runPlaybackSubtitleEnsure(options)
+    return
+  }
+  pendingSoftsubEnsure = options
+  if (!embeddedProbeTimer) {
+    embeddedProbeTimer = window.setTimeout(() => {
+      embeddedProbeTimer = undefined
+      embeddedProbeSettled = true
+      flushPendingSoftsubEnsure()
+    }, EMBEDDED_PROBE_WAIT_MS)
+  }
+}
+
+function handleEmbeddedSubtitles(payload: { src: string, probed: boolean, count: number, persian: boolean }) {
+  embeddedProbeSettled = true
+  if (!payload.persian) {
+    // Fell back to a file without the Persian track (mirror/gateway): the
+    // cues left with the old file, so the server hunt is needed again.
+    if (embeddedPersianAvailable && mode.value === 'full') pendingSoftsubEnsure ??= { showBanner: false }
+    embeddedPersianAvailable = false
+    flushPendingSoftsubEnsure()
+    return
+  }
+  embeddedPersianAvailable = true
+  pendingSoftsubEnsure = null
+  clearEmbeddedProbeWait()
+  // Late probe: an ensure may already be polling — stop it, the file has cues.
+  softsubRequestEpoch += 1
+  clearSoftsubPoll()
+  clearSoftsubRetry()
+  clearSoftsubBanner()
+  dismissPlayerToast()
 }
 
 function resetSoftsubRetry() {
@@ -671,8 +1266,10 @@ function resetSoftsubRetry() {
 function handleSoftsubVisibility() {
   if (document.visibilityState !== 'visible') return
   if (!item.value || mode.value === 'trailer') return
+  if (activeVersionIsDub.value) return
   if (activeSubtitleSourceTracks.value.length || softsubEnsureRounds >= SOFTSUB_ENSURE_MAX_ROUNDS) return
-  if (softsubPollTimer || softsubRetryTimer) return
+  if (softsubPollTimer || softsubRetryTimer || pendingSoftsubEnsure) return
+  if (embeddedPersianAvailable || softsubExhausted) return
   void runPlaybackSubtitleEnsure({ showBanner: false })
 }
 
@@ -750,7 +1347,7 @@ function startSoftsubPoll(options: { maxAttempts?: number, intervalMs?: number, 
       return
     }
     if (attempts === retryAt) showSoftsubBanner('retrying', 0)
-    void pollSoftsubOnce()
+    void pollSoftsubOnce(softsubRequestEpoch)
   }, intervalMs)
 }
 
@@ -789,7 +1386,7 @@ function applySoftsubWhenReady() {
   }
 }
 
-async function pollSoftsubOnce() {
+async function pollSoftsubOnce(requestEpoch = softsubRequestEpoch) {
   if (!item.value) return false
   // Read-only status check: never re-queues extraction, calls providers, or
   // increments the viewer report while the video buffer is filling.
@@ -800,13 +1397,19 @@ async function pollSoftsubOnce() {
       episodeId: currentEpisode.value?.id || 0,
       reportId: softsubReportId,
     })
+    if (requestEpoch !== softsubRequestEpoch) return false
     if (result?.subtitle_tracks?.length && injectEnsuredSubtitleTracks(result.subtitle_tracks)) {
       applySoftsubWhenReady()
       return true
     }
+    if (result?.status === 'exhausted') {
+      stopSoftsubHuntExhausted(true)
+      return false
+    }
     if (result?.has_subtitle_tracks || result?.status === 'ready') {
       // Tracks exist server-side but weren't inlined — one targeted detail fetch.
       const adapted = await loadItemFromApi(slug.value, item.value.type, { softsubPoll: true })
+      if (requestEpoch !== softsubRequestEpoch) return false
       if (!adapted) return false
       const episodeId = currentEpisode.value?.id
       const tracks = item.value.type === 'movie'
@@ -829,8 +1432,21 @@ async function pollSoftsubOnce() {
   return false
 }
 
+function stopSoftsubHuntExhausted(showBanner: boolean) {
+  softsubExhausted = true
+  clearSoftsubPoll()
+  clearSoftsubRetry()
+  dismissPlayerToast()
+  if (showBanner) showSoftsubBanner('failed', 6000)
+  else clearSoftsubBanner()
+}
+
 async function runPlaybackSubtitleEnsure(options: { showBanner?: boolean } = {}) {
   if (!item.value) return
+  // Never import subtitles onto a Farsi dub — the audio already carries Persian.
+  if (activeVersionIsDub.value) return
+  if (embeddedPersianAvailable || softsubExhausted) return
+  const requestEpoch = softsubRequestEpoch
   const showBanner = options.showBanner !== false
   if (showBanner) {
     showSoftsubBanner('finding', 0)
@@ -845,14 +1461,28 @@ async function runPlaybackSubtitleEnsure(options: { showBanner?: boolean } = {})
       sourceUrl: String(route.query.source || activeVersion.value?.url || playerSource.value || ''),
       sync: true,
     })
+    if (requestEpoch !== softsubRequestEpoch) return
     softsubReportId = result?.report_id || softsubReportId
     if (result?.subtitle_tracks?.length && injectEnsuredSubtitleTracks(result.subtitle_tracks)) {
       applySoftsubWhenReady()
       return
     }
     if (result?.has_subtitle_tracks || result?.status === 'ready') {
-      const ready = await pollSoftsubOnce()
+      const ready = await pollSoftsubOnce(requestEpoch)
+      if (requestEpoch !== softsubRequestEpoch) return
       if (ready) return
+    }
+    if (result?.status === 'exhausted') {
+      stopSoftsubHuntExhausted(showBanner)
+      return
+    }
+    if (result?.status === 'not_needed') {
+      // Dubbed stream or a Persian-language title: nothing to find, stay quiet.
+      softsubExhausted = true
+      clearSoftsubPoll()
+      clearSoftsubBanner()
+      dismissPlayerToast()
+      return
     }
     if (result?.status === 'burned_in' && !result?.queued) {
       clearSoftsubPoll()
@@ -884,7 +1514,20 @@ async function runPlaybackSubtitleEnsure(options: { showBanner?: boolean } = {})
   }
 }
 
+// A throw inside the player (or its handlers) must never escalate to Nuxt's
+// hydration error handler — before app:suspense:resolve that swaps the whole
+// page for the 500 screen. Log it and keep the page; the player's own
+// fallbacks (native src, mirrors, gateway) still run.
+onErrorCaptured((error, _instance, info) => {
+  console.error('[watch] player error contained:', info, error)
+  reportClientDiag('contained-error', { info: String(info || '') }, error)
+  return false
+})
+
 onMounted(() => {
+  // Answered by the CDN edge, so it costs no origin round-trip and never
+  // delays playback: the player starts while this is still in flight.
+  void resolveRegion()
   ensureFastStartSource()
   // Prefer Soft/Hard subtitle playback so Persian text is always visible:
   // 1) SoftSub with WebVTT cues, or 2) HardSub burned-in when no VTT yet.
@@ -924,17 +1567,41 @@ onMounted(() => {
   const needsSoftsubEnsure = mode.value === 'full'
     && import.meta.client
     && !activeSubtitleSourceTracks.value.length
+    && !activeVersionIsDub.value
 
   if (needsSoftsubEnsure) {
-    void runPlaybackSubtitleEnsure({ showBanner: true })
+    requestPlaybackSubtitleEnsure({ showBanner: true })
   }
   document.addEventListener('visibilitychange', handleSoftsubVisibility)
 })
 
-watch([() => currentEpisode.value?.id, () => activeVersion.value?.id], () => {
+watch([() => currentEpisode.value?.id, () => activeVersion.value?.id], (current, previous) => {
   autoUpgradeDone = false
   failedPlaybackSources.clear()
+  reportedPlaybackGap = false
+  // A session belongs to one file. Carrying it into another episode or version
+  // would keep playing the old one, since it outranks every direct source.
+  gatewaySession.value = null
+  gatewayOriginUrl = ''
+  gatewayAttempted.clear()
+  lastPositionSeconds = 0
   ensureFastStartSource()
+  if (!import.meta.client || mode.value !== 'full') return
+  const episodeChanged = current[0] !== previous?.[0]
+  const versionChanged = current[1] !== previous?.[1]
+  if (!episodeChanged && !versionChanged) return
+
+  softsubRequestEpoch += 1
+  clearSoftsubPoll()
+  clearSoftsubBanner()
+  resetSoftsubRetry()
+  // New file: its embedded tracks and the server verdict are unknown again.
+  resetEmbeddedSubtitleProbe()
+  softsubExhausted = false
+  if (episodeChanged) softsubReportId = null
+  if (activeSubtitleSourceTracks.value.length) return
+  if (activeVersionIsDub.value) return
+  requestPlaybackSubtitleEnsure({ showBanner: true })
 })
 
 // When the viewer switches episode and SoftSub is still missing, re-trigger ensure.
@@ -942,19 +1609,14 @@ watch(() => confirmed.value, (isConfirmed, wasConfirmed) => {
   if (!import.meta.client || mode.value !== 'full') return
   if (!isConfirmed || wasConfirmed) return
   if (activeSubtitleSourceTracks.value.length) return
-  void runPlaybackSubtitleEnsure({ showBanner: true })
-})
-
-watch(() => currentEpisode.value?.id, (episodeId, previousId) => {
-  if (!import.meta.client || mode.value !== 'full') return
-  if (!episodeId || episodeId === previousId) return
-  softsubReportId = null
-  resetSoftsubRetry()
-  if (activeSubtitleSourceTracks.value.length) return
-  void runPlaybackSubtitleEnsure({ showBanner: true })
+  if (activeVersionIsDub.value) return
+  requestPlaybackSubtitleEnsure({ showBanner: true })
 })
 
 onBeforeUnmount(() => {
+  softsubRequestEpoch += 1
+  clearEmbeddedProbeWait()
+  if (gatewayHeartbeat) clearInterval(gatewayHeartbeat)
   if (toastTimer) window.clearTimeout(toastTimer)
   if (softsubBannerTimer) window.clearTimeout(softsubBannerTimer)
   clearSoftsubPoll()
@@ -965,7 +1627,14 @@ onBeforeUnmount(() => {
 useSeoMeta({
   title: () => item.value ? `${mode.value === 'trailer' ? 'تریلر' : 'تماشای'} ${item.value.title}` : 'پخش',
   description: () => item.value?.description || '',
+  // The player is a view of the title page, not a page of its own: keep it out
+  // of the index and hand every signal to the movie/series URL.
+  robots: 'noindex, follow',
 })
+const seoSiteUrl = useRuntimeConfig().public.siteUrl
+useHead(() => (item.value?.slug ? {
+  link: [{ rel: 'canonical', href: absoluteUrl(seoSiteUrl, detailPath.value) }],
+} : {}))
 </script>
 
 <template>
@@ -1002,6 +1671,13 @@ useSeoMeta({
           :active-version-id="activeVersion?.id || ''"
           :episodes="mode === 'full' && item.type === 'series' ? playbackEpisodes : []"
           :active-episode-id="currentEpisode?.id || 0"
+          :content-type="item.type"
+          :can-report="mode === 'full'"
+          :timeline-offset="gatewaySession?.start || 0"
+          :timeline-total="gatewaySession?.duration || 0"
+          :source-at-playhead="Boolean(gatewaySession)"
+          :timeline-back-seconds="gatewaySession?.keepBehindSeconds || 0"
+          @seek-beyond-window="handleSeekBeyondWindow"
           @play="handlePlaybackStart"
           @pause="handlePlaybackPause"
           @progress="handlePlaybackProgress"
@@ -1013,6 +1689,9 @@ useSeoMeta({
           @episode-request="selectEpisode"
           @notice="showPlayerNotice"
           @source-failed="handleSourceFailed"
+          @sync-feedback="handleSubtitleSyncFeedback"
+          @report-issue="handleReportIssue"
+          @embedded-subtitles="handleEmbeddedSubtitles"
         />
       </div>
 
@@ -1098,7 +1777,83 @@ useSeoMeta({
             <span class="watch-msg__ttl" aria-hidden="true" />
           </div>
         </Transition>
+
+        <Transition
+          enter-active-class="watch-msg-enter"
+          leave-active-class="watch-msg-leave"
+        >
+          <aside
+            v-if="sourceNotice"
+            class="watch-msg overflow-hidden text-white"
+            role="status"
+            aria-live="polite"
+          >
+            <div class="watch-msg__row">
+              <span class="watch-msg__icon" aria-hidden="true">
+                <span class="watch-msg__spinner" />
+              </span>
+              <div class="watch-msg__body">
+                <p class="watch-msg__title">{{ sourceNotice.title }}</p>
+                <p class="watch-msg__detail">{{ sourceNotice.detail }}</p>
+              </div>
+            </div>
+            <div class="watch-msg__track" aria-hidden="true">
+              <div class="watch-msg__progress" />
+            </div>
+          </aside>
+        </Transition>
       </div>
+
+      <Transition
+        enter-active-class="watch-msg-enter"
+        leave-active-class="watch-msg-leave"
+      >
+        <div
+          v-if="playbackBlocked"
+          class="watch-blocked absolute inset-0 z-40 grid place-items-center bg-black/85 backdrop-blur-sm"
+          role="alertdialog"
+          aria-live="assertive"
+        >
+          <div class="watch-blocked__card mx-4 w-full max-w-md rounded-3xl bg-night-900/95 p-6 text-center text-white ring-1 ring-white/10 shadow-2xl sm:p-8">
+            <span class="mx-auto grid size-14 place-items-center rounded-2xl bg-primary-500/15 text-primary-300 ring-1 ring-primary-400/25">
+              <CinematicIcon name="film" class="size-7" />
+            </span>
+            <h2 class="mt-4 text-xl font-black leading-8">این فایل در مرورگر پخش نمی‌شود</h2>
+            <p class="mt-2 text-sm leading-7 text-secondary">
+              {{ playbackBlocked.container === 'mkv'
+                ? 'این نسخه با ساختار MKV است و این نسخه از مرورگر آن را پخش نمی‌کند (iOS 17.1 به بعد مشکلی ندارد).'
+                : 'این نسخه با کُدک HEVC/x265 انکود شده و مرورگر شما نمی‌تواند آن را رمزگشایی کند.' }}
+              برای تماشای بی‌دردسر، اپ اندروید روایتو یا یک نسخهٔ دیگر را امتحان کنید.
+            </p>
+            <div class="mt-6 flex flex-col gap-3">
+              <NuxtLink
+                to="/app"
+                class="inline-flex items-center justify-center gap-2 rounded-xl bg-primary-500 px-5 py-3 text-sm font-black text-night-950 transition hover:bg-primary-400"
+              >
+                <CinematicIcon name="play" class="size-5" />
+                تماشا در اپ اندروید روایتو
+              </NuxtLink>
+              <a
+                v-if="directDownloadLink"
+                :href="directDownloadLink.url"
+                target="_blank"
+                rel="noopener"
+                class="inline-flex items-center justify-center gap-2 rounded-xl bg-white/10 px-5 py-3 text-sm font-bold text-white ring-1 ring-white/15 transition hover:bg-white/15"
+              >
+                <CinematicIcon name="download" class="size-5" />
+                دانلود مستقیم فایل{{ directDownloadLink.quality ? ` · ${directDownloadLink.quality}` : '' }}
+              </a>
+              <button
+                type="button"
+                class="text-xs font-semibold text-muted underline-offset-4 transition hover:text-secondary hover:underline"
+                @click="playbackBlocked = null"
+              >
+                بستن و امتحان کیفیت/نسخهٔ دیگر
+              </button>
+            </div>
+          </div>
+        </div>
+      </Transition>
     </template>
 
     <section
@@ -1128,6 +1883,7 @@ useSeoMeta({
     </section>
 
     <ConfirmAdultContentModal :open="modalOpen" :title="item.title" @confirm="confirmPlayback" @close="leavePlayer" />
+    <RegionPlaybackModal :open="regionModalOpen" :country-name="regionCountryName" @close="closeRegionNotice" />
   </div>
 </template>
 
@@ -1212,7 +1968,7 @@ useSeoMeta({
 
 .watch-msg__label {
   margin: 0;
-  font-size: 0.625rem;
+  font-size: 0.75rem;
   font-weight: 700;
   letter-spacing: 0.06em;
   color: rgba(255, 255, 255, 0.5);
@@ -1239,7 +1995,7 @@ useSeoMeta({
   border-radius: 0.5rem;
   background: transparent;
   padding: 0.3rem 0.45rem;
-  font-size: 0.6875rem;
+  font-size: 0.75rem;
   font-weight: 700;
   color: rgba(255, 255, 255, 0.55);
   transition: background 0.15s ease, color 0.15s ease;
@@ -1344,13 +2100,13 @@ useSeoMeta({
   }
 
   .watch-msg__detail {
-    font-size: 0.65rem;
+    font-size: 0.75rem;
     line-height: 1.4;
   }
 
   .watch-msg__dismiss {
     padding: 0.2rem 0.3rem;
-    font-size: 0.6rem;
+    font-size: 0.75rem;
   }
 }
 

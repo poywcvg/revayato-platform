@@ -63,15 +63,15 @@ useSeoMeta({
           <aside class="ui-surface grid gap-2 p-3 sm:grid-cols-3 lg:grid-cols-1" aria-label="مسیرهای سریع">
             <NuxtLink to="/movies" class="quick-path-card flex min-h-14 items-center gap-3 px-3">
               <span class="grid size-9 shrink-0 place-items-center rounded-xl bg-primary-500/12 text-brand"><CinematicIcon name="movie" class="size-4.5" /></span>
-              <span><strong class="block text-xs font-black text-ink">فیلم‌ها</strong><small class="text-[10px] text-muted">از کلاسیک تا تازه‌ها</small></span>
+              <span><strong class="block text-xs font-black text-ink">فیلم‌ها</strong><small class="text-[11px] text-muted">از کلاسیک تا تازه‌ها</small></span>
             </NuxtLink>
             <NuxtLink to="/series" class="quick-path-card flex min-h-14 items-center gap-3 px-3">
               <span class="grid size-9 shrink-0 place-items-center rounded-xl bg-primary-500/12 text-brand"><CinematicIcon name="series" class="size-4.5" /></span>
-              <span><strong class="block text-xs font-black text-ink">سریال‌ها</strong><small class="text-[10px] text-muted">قسمت بعدی منتظر توست</small></span>
+              <span><strong class="block text-xs font-black text-ink">سریال‌ها</strong><small class="text-[11px] text-muted">قسمت بعدی منتظر توست</small></span>
             </NuxtLink>
             <NuxtLink to="/actors" class="quick-path-card flex min-h-14 items-center gap-3 px-3">
               <span class="grid size-9 shrink-0 place-items-center rounded-xl bg-primary-500/12 text-brand"><CinematicIcon name="user" class="size-4.5" /></span>
-              <span><strong class="block text-xs font-black text-ink">بازیگران</strong><small class="text-[10px] text-muted">فیلم‌شناسی چهره‌ها</small></span>
+              <span><strong class="block text-xs font-black text-ink">بازیگران</strong><small class="text-[11px] text-muted">فیلم‌شناسی چهره‌ها</small></span>
             </NuxtLink>
           </aside>
         </div>
@@ -106,7 +106,7 @@ useSeoMeta({
         <span class="pointer-events-none absolute -left-16 top-0 -z-10 size-52 rounded-full bg-elevated/35 blur-3xl" aria-hidden="true" />
         <div class="flex flex-col gap-5 sm:flex-row sm:items-center sm:justify-between">
           <div>
-            <p class="text-[11px] font-black tracking-wide text-muted">همین حالا</p>
+            <p class="text-xs font-black tracking-wide text-muted">همین حالا</p>
             <h2 class="mt-1 text-xl font-black text-ink sm:text-2xl">کاتالوگ را باز کن و از تازه‌ترین عنوان‌ها شروع کن</h2>
             <p class="mt-2 max-w-2xl text-sm leading-7 text-secondary">فیلم‌های جدید و به‌روز‌شده اول صفحه اصلی می‌آیند تا همیشه نزدیک‌ترین نسخه را ببینی.</p>
           </div>

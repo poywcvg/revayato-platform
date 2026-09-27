@@ -44,6 +44,12 @@ def main() -> int:
     from apps.catalog.models import Movie
     from apps.catalog.provider_import.catalog_lookup import crawl_myf2m_downloads_for_movie
     from apps.catalog.provider_import.exceptions import ProviderImportError
+    from apps.catalog.refresh_rotation import (
+        forget_failure,
+        is_rotating_failure,
+        recently_failed,
+        remember_failure,
+    )
     from apps.catalog.top_catalog import _has_download_links, _suppress_provider_publish_signals
 
     parser = argparse.ArgumentParser(description=__doc__)
@@ -58,9 +64,13 @@ def main() -> int:
     )
     parser.add_argument(
         '--order',
-        choices=('stale', 'popular'),
-        default='stale',
-        help='stale = least-recently-updated first (full coverage); popular = -popularity first',
+        choices=('hot', 'stale', 'popular'),
+        default='hot',
+        help=(
+            'hot = this week\'s trending + recent releases first (capped, rested), then '
+            'stale rotation; stale = least-recently-updated first (full coverage); '
+            'popular = -popularity first'
+        ),
     )
     args = parser.parse_args()
 
@@ -80,6 +90,15 @@ def main() -> int:
         movie_rows = [m for m in movie_rows if int(m.release_year or 0) >= year_min]
     if args.popularity_min:
         movie_rows = [m for m in movie_rows if float(m.popularity or 0) >= args.popularity_min]
+    # Titles the provider just refused are skipped for a while, otherwise the
+    # same taken-down titles fill the whole slice every round.
+    resting = recently_failed('movie', [m.pk for m in movie_rows])
+    if resting:
+        movie_rows = [m for m in movie_rows if m.pk not in resting]
+    if args.order == 'hot':
+        from apps.catalog.hot_titles import hot_head
+
+        movie_rows = hot_head(movie_rows, 'movie', limit=args.limit or len(movie_rows))
     if args.limit:
         movie_rows = movie_rows[: max(1, args.limit)]
 
@@ -90,7 +109,7 @@ def main() -> int:
         'links_before_total': sum(len(m.download_links or []) for m in movie_rows),
         'grew': 0,
     }
-    print(f'refresh_movies={len(movie_rows)} order={args.order}', flush=True)
+    print(f'refresh_movies={len(movie_rows)} order={args.order} resting={len(resting)}', flush=True)
 
     with _suppress_provider_publish_signals():
         for movie in movie_rows:
@@ -108,6 +127,7 @@ def main() -> int:
                 movie.refresh_from_db(fields=['download_links', 'updated_at', 'has_subtitle', 'is_dubbed'])
                 after = len(movie.download_links or [])
                 stats['ok'] += 1
+                forget_failure('movie', movie.pk)
                 if after > before:
                     stats['grew'] += 1
                 print(
@@ -116,6 +136,8 @@ def main() -> int:
                 )
             except ProviderImportError as exc:
                 stats['failed'] += 1
+                if is_rotating_failure(exc):
+                    remember_failure('movie', movie.pk)
                 print(f'  -> fail {getattr(exc, "code", "")} {exc}', flush=True)
             except Exception as exc:
                 stats['failed'] += 1

@@ -146,6 +146,56 @@ def _equivalents(total_minutes: float) -> list[dict]:
     return items
 
 
+def watch_minutes_by_user(start, end, *, user_ids=None) -> dict[int, float]:
+    """Real watched minutes per user within [start, end].
+
+    Uses the same honest methodology as :func:`build_watch_stats`: for each
+    (user, title) take the *max* progress observed inside the window and
+    multiply by the catalog runtime (``runtime × progress/100``). Completes
+    count as 100%. There is no fabricated per-play constant — a user with no
+    recorded progress simply contributes 0 minutes.
+
+    Returns ``{user_id: minutes}`` for every user with tracked progress.
+    """
+    qs = UserActivityEvent.objects.filter(
+        action__in=WATCH_ACTIONS,
+        object_id__isnull=False,
+        content_type__in=('movie', 'series'),
+        user_id__isnull=False,
+        created_at__gte=start,
+        created_at__lte=end,
+    )
+    if user_ids is not None:
+        qs = qs.filter(user_id__in=list(user_ids))
+
+    snapshots: dict[int, dict[tuple[str, int], float]] = defaultdict(lambda: defaultdict(float))
+    keys: set[tuple[str, int]] = set()
+    for row in qs.values('user_id', 'content_type', 'object_id', 'action', 'progress'):
+        uid = int(row['user_id'])
+        key = (str(row['content_type']), int(row['object_id']))
+        keys.add(key)
+        if row['action'] == 'complete_watch':
+            snapshots[uid][key] = 100.0
+            continue
+        progress = _clamp_progress(row['progress'])
+        if progress > snapshots[uid][key]:
+            snapshots[uid][key] = progress
+
+    durations = _duration_lookup(keys) if keys else {}
+    result: dict[int, float] = {}
+    for uid, title_map in snapshots.items():
+        minutes = 0.0
+        for key, progress in title_map.items():
+            minutes += _minutes_from_progress(progress, durations.get(key, DEFAULT_MOVIE_MINUTES))
+        result[uid] = round(minutes, 1)
+    return result
+
+
+def total_watch_minutes(start, end) -> float:
+    """Aggregate real watched minutes across all users in the window."""
+    return round(sum(watch_minutes_by_user(start, end).values()), 1)
+
+
 def build_watch_stats(user) -> dict:
     now = timezone.now()
     week_start = now - timedelta(days=7)

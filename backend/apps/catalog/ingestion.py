@@ -25,7 +25,8 @@ from .countries import persian_country_name
 from .genres import GENRE_TITLE_BY_SLUG
 from .imdb import enrich_imdb_rating
 from .importer_config import get_importer_settings
-from .localization import ensure_persian_metadata
+from .localization import ensure_persian_metadata, seed_stored_localization
+from .slugs import english_slug_for, is_english_slug
 from .tmdb import TMDBClient, configured_tmdb_client  # noqa: F401 — re-export for callers
 
 logger = logging.getLogger(__name__)
@@ -70,6 +71,36 @@ def persian_genre_title(slug, fallback=''):
     return GENRE_TITLE_BY_SLUG.get(slug) or _EXTRA_GENRE_TITLES.get(slug) or fallback or slug
 
 
+# TMDB "Animation" genre id — the base signal for both anime and Western animation.
+_ANIMATION_GENRE_ID = 16
+
+
+def looks_like_anime(details):
+    """True when TMDB details describe Japanese (or Japanese-style) animation.
+
+    Canonical, low-false-positive signal: the Animation genre (id 16) together
+    with a Japanese origin — original language ``ja`` or ``JP`` among the origin/
+    production countries. This keeps Pixar/DreamWorks out of the anime shelf while
+    catching both anime films and anime series across every import path (TMDB
+    importer, dornatv crawler, provider jobs and the metadata-completion pipeline
+    all funnel through :func:`_upsert_genres`).
+    """
+    genre_ids = {int(item.get('id') or 0) for item in (details.get('genres') or [])}
+    if _ANIMATION_GENRE_ID not in genre_ids:
+        return False
+    if (details.get('original_language') or '').strip().lower() == 'ja':
+        return True
+    codes: set[str] = set()
+    for code in details.get('origin_country') or []:
+        codes.add(str(code or '').strip().upper()[:2])
+    for item in details.get('production_countries') or []:
+        if isinstance(item, dict):
+            codes.add((item.get('iso_3166_1') or '').strip().upper()[:2])
+        else:
+            codes.add(str(item or '').strip().upper()[:2])
+    return 'JP' in codes
+
+
 def localize_tmdb_genres(genres):
     """Rewrite TMDB genre payloads to Persian titles used by the site."""
     localized = []
@@ -112,6 +143,33 @@ MANUAL_PROTECTED_FIELDS = (
     'trailer_external_url', 'spoken_languages', 'production_companies',
     'crew_metadata', 'writers',
 )
+
+
+def _rating_provenance(details, existing):
+    """Persist *where* the score came from, alongside the score itself.
+
+    Without this the columns stay empty and every rating looks equally
+    trustworthy — which is how a TMDB approximation passed for an IMDb number
+    for months. When enrichment did not set a rating this round, the previous
+    provenance is kept rather than blanked: the old value is still what is on
+    the row.
+    """
+    source = (details.get('imdb_rating_source') or '').strip()[:12]
+    if not source:
+        return {
+            'imdb_votes': getattr(existing, 'imdb_votes', None),
+            'imdb_rating_source': getattr(existing, 'imdb_rating_source', '') or '',
+            'imdb_rating_synced_at': getattr(existing, 'imdb_rating_synced_at', None),
+        }
+    try:
+        votes = int(details.get('imdb_votes') or 0) or None
+    except (TypeError, ValueError):
+        votes = None
+    return {
+        'imdb_votes': votes,
+        'imdb_rating_source': source,
+        'imdb_rating_synced_at': timezone.now(),
+    }
 
 
 def _as_rating(value):
@@ -174,6 +232,16 @@ def _upsert_genres(movie, details):
                 genre.title = title
                 genre.save(update_fields=['title'])
             genres.append(genre)
+    # Japanese animation gets the dedicated `anime` genre in addition to
+    # `animation`, so it powers the site's anime shelf while still filtering
+    # under animation. Applies to both movies and series (shared helper).
+    if 'anime' not in seen_slugs and looks_like_anime(details):
+        title = persian_genre_title('anime')
+        genre, created = Genre.objects.get_or_create(slug='anime', defaults={'title': title})
+        if not created and genre.title != title:
+            genre.title = title
+            genre.save(update_fields=['title'])
+        genres.append(genre)
     movie.genres.set(genres)
 
 
@@ -405,6 +473,9 @@ def _upsert_series_credits(series, details, *, import_people_images=True, cast_l
         *[item for item in credits.get('crew') or [] if item.get('job') == 'Director'],
         *(details.get('created_by') or []),
     ]
+    if not people:
+        # Most dramas list no creator; the directors are on the episodes.
+        people = _episode_directors(details)
     for item in people:
         director = _resolve_director(item, slug_suffix='creator')
         if director is None:
@@ -412,6 +483,21 @@ def _upsert_series_credits(series, details, *, import_people_images=True, cast_l
         _persist_person(director, item, download_photos=import_people_images, kind='director')
         directors.append(director)
     series.directors.set(directors)
+
+
+def _episode_directors(details, *, limit=3):
+    """Directors of the most episodes, from TMDB ``aggregate_credits``."""
+    crew = (details.get('aggregate_credits') or {}).get('crew') or []
+    ranked = []
+    for item in crew:
+        episodes = sum(
+            int(job.get('episode_count') or 0)
+            for job in item.get('jobs') or [] if job.get('job') == 'Director'
+        )
+        if episodes:
+            ranked.append((episodes, item))
+    ranked.sort(key=lambda pair: pair[0], reverse=True)
+    return [item for _count, item in ranked[:limit]]
 
 
 def _parse_publish_time(value):
@@ -482,10 +568,24 @@ def maybe_auto_publish(movie, *, enabled):
         or movie.is_published
         or movie.publication_status == Movie.PublicationStatus.ARCHIVED
         or not movie.auto_publish
-        or not movie.ready_for_auto_publish
     ):
         return False
     if movie.scheduled_publish_at and movie.scheduled_publish_at > timezone.now():
+        return False
+    # Ask the hosts whether the sources really play before anyone can click them.
+    # This runs in the importer (a worker), so a few seconds of network is the
+    # right trade for never publishing a dead title; `ready_for_auto_publish`
+    # then reads the stored verdict.
+    from apps.catalog.media_verification import ensure_verified, verification_enabled
+
+    if verification_enabled() and (movie.has_downloads or (movie.video_url or '').strip()):
+        ensure_verified(movie)
+    blockers = movie.auto_publish_blockers
+    if blockers:
+        logger.info(
+            'auto_publish_blocked movie=%s slug=%s blockers=%s',
+            movie.pk, movie.slug, ','.join(blockers),
+        )
         return False
     movie.is_published = True
     movie.publication_status = Movie.PublicationStatus.PUBLISHED
@@ -510,9 +610,19 @@ def _trailer_key_from_details(details):
     return (trailer or {}).get('key') or ''
 
 
+def _origin_countries(details):
+    """Where the title was made — its own rating board is the next authority after IR/US/GB."""
+    countries = [str(code).upper() for code in details.get('origin_country') or [] if code]
+    countries += [
+        str(item.get('iso_3166_1') or '').upper()
+        for item in details.get('production_countries') or [] if isinstance(item, dict)
+    ]
+    return [code for code in dict.fromkeys(countries) if code]
+
+
 def _certification_from_details(details, region=None):
     results = (details.get('release_dates') or {}).get('results') or []
-    preferred = [region or getattr(settings, 'TMDB_REGION', 'IR'), 'US', 'GB']
+    preferred = [region or getattr(settings, 'TMDB_REGION', 'IR'), 'US', 'GB', *_origin_countries(details)]
     by_region = {item.get('iso_3166_1'): item.get('release_dates') or [] for item in results}
     for region in preferred:
         certifications = [
@@ -699,7 +809,11 @@ def build_tmdb_defaults(details, *, movie=None, importer=None):
     tmdb_id = int(details['id'])
     title = (details.get('title') or details.get('original_title') or f'Movie {tmdb_id}').strip()
     release_date = parse_date(details.get('release_date') or '')
-    slug = _unique_slug(Movie, title, tmdb_id, movie.pk if movie else None)
+    slug = english_slug_for(
+        Movie, title=title, original_title=details.get('original_title') or details.get('_english_title') or '',
+        year=release_date.year if release_date else None, tmdb_id=tmdb_id,
+        current_pk=movie.pk if movie else None, current_slug=movie.slug if movie else '',
+    )
     external_ids = details.get('external_ids') or {}
     imdb_id = (external_ids.get('imdb_id') or details.get('imdb_id') or '').strip() or None
     if imdb_id and Movie.objects.filter(imdb_id=imdb_id).exclude(tmdb_id=tmdb_id).exists():
@@ -739,7 +853,8 @@ def build_tmdb_defaults(details, *, movie=None, importer=None):
         'content_format': ContentFormat.ANIMATION if any(int(item.get('id') or 0) == 16 for item in details.get('genres') or []) else ContentFormat.LIVE_ACTION,
         'catalog_type': Movie.CatalogType.DOCUMENTARY if any(int(item.get('id') or 0) == 99 for item in details.get('genres') or []) else Movie.CatalogType.MOVIE,
         'imdb_id': imdb_id,
-        # IMDb-facing score: prefer OMDb/manual enrichment, else TMDB vote_average.
+        # IMDb-facing score: IMDb's own dataset / OMDb / manual, else a TMDB
+        # approximation that the six-hourly sync will replace.
         'imdb_rating': (
             _as_rating(details.get('imdb_rating'))
             if details.get('imdb_rating') not in (None, '')
@@ -750,6 +865,7 @@ def build_tmdb_defaults(details, *, movie=None, importer=None):
             )
         ),
         'rating_average': _as_rating(vote_average),
+        **_rating_provenance(details, movie),
         'vote_count': max(0, int(details.get('vote_count') or 0)),
         'popularity': float(details.get('popularity') or 0),
         'age_rating': _certification_from_details(details, getattr(importer, 'region', None)),
@@ -803,9 +919,10 @@ def upsert_tmdb_movie(
         client=imdb_client,
         enabled=bool(importer.fetch_imdb_ratings),
     )
-    enforce_import_structure(details, content_type='movie')
     tmdb_id = int(details['id'])
     movie = Movie.objects.filter(tmdb_id=tmdb_id).first()
+    seed_stored_localization(details, movie)
+    enforce_import_structure(details, content_type='movie')
     defaults = build_tmdb_defaults(details, movie=movie, importer=importer)
     skipped_fields = []
     changed_fields = []
@@ -820,6 +937,9 @@ def upsert_tmdb_movie(
                     field_name in manual_fields
                     or (was_manual and bool(getattr(movie, field_name)))
                 )
+                # A Persian slug on a hand-made row was never a choice: page
+                # addresses are English. Only a slug set on purpose stays.
+                and not (field_name == 'slug' and 'slug' not in manual_fields and not is_english_slug(movie.slug))
             ):
                 skipped_fields.append(field_name)
                 continue
@@ -925,7 +1045,7 @@ def _series_content_rating(details):
         item.get('iso_3166_1'): (item.get('rating') or '').strip()
         for item in results
     }
-    for region in (getattr(settings, 'TMDB_REGION', 'IR'), 'US', 'GB'):
+    for region in (getattr(settings, 'TMDB_REGION', 'IR'), 'US', 'GB', *_origin_countries(details)):
         if region and by_region.get(region):
             return by_region[region][:20]
     return ''
@@ -936,7 +1056,11 @@ def build_tmdb_series_defaults(details, *, series=None):
     title = (details.get('name') or details.get('original_name') or f'Series {tmdb_id}').strip()
     first_air_date = parse_date(details.get('first_air_date') or '')
     last_air_date = parse_date(details.get('last_air_date') or '')
-    slug = _unique_slug(Series, title, tmdb_id, series.pk if series else None)
+    slug = english_slug_for(
+        Series, title=title, original_title=details.get('original_name') or details.get('_english_title') or '',
+        year=first_air_date.year if first_air_date else None, tmdb_id=tmdb_id,
+        current_pk=series.pk if series else None, current_slug=series.slug if series else '',
+    )
     external_ids = details.get('external_ids') or {}
     imdb_id = (external_ids.get('imdb_id') or '').strip() or None
     if imdb_id and Series.objects.filter(imdb_id=imdb_id).exclude(tmdb_id=tmdb_id).exists():
@@ -958,7 +1082,8 @@ def build_tmdb_series_defaults(details, *, series=None):
         ) else ContentFormat.LIVE_ACTION,
         'status': _series_status(details.get('status')),
         'imdb_id': imdb_id,
-        # IMDb-facing score: prefer OMDb/manual enrichment, else TMDB vote_average.
+        # IMDb-facing score: IMDb's own dataset / OMDb / manual, else a TMDB
+        # approximation that the six-hourly sync will replace.
         'imdb_rating': (
             _as_rating(details.get('imdb_rating'))
             if details.get('imdb_rating') not in (None, '')
@@ -969,6 +1094,7 @@ def build_tmdb_series_defaults(details, *, series=None):
             )
         ),
         'rating_average': _as_rating(details.get('vote_average')),
+        **_rating_provenance(details, series),
         'vote_count': max(0, int(details.get('vote_count') or 0)),
         'popularity': float(details.get('popularity') or 0),
         'age_rating': _series_content_rating(details),
@@ -1063,9 +1189,10 @@ def upsert_tmdb_series(details, *, dry_run=False, imdb_client=None, importer=Non
         client=imdb_client,
         enabled=bool(importer.fetch_imdb_ratings),
     )
-    enforce_import_structure(details, content_type='tv')
     tmdb_id = int(details['id'])
     series = Series.objects.filter(tmdb_id=tmdb_id).first()
+    seed_stored_localization(details, series)
+    enforce_import_structure(details, content_type='tv')
     defaults = build_tmdb_series_defaults(details, series=series)
     previous_meta = dict(series.source_metadata or {}) if series and series.pk else {}
     previous_poster = (previous_meta.get('poster_path') or '') if series else ''
@@ -1106,7 +1233,23 @@ def upsert_tmdb_series(details, *, dry_run=False, imdb_client=None, importer=Non
     return series, created
 
 
-def publish_ready_movies(*, enabled=True):
+def publish_ready_movies(*, enabled=True, limit=0):
+    """Publish drafts that clear the real gate, newest first.
+
+    This used to also require ``rights_verified=True`` and
+    ``media_status=READY``. Measured on production 2026-09-24, **no row in the
+    table has rights_verified=True** (13,702 *published* movies carry
+    ``rights_verified=False, media_status='missing'``), so those two columns are
+    vestigial and the filter made this pass a permanent no-op — it published
+    nothing no matter how ready a title was. The gate that actually decides is
+    ``maybe_auto_publish`` → ``auto_publish_blockers``: Persian title, English
+    title, description, poster, backdrop, genres, cast, a real IMDb score, and a
+    live media probe of the sources. That one is enforced, so it is the one kept.
+
+    ``limit`` caps a single pass. The first run after this change has a large
+    backlog to work through and each candidate costs a network probe, so the
+    caller bounds it rather than publishing the whole archive in one transaction.
+    """
     if not enabled:
         return 0
     published = 0
@@ -1114,9 +1257,9 @@ def publish_ready_movies(*, enabled=True):
         is_published=False,
         publication_status=Movie.PublicationStatus.DRAFT,
         auto_publish=True,
-        rights_verified=True,
-        media_status=MediaStatus.READY,
-    )
+    ).order_by('-popularity', '-id')
+    if limit:
+        queryset = queryset[: int(limit)]
     for movie in queryset.iterator():
         if maybe_auto_publish(movie, enabled=True):
             movie.save(update_fields=['is_published', 'publication_status', 'updated_at'])

@@ -21,6 +21,7 @@ export interface DownloadPlayRequest {
 
 const emit = defineEmits<{
   play: [request: DownloadPlayRequest]
+  download: [quality: string]
 }>()
 
 type LinkGroupId = 'dub' | 'softsub' | 'other'
@@ -337,7 +338,7 @@ function playRequest(link: EnrichedLink): DownloadPlayRequest {
         <h3 :id="`media-access-box-title-${mode}`" class="text-base font-black text-ink sm:text-lg">
           {{ boxTitle }}
         </h3>
-        <p class="mt-0.5 text-[11px] leading-5 text-muted">
+        <p class="mt-0.5 text-xs leading-5 text-muted">
           {{ boxHint }}
         </p>
       </div>
@@ -366,7 +367,7 @@ function playRequest(link: EnrichedLink): DownloadPlayRequest {
           </span>
           <span class="min-w-0 flex-1 text-right">
             <span class="block text-sm font-black text-ink">{{ group.title }}</span>
-            <span class="mt-0.5 block truncate text-[11px] text-muted">{{ group.hint }}</span>
+            <span class="mt-0.5 block truncate text-xs text-muted">{{ group.hint }}</span>
           </span>
           <span class="download-box__group-meta">
             <span class="tabular-nums">{{ group.links.length.toLocaleString('fa-IR') }}</span>
@@ -392,9 +393,9 @@ function playRequest(link: EnrichedLink): DownloadPlayRequest {
               <span class="download-box__quality">{{ link._qualityLabel }}</span>
               <div class="min-w-0 hidden sm:block">
                 <p class="truncate text-sm font-bold text-ink">{{ link.label || link._qualityLabel }}</p>
-                <p v-if="link.size_label" class="mt-0.5 text-[10px] text-muted">حجم: {{ link.size_label }}</p>
+                <p v-if="link.size_label" class="mt-0.5 text-[11px] text-muted">حجم: {{ link.size_label }}</p>
               </div>
-              <p v-if="link.size_label" class="truncate text-[10px] text-muted sm:hidden">حجم: {{ link.size_label }}</p>
+              <p v-if="link.size_label" class="truncate text-[11px] text-muted sm:hidden">حجم: {{ link.size_label }}</p>
             </div>
             <div class="flex shrink-0 items-center">
               <button
@@ -415,6 +416,7 @@ function playRequest(link: EnrichedLink): DownloadPlayRequest {
                 target="_blank"
                 rel="noopener noreferrer"
                 aria-label="دانلود"
+                @click="emit('download', link._qualityLabel)"
               >
                 <CinematicIcon name="download" class="size-3.5" />
                 <span>دانلود</span>
@@ -444,7 +446,7 @@ function playRequest(link: EnrichedLink): DownloadPlayRequest {
           </span>
           <span class="min-w-0 flex-1 text-right">
             <span class="block text-sm font-black text-ink">{{ season.title }}</span>
-            <span class="mt-0.5 block truncate text-[11px] text-muted">
+            <span class="mt-0.5 block truncate text-xs text-muted">
               {{ season.episodeCount.toLocaleString('fa-IR') }} قسمت ·
               {{ season.qualities.length.toLocaleString('fa-IR') }} کیفیت/نسخه
             </span>
@@ -479,7 +481,7 @@ function playRequest(link: EnrichedLink): DownloadPlayRequest {
               </span>
               <span class="min-w-0 flex-1 text-right">
                 <span class="block text-sm font-black text-ink">{{ quality.title }}</span>
-                <span class="mt-0.5 block truncate text-[11px] text-muted">
+                <span class="mt-0.5 block truncate text-xs text-muted">
                   {{ quality.links.length.toLocaleString('fa-IR') }} قسمت · {{ quality.hint }}
                 </span>
               </span>
@@ -512,9 +514,9 @@ function playRequest(link: EnrichedLink): DownloadPlayRequest {
                       {{ episodeLabel(link) }}
                       <span class="text-muted"> · {{ quality.qualityLabel }}</span>
                     </p>
-                    <p v-if="link.size_label" class="mt-0.5 text-[10px] text-muted">حجم: {{ link.size_label }}</p>
+                    <p v-if="link.size_label" class="mt-0.5 text-[11px] text-muted">حجم: {{ link.size_label }}</p>
                   </div>
-                  <p v-if="link.size_label" class="truncate text-[10px] text-muted sm:hidden">حجم: {{ link.size_label }}</p>
+                  <p v-if="link.size_label" class="truncate text-[11px] text-muted sm:hidden">حجم: {{ link.size_label }}</p>
                 </div>
                 <div class="flex shrink-0 items-center">
                   <button
@@ -590,7 +592,7 @@ function playRequest(link: EnrichedLink): DownloadPlayRequest {
   height: 2rem;
   padding-inline: .55rem;
   border-radius: .65rem;
-  font-size: .7rem;
+  font-size: 0.75rem;
   font-weight: 900;
   color: #050807;
   background: color-mix(in srgb, var(--media-accent, #b0e4cc) 78%, white);
@@ -706,7 +708,7 @@ function playRequest(link: EnrichedLink): DownloadPlayRequest {
   align-items: center;
   gap: .35rem;
   color: var(--theme-text-muted);
-  font-size: .7rem;
+  font-size: 0.75rem;
   font-weight: 800;
 }
 
@@ -744,7 +746,7 @@ function playRequest(link: EnrichedLink): DownloadPlayRequest {
   height: 1.85rem;
   padding-inline: .4rem;
   border-radius: .5rem;
-  font-size: .68rem;
+  font-size: 0.75rem;
   font-weight: 900;
   letter-spacing: .02em;
   color: #050807;
@@ -847,7 +849,7 @@ function playRequest(link: EnrichedLink): DownloadPlayRequest {
     min-height: 2.55rem;
     min-width: 0;
     padding-inline: .55rem;
-    font-size: .68rem;
+    font-size: 0.75rem;
   }
 
   .download-box__action span {

@@ -1,3 +1,5 @@
+import type { ContentType } from './catalog'
+
 export interface Rating {
   id: number
   username: string
@@ -7,6 +9,11 @@ export interface Rating {
   review: string
   is_spoiler: boolean
   is_hidden?: boolean
+  admin_reply?: string
+  admin_reply_at?: string | null
+  admin_reply_by_name?: string
+  is_featured?: boolean
+  featured_at?: string | null
   created_at: string
   updated_at: string
 }
@@ -125,4 +132,110 @@ export interface AuthTokens {
 
 export interface AuthSession extends AuthTokens {
   user: Me
+}
+
+// --------------------------------------------------------------------------- //
+//  User collections ("کالکشن") + public profiles
+// --------------------------------------------------------------------------- //
+export type CollectionVisibility = 'public' | 'unlisted' | 'private'
+
+export interface CollectionOwner {
+  username: string
+  avatar: string | null
+}
+
+export interface CollectionItem {
+  id: number
+  content_type: ContentType
+  title: string
+  slug: string
+  poster: string | null
+  site_rating: number | null
+  release_year?: number | null
+  start_year?: number | null
+  note: string
+  position: number
+  added_at: string
+}
+
+export interface UserCollection {
+  id: number
+  slug: string
+  title: string
+  description: string
+  visibility: CollectionVisibility
+  accent: string
+  item_count: number
+  covers: string[]
+  owner: CollectionOwner
+  share_token: string
+  share_url: string
+  is_mine: boolean
+  created_at: string
+  updated_at: string
+  items?: CollectionItem[]
+}
+
+/** A lightweight row for the "add to collection" picker. */
+export interface CollectionPickRow {
+  id: number
+  slug: string
+  title: string
+  visibility: CollectionVisibility
+  accent: string
+  item_count: number
+  contains: boolean
+}
+
+export interface CollectionItemMutation {
+  added?: boolean
+  removed?: boolean
+  item_count: number
+}
+
+export interface CollectionWritePayload {
+  title: string
+  description?: string
+  visibility?: CollectionVisibility
+  accent?: string
+}
+
+export interface PublicProfileReview {
+  content_type: ContentType
+  object_id: number
+  content: {
+    id: number
+    content_type: ContentType
+    title: string
+    slug: string
+    poster: string | null
+    site_rating: number | null
+    release_year?: number | null
+    start_year?: number | null
+  } | null
+  score: number
+  review: string
+  is_spoiler: boolean
+  created_at: string
+}
+
+export interface PublicProfileStats {
+  collections: number
+  public_titles: number
+  ratings: number
+  likes: number | null
+}
+
+export interface PublicProfile {
+  username: string
+  display_name: string
+  avatar: string | null
+  bio: string
+  is_verified: boolean
+  member_since: string
+  is_private: boolean
+  is_self: boolean
+  stats?: PublicProfileStats
+  collections?: UserCollection[]
+  reviews?: PublicProfileReview[]
 }

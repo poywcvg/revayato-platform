@@ -13,6 +13,21 @@ class ImdbChartsTests(SimpleTestCase):
         self.assertAlmostEqual(low_votes, 7.0769, places=3)
 
     def test_rank_chart_orders_by_weighted_score(self):
+        # The Bayesian prior is the mean of the candidate pool, so a realistic
+        # chart needs filler titles: with only two entries the mean sits between
+        # them and the low-vote title is pulled *up* instead of down.
+        filler = [
+            {
+                'imdb_id': f'tt9{index:03d}',
+                'title_type': 'movie',
+                'primary_title': f'Filler {index}',
+                'original_title': f'Filler {index}',
+                'start_year': 1990 + index,
+                'average_rating': 6.5,
+                'num_votes': 200_000,
+            }
+            for index in range(20)
+        ]
         ranked = _rank_chart(
             [
                 {
@@ -33,6 +48,7 @@ class ImdbChartsTests(SimpleTestCase):
                     'average_rating': 9.5,
                     'num_votes': 30_000,
                 },
+                *filler,
             ],
             limit=2,
             min_votes=25_000,

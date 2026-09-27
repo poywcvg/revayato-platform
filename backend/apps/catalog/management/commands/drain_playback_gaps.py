@@ -50,11 +50,12 @@ class Command(BaseCommand):
             stats = drain_playback_subtitle_gaps(dry_run=True, **kwargs)
             self.stdout.write(
                 'DRY RUN: {processed} stale gap(s) found, {resolved} would resolve, '
-                '{re_enqueued} would re-enqueue, {skipped} would be skipped.'.format_map(stats)
+                '{re_enqueued} would re-enqueue, {closed} would close (not needed), '
+                '{exhausted} would retire as exhausted, {skipped} would be skipped.'.format_map(stats)
             )
             return
         stats = drain_playback_subtitle_gaps(**kwargs)
         self.stdout.write(
             'drained {processed} stale gap(s): {resolved} resolved, {re_enqueued} re-enqueued, '
-            '{skipped} skipped.'.format_map(stats)
+            '{closed} closed, {exhausted} exhausted, {skipped} skipped.'.format_map(stats)
         )

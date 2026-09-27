@@ -1,484 +1,270 @@
 <script setup lang="ts">
-import Archive from '~icons/lucide/archive'
-import ClipboardList from '~icons/lucide/clipboard-list'
+import type {
+  AdminMovie,
+  AdminMovieListResponse,
+  MoviePublicationStatus,
+} from '~/types/admin'
 import Film from '~icons/lucide/film'
-import Grid from '~icons/lucide/grid-2x2'
-import List from '~icons/lucide/list'
-import Plus from '~icons/lucide/plus'
-import Refresh from '~icons/lucide/rotate-cw'
 import Search from '~icons/lucide/search'
-import Sparkles from '~icons/lucide/sparkles'
-import type { AdminGenre, AdminMovie, AdminMovieFilters, AdminMovieListResponse, AppErrorDetails, TMDBImportResponse } from '~/types'
+import Star from '~icons/lucide/star'
+import Eye from '~icons/lucide/eye'
+import EyeOff from '~icons/lucide/eye-off'
+import Archive from '~icons/lucide/archive'
+import ExternalLink from '~icons/lucide/external-link'
+import Pencil from '~icons/lucide/pencil'
+import ChevronRight from '~icons/lucide/chevron-right'
+import ChevronLeft from '~icons/lucide/chevron-left'
 
-definePageMeta({ layout: 'admin', middleware: ['staff'] })
-useSeoMeta({ title: 'مدیریت فیلم‌ها', robots: 'noindex, nofollow' })
+definePageMeta({ layout: 'admin', middleware: 'staff' })
+useSeoMeta({ title: 'مدیریت فیلم‌ها — روایتو' })
 
-const route = useRoute()
-const router = useRouter()
-const adminApi = useAdminMovies()
-const notifications = useNotifications()
-const movies = ref<AdminMovie[]>([])
-const genres = ref<AdminGenre[]>([])
-const total = ref(0)
-const loading = ref(true)
-const actionLoading = ref(false)
-const error = ref<AppErrorDetails | null>(null)
-const view = ref<'table' | 'grid'>('table')
-const tmdbOpen = ref(route.query.tmdb === '1')
-const archiveTarget = ref<AdminMovie | null>(null)
-const syncTarget = ref<AdminMovie | null>(null)
-const syncDryRun = ref<TMDBImportResponse | null>(null)
-const syncOverwrite = ref(false)
-const pageSize = 20
-const page = ref(Math.max(1, Number(route.query.page) || 1))
-const filters = reactive<AdminMovieFilters>({
-  q: String(route.query.q || ''),
-  status: (route.query.status as AdminMovieFilters['status']) || '',
-  source: (route.query.source as AdminMovieFilters['source']) || '',
-  type: (route.query.type as AdminMovieFilters['type']) || '',
-  genre: String(route.query.genre || ''),
-  year: String(route.query.year || ''),
-  ordering: String(route.query.ordering || '-updated_at'),
-  limit: pageSize,
-  offset: (page.value - 1) * pageSize,
+const { api } = useApi()
+const notify = useNotifications()
+
+const PAGE_SIZE = 20
+const q = ref('')
+const qDebounced = ref('')
+const statusFilter = ref<'' | MoviePublicationStatus>('')
+const typeFilter = ref('')
+const offset = ref(0)
+
+let searchTimer: ReturnType<typeof setTimeout> | null = null
+watch(q, (val) => {
+  if (searchTimer) clearTimeout(searchTimer)
+  searchTimer = setTimeout(() => { qDebounced.value = val.trim(); offset.value = 0 }, 350)
 })
-let filterTimer: ReturnType<typeof setTimeout> | undefined
+watch([statusFilter, typeFilter], () => { offset.value = 0 })
 
-const hasActiveFilters = computed(() => Boolean(filters.q || filters.status || filters.source || filters.genre || filters.year))
-const publishedOnPage = computed(() => movies.value.filter(movie => movie.publication_status === 'published').length)
-const draftOnPage = computed(() => movies.value.filter(movie => movie.publication_status === 'draft').length)
-
-const statusOptions = [
+const STATUS_OPTIONS: { value: '' | MoviePublicationStatus, label: string }[] = [
   { value: '', label: 'همه وضعیت‌ها' },
+  { value: 'published', label: 'منتشر شده' },
   { value: 'draft', label: 'پیش‌نویس' },
-  { value: 'published', label: 'منتشرشده' },
-  { value: 'archived', label: 'آرشیوشده' },
+  { value: 'archived', label: 'بایگانی' },
 ]
-const sourceOptions = [
-  { value: '', label: 'همه منابع' },
-  { value: 'tmdb', label: 'متصل به TMDB' },
-  { value: 'manual', label: 'ثبت دستی' },
+const TYPE_OPTIONS = [
+  { value: '', label: 'همه انواع' },
+  { value: 'movie', label: 'فیلم' },
+  { value: 'documentary', label: 'مستند' },
+  { value: 'short', label: 'کوتاه' },
 ]
-const orderingOptions = [
-  { value: '-updated_at', label: 'آخرین ویرایش' },
-  { value: '-created_at', label: 'جدیدترین ثبت' },
-  { value: '-release_date', label: 'تاریخ انتشار' },
-  { value: '-rating_average', label: 'بالاترین امتیاز' },
-  { value: '-popularity', label: 'محبوب‌ترین' },
-]
-const yearOptions = computed(() => [
-  { value: '', label: 'همه سال‌ها' },
-  ...Array.from({ length: 40 }, (_, i) => {
-    const year = String(new Date().getFullYear() + 1 - i)
-    return { value: year, label: year }
+
+const { data, pending, error, refresh } = await useAsyncData(
+  'admin-movies',
+  () => api<AdminMovieListResponse>('/admin/movies/', {
+    query: {
+      q: qDebounced.value || undefined,
+      status: statusFilter.value || undefined,
+      type: typeFilter.value || undefined,
+      limit: PAGE_SIZE,
+      offset: offset.value,
+    },
   }),
-])
+  { watch: [qDebounced, statusFilter, typeFilter, offset] },
+)
 
-const selectClass = 'admin-focus h-11 w-full min-w-0 rounded-xl border border-[var(--admin-border)] bg-white px-3 text-xs font-bold outline-none focus:border-[var(--admin-accent)]'
+const rows = computed(() => data.value?.results ?? [])
+const total = computed(() => data.value?.count ?? 0)
+const from = computed(() => (total.value === 0 ? 0 : offset.value + 1))
+const to = computed(() => Math.min(offset.value + PAGE_SIZE, total.value))
 
-onMounted(() => {
-  if (!import.meta.client) return
-  const saved = window.localStorage.getItem('admin-movies-view')
-  if (saved === 'table' || saved === 'grid') view.value = saved
-  if (window.matchMedia('(max-width: 767px)').matches && !saved) view.value = 'grid'
-})
+const busy = ref<Record<number, boolean>>({})
+const fa = (n: number | null | undefined) => (n ?? 0).toLocaleString('fa-IR')
 
-watch(view, (value) => {
-  if (import.meta.client) window.localStorage.setItem('admin-movies-view', value)
-})
+// ----- Bulk selection ----------------------------------------------------- //
+// Scoped to the visible page on purpose: a "select all 4,000" that quietly
+// archives titles the admin never looked at is exactly the mistake the audit
+// trail exists to explain, and it is cheaper not to offer it.
+const selected = ref<number[]>([])
+watch([qDebounced, statusFilter, typeFilter, offset], () => { selected.value = [] })
 
-async function loadMovies() {
-  loading.value = true
-  error.value = null
-  filters.offset = (page.value - 1) * pageSize
-  try {
-    const response: AdminMovieListResponse = await adminApi.list(filters)
-    movies.value = response.results
-    total.value = response.count
-  }
-  catch (cause) {
-    error.value = getAppError(cause, 'فهرست فیلم‌ها دریافت نشد.')
-  }
-  finally {
-    loading.value = false
-  }
+const allSelected = computed(() => rows.value.length > 0 && selected.value.length === rows.value.length)
+function toggleAll() {
+  selected.value = allSelected.value ? [] : rows.value.map(movie => movie.id)
+}
+function toggleOne(id: number) {
+  selected.value = selected.value.includes(id)
+    ? selected.value.filter(value => value !== id)
+    : [...selected.value, id]
+}
+async function afterBulk() {
+  await refresh()
+  selected.value = []
 }
 
-async function loadGenres() {
+const STATUS_TONE: Record<MoviePublicationStatus, 'success' | 'warning' | 'neutral'> = {
+  published: 'success',
+  draft: 'warning',
+  archived: 'neutral',
+}
+const STATUS_LABEL: Record<MoviePublicationStatus, string> = {
+  published: 'منتشر شده',
+  draft: 'پیش‌نویس',
+  archived: 'بایگانی',
+}
+const TYPE_LABEL: Record<string, string> = { movie: 'فیلم', documentary: 'مستند', short: 'کوتاه' }
+
+async function patchMovie(movie: AdminMovie, payload: Record<string, unknown>, okMsg: string) {
+  busy.value = { ...busy.value, [movie.id]: true }
   try {
-    genres.value = await adminApi.genres()
+    await api(`/admin/movies/${movie.id}/`, { method: 'PATCH', body: payload })
+    notify.success('انجام شد', okMsg)
+    await refresh()
   }
   catch {
-    genres.value = []
-  }
-}
-
-function syncQuery() {
-  router.replace({
-    query: {
-      ...(filters.q && { q: filters.q }),
-      ...(filters.status && { status: filters.status }),
-      ...(filters.source && { source: filters.source }),
-      ...(filters.type && { type: filters.type }),
-      ...(filters.genre && { genre: filters.genre }),
-      ...(filters.year && { year: filters.year }),
-      ...(filters.ordering !== '-updated_at' && { ordering: filters.ordering }),
-      ...(page.value > 1 && { page: String(page.value) }),
-      ...(tmdbOpen.value && { tmdb: '1' }),
-    },
-  })
-}
-
-function clearFilters() {
-  Object.assign(filters, {
-    q: '',
-    status: '',
-    source: '',
-    genre: '',
-    year: '',
-    ordering: '-updated_at',
-  })
-}
-
-watch(() => [filters.q, filters.status, filters.source, filters.type, filters.genre, filters.year, filters.ordering], () => {
-  clearTimeout(filterTimer)
-  page.value = 1
-  filterTimer = setTimeout(() => {
-    syncQuery()
-    void loadMovies()
-  }, filters.q ? 400 : 80)
-})
-
-onBeforeUnmount(() => clearTimeout(filterTimer))
-watch(page, () => {
-  syncQuery()
-  void loadMovies()
-})
-watch(() => route.query.tmdb, (value) => {
-  if (value === '1') tmdbOpen.value = true
-})
-
-function edit(movie: AdminMovie) {
-  navigateTo(`/admin/movies/${movie.id}/edit`)
-}
-
-function preview(movie: AdminMovie) {
-  if (movie.publication_status === 'published') {
-    window.open(`/movies/${movie.slug}`, '_blank', 'noopener,noreferrer')
-  }
-  else {
-    edit(movie)
-  }
-}
-
-function closeTmdb() {
-  tmdbOpen.value = false
-  const query = { ...route.query }
-  delete query.tmdb
-  router.replace({ query })
-}
-
-function imported() {
-  void loadMovies()
-}
-
-async function confirmArchive() {
-  if (!archiveTarget.value) return
-  actionLoading.value = true
-  try {
-    await adminApi.archive(archiveTarget.value.id)
-    notifications.success('فیلم حذف شد', 'فیلم از نمایش عمومی خارج شد و در آرشیو باقی ماند.')
-    archiveTarget.value = null
-    await loadMovies()
-  }
-  catch (cause) {
-    notifications.notifyError(cause, 'حذف انجام نشد')
+    notify.error('خطا', 'عملیات ناموفق بود')
   }
   finally {
-    actionLoading.value = false
+    busy.value = { ...busy.value, [movie.id]: false }
   }
 }
 
-async function setStatus(movie: AdminMovie, status: 'draft' | 'published') {
-  actionLoading.value = true
+function togglePublish(movie: AdminMovie) {
+  const next: MoviePublicationStatus = movie.publication_status === 'published' ? 'draft' : 'published'
+  patchMovie(movie, { publication_status: next }, next === 'published' ? 'منتشر شد' : 'به پیش‌نویس منتقل شد')
+}
+function toggleFeatured(movie: AdminMovie) {
+  patchMovie(movie, { is_featured: !movie.is_featured }, movie.is_featured ? 'از ویژه‌ها حذف شد' : 'به ویژه‌ها افزوده شد')
+}
+async function archiveMovie(movie: AdminMovie) {
+  if (!window.confirm(`«${movie.title}» بایگانی شود؟`)) return
+  busy.value = { ...busy.value, [movie.id]: true }
   try {
-    await adminApi.setPublicationStatus(movie.id, status)
-    notifications.success(
-      status === 'published' ? 'فیلم منتشر شد' : 'فیلم به پیش‌نویس برگشت',
-      status === 'published'
-        ? 'عنوان در سایت قابل مشاهده است؛ خزنده Film2Media (myf2m) لینک‌های دانلود و پخش آنلاین را در پس‌زمینه پیدا می‌کند.'
-        : 'عنوان فقط در پنل ادمین دیده می‌شود.',
-    )
-    await loadMovies()
+    await api(`/admin/movies/${movie.id}/`, { method: 'DELETE' })
+    notify.success('انجام شد', 'بایگانی شد')
+    await refresh()
   }
-  catch (cause) {
-    notifications.notifyError(cause, 'تغییر وضعیت انجام نشد')
-  }
-  finally {
-    actionLoading.value = false
-  }
+  catch { notify.error('خطا', 'عملیات ناموفق بود') }
+  finally { busy.value = { ...busy.value, [movie.id]: false } }
 }
-
-async function openSync(movie: AdminMovie) {
-  syncTarget.value = movie
-  syncDryRun.value = null
-  syncOverwrite.value = false
-  actionLoading.value = true
-  try {
-    syncDryRun.value = await adminApi.sync(movie.id, { dry_run: true, overwrite_manual: false })
-  }
-  catch (cause) {
-    notifications.notifyError(cause, 'پیش‌نمایش همگام‌سازی آماده نشد')
-    syncTarget.value = null
-  }
-  finally {
-    actionLoading.value = false
-  }
-}
-
-async function confirmSync() {
-  if (!syncTarget.value) return
-  actionLoading.value = true
-  try {
-    const response = await adminApi.sync(syncTarget.value.id, { overwrite_manual: syncOverwrite.value })
-    notifications.success(
-      'همگام‌سازی کامل شد',
-      response.skipped_manual_fields.length
-        ? `${response.skipped_manual_fields.length.toLocaleString('fa-IR')} فیلد دستی محافظت شد.`
-        : 'اطلاعات TMDB با موفقیت به‌روزرسانی شد.',
-    )
-    syncTarget.value = null
-    await loadMovies()
-  }
-  catch (cause) {
-    notifications.notifyError(cause, 'همگام‌سازی انجام نشد')
-  }
-  finally {
-    actionLoading.value = false
-  }
-}
-
-await Promise.all([loadMovies(), loadGenres()])
 </script>
 
 <template>
-  <div class="px-4 py-5 sm:px-6 sm:py-7 lg:px-8 lg:py-9">
-    <header class="flex flex-col gap-4 xl:flex-row xl:items-end xl:justify-between">
-      <div class="min-w-0">
-        <div class="mb-2 flex flex-wrap items-center gap-2 text-xs font-bold text-[var(--admin-muted)]">
-          <span>استودیو روایتو</span>
-          <span>/</span>
-          <span class="text-[var(--admin-primary)]">فیلم‌ها</span>
-        </div>
-        <h1 class="text-2xl font-black tracking-tight sm:text-3xl">مدیریت فیلم‌ها</h1>
-        <p class="mt-2 max-w-2xl text-sm leading-7 text-[var(--admin-muted)]">
-          جستجو کنید، از TMDB اضافه کنید، یا عنوان را دستی ثبت و منتشر کنید.
-        </p>
-      </div>
-      <div class="flex w-full flex-col gap-2 sm:w-auto sm:flex-row sm:items-center">
-        <AdminButton class="w-full justify-center sm:w-auto" variant="secondary" @click="navigateTo('/admin/movies/new')">
-          <template #icon><Plus class="size-4" /></template>
-          افزودن دستی
-        </AdminButton>
-        <AdminButton class="w-full justify-center sm:w-auto" @click="tmdbOpen = true">
-          <template #icon><Sparkles class="size-4" /></template>
-          افزودن از TMDB
-        </AdminButton>
-      </div>
-    </header>
-
-    <div class="mt-6 grid gap-3 sm:mt-7 sm:grid-cols-3">
-      <div class="rounded-2xl border border-[var(--admin-border)] bg-[var(--admin-surface)] p-4 shadow-[var(--admin-shadow)]">
-        <div class="flex items-center justify-between gap-3">
-          <p class="text-xs font-bold text-[var(--admin-muted)]">کل نتایج</p>
-          <span class="grid size-9 place-items-center rounded-xl bg-[var(--admin-primary)]/10 text-[var(--admin-primary)]"><Film class="size-4" /></span>
-        </div>
-        <p class="mt-2 font-latin text-2xl font-black text-[var(--admin-primary)]">{{ total.toLocaleString('fa-IR') }}</p>
-      </div>
-      <div class="rounded-2xl border border-[var(--admin-border)] bg-[var(--admin-surface)] p-4 shadow-[var(--admin-shadow)]">
-        <div class="flex items-center justify-between gap-3">
-          <p class="text-xs font-bold text-[var(--admin-muted)]">منتشرشده در این صفحه</p>
-          <span class="grid size-9 place-items-center rounded-xl bg-emerald-50 text-emerald-700"><ClipboardList class="size-4" /></span>
-        </div>
-        <p class="mt-2 font-latin text-2xl font-black text-emerald-700">{{ publishedOnPage.toLocaleString('fa-IR') }}</p>
-      </div>
-      <div class="rounded-2xl border border-[var(--admin-border)] bg-[var(--admin-surface)] p-4 shadow-[var(--admin-shadow)]">
-        <div class="flex items-center justify-between gap-3">
-          <p class="text-xs font-bold text-[var(--admin-muted)]">نیازمند بازبینی</p>
-          <span class="grid size-9 place-items-center rounded-xl bg-amber-50 text-amber-700"><Search class="size-4" /></span>
-        </div>
-        <p class="mt-2 font-latin text-2xl font-black text-amber-700">{{ draftOnPage.toLocaleString('fa-IR') }}</p>
+  <div class="space-y-6">
+    <div class="flex flex-wrap items-end justify-between gap-4">
+      <div>
+        <h1 class="text-xl font-black text-[var(--rv-text)] sm:text-2xl">فیلم‌ها</h1>
+        <p class="mt-1 text-xs font-semibold text-[var(--rv-muted)]">{{ fa(total) }} عنوان در کتابخانه</p>
       </div>
     </div>
 
-    <AdminCard class="mt-5 overflow-hidden">
-      <div class="sticky top-14 z-20 border-b border-[var(--admin-border)] bg-[var(--admin-surface)]/95 p-4 backdrop-blur-md sm:p-5 lg:top-0">
-        <div class="grid gap-3 lg:grid-cols-[minmax(240px,1.5fr)_repeat(4,minmax(0,1fr))] lg:items-end">
-          <label class="relative block">
-            <span class="mb-1.5 block text-[11px] font-extrabold text-[var(--admin-muted)]">جستجو</span>
-            <span class="relative block">
-              <Search class="pointer-events-none absolute right-3.5 top-1/2 size-4.5 -translate-y-1/2 text-[var(--admin-accent)]" />
-              <input
-                v-model="filters.q"
-                type="search"
-                class="admin-focus h-11 w-full rounded-xl border border-[var(--admin-border)] bg-white pr-10 pl-3 text-sm outline-none placeholder:text-[var(--admin-muted)]/70 focus:border-[var(--admin-accent)]"
-                placeholder="عنوان، IMDb یا شناسه TMDB…"
-                aria-label="جستجوی فیلم‌ها"
-              >
-            </span>
-          </label>
-          <label>
-            <span class="mb-1.5 block text-[11px] font-extrabold text-[var(--admin-muted)]">وضعیت</span>
-            <select v-model="filters.status" :class="selectClass"><option v-for="option in statusOptions" :key="option.value" :value="option.value">{{ option.label }}</option></select>
-          </label>
-          <label>
-            <span class="mb-1.5 block text-[11px] font-extrabold text-[var(--admin-muted)]">منبع</span>
-            <select v-model="filters.source" :class="selectClass"><option v-for="option in sourceOptions" :key="option.value" :value="option.value">{{ option.label }}</option></select>
-          </label>
-          <label>
-            <span class="mb-1.5 block text-[11px] font-extrabold text-[var(--admin-muted)]">ژانر</span>
-            <select v-model="filters.genre" :class="selectClass"><option value="">همه ژانرها</option><option v-for="genre in genres" :key="genre.id" :value="genre.slug">{{ genre.title }}</option></select>
-          </label>
-          <label>
-            <span class="mb-1.5 block text-[11px] font-extrabold text-[var(--admin-muted)]">سال</span>
-            <select v-model="filters.year" :class="selectClass"><option v-for="option in yearOptions" :key="option.value" :value="option.value">{{ option.label }}</option></select>
-          </label>
-        </div>
-
-        <div class="mt-3 flex flex-wrap items-center gap-2 sm:gap-3">
-          <label class="flex min-h-11 w-full items-center gap-2 sm:w-auto">
-            <span class="text-[11px] font-extrabold text-[var(--admin-muted)]">مرتب‌سازی</span>
-            <select v-model="filters.ordering" class="admin-focus h-11 min-w-0 flex-1 rounded-lg border border-[var(--admin-border)] bg-white px-3 text-[11px] font-bold outline-none focus:border-[var(--admin-accent)] sm:flex-none">
-              <option v-for="option in orderingOptions" :key="option.value" :value="option.value">{{ option.label }}</option>
-            </select>
-          </label>
-
-          <button
-            v-if="hasActiveFilters"
-            type="button"
-            class="admin-focus inline-flex min-h-11 items-center rounded-lg px-2 text-xs font-bold text-[var(--admin-accent)] hover:underline"
-            @click="clearFilters"
-          >
-            پاک کردن فیلترها
-          </button>
-
-          <div class="ms-auto flex items-center gap-2">
-            <button
-              type="button"
-              class="admin-focus inline-flex min-h-11 items-center gap-1.5 rounded-lg px-2.5 text-xs font-bold text-[var(--admin-muted)] hover:bg-[var(--admin-surface-muted)]"
-              :disabled="loading"
-              @click="loadMovies"
-            >
-              <Refresh class="size-3.5" :class="loading && 'animate-spin'" />
-              به‌روزرسانی
-            </button>
-            <div class="flex min-h-11 rounded-xl border border-[var(--admin-border)] bg-[var(--admin-surface-muted)] p-0.5" role="group" aria-label="نوع نمایش">
-              <button type="button" class="admin-focus grid size-10 place-items-center rounded-lg" :class="view === 'table' ? 'bg-white text-[var(--admin-primary)] shadow-sm' : 'text-[var(--admin-muted)]'" aria-label="نمای جدول" :aria-pressed="view === 'table'" @click="view = 'table'"><List class="size-4" /></button>
-              <button type="button" class="admin-focus grid size-10 place-items-center rounded-lg" :class="view === 'grid' ? 'bg-white text-[var(--admin-primary)] shadow-sm' : 'text-[var(--admin-muted)]'" aria-label="نمای کارت" :aria-pressed="view === 'grid'" @click="view = 'grid'"><Grid class="size-4" /></button>
-            </div>
-          </div>
-        </div>
+    <!-- Filters -->
+    <div class="flex flex-wrap items-center gap-3">
+      <div class="relative min-w-[200px] flex-1">
+        <Search class="pointer-events-none absolute right-3 top-1/2 size-4 -translate-y-1/2 text-[var(--rv-faint)]" />
+        <input v-model="q" type="search" placeholder="جستجوی عنوان، IMDb یا TMDb…" class="rv-input !pr-9">
       </div>
+      <select v-model="statusFilter" class="rv-input !w-auto">
+        <option v-for="o in STATUS_OPTIONS" :key="o.value" :value="o.value">{{ o.label }}</option>
+      </select>
+      <select v-model="typeFilter" class="rv-input !w-auto">
+        <option v-for="o in TYPE_OPTIONS" :key="o.value" :value="o.value">{{ o.label }}</option>
+      </select>
+    </div>
 
-      <AdminState
-        v-if="error && !loading"
-        kind="error"
-        title="فهرست فیلم‌ها در دسترس نیست"
-        :message="error.message"
-        @retry="loadMovies"
-      />
-      <AdminState
-        v-else-if="!loading && !movies.length"
-        :title="hasActiveFilters ? 'فیلمی با این فیلتر پیدا نشد' : 'هنوز فیلمی ثبت نشده است'"
-        :message="hasActiveFilters ? 'فیلترها را تغییر دهید یا عبارت کوتاه‌تری جستجو کنید.' : 'از TMDB اضافه کنید یا یک عنوان را دستی ثبت کنید.'"
-      >
-        <div class="flex flex-col items-center justify-center gap-2 sm:flex-row">
-          <AdminButton variant="secondary" @click="navigateTo('/admin/movies/new')">افزودن دستی</AdminButton>
-          <AdminButton @click="tmdbOpen = true">افزودن از TMDB</AdminButton>
-        </div>
-      </AdminState>
-      <AdminMovieTable
-        v-else-if="view === 'table'"
-        :movies="movies"
-        :loading="loading"
-        @edit="edit"
-        @preview="preview"
-        @sync="openSync"
-        @publish="setStatus($event, 'published')"
-        @draft="setStatus($event, 'draft')"
-        @archive="archiveTarget = $event"
-      />
-      <div v-else-if="loading" class="grid gap-4 p-5 [grid-template-columns:repeat(auto-fill,minmax(min(100%,8rem),1fr))]">
-        <div v-for="i in 10" :key="i" class="aspect-[2/3] animate-pulse rounded-2xl bg-[var(--admin-surface-muted)]" />
-      </div>
-      <AdminMovieGrid
-        v-else
-        :movies="movies"
-        @edit="edit"
-        @preview="preview"
-        @sync="openSync"
-        @publish="setStatus($event, 'published')"
-        @draft="setStatus($event, 'draft')"
-        @archive="archiveTarget = $event"
-      />
-
-      <AdminPagination
-        v-if="total"
-        :page="page"
-        :total="total"
-        :page-size="pageSize"
-        :loading="loading"
-        count-label=" فیلم"
-        @update:page="page = $event"
-      />
-    </AdminCard>
-
-    <AdminTMDBImport :open="tmdbOpen" @close="closeTmdb" @imported="imported" />
-    <AdminConfirmDialog
-      :open="Boolean(archiveTarget)"
-      title="حذف فیلم از سایت؟"
-      :message="`«${archiveTarget?.title || ''}» از سایت عمومی خارج می‌شود، اما اطلاعات آن در آرشیو باقی می‌ماند.`"
-      confirm-label="حذف از سایت"
-      dangerous
-      :loading="actionLoading"
-      @close="archiveTarget = null"
-      @confirm="confirmArchive"
-    >
-      <div class="mt-4 flex items-center gap-2 rounded-xl bg-red-50 p-3 text-xs font-bold text-[var(--admin-danger)]">
-        <Archive class="size-4" /> این عملیات حذف دائمی از پایگاه‌داده نیست.
-      </div>
-    </AdminConfirmDialog>
-
-    <AdminModal
-      :open="Boolean(syncTarget)"
-      title="همگام‌سازی با TMDB"
-      :description="`اطلاعات «${syncTarget?.title || ''}» ابتدا به‌صورت dry-run بررسی شده است.`"
-      size="sm"
-      :closeable="!actionLoading"
-      @close="syncTarget = null"
-    >
-      <div class="p-6">
-        <div v-if="actionLoading && !syncDryRun" class="py-8 text-center text-sm text-[var(--admin-muted)]">در حال بررسی تغییرات…</div>
-        <template v-else>
-          <div class="rounded-2xl border border-emerald-200 bg-emerald-50 p-4 text-xs leading-6 text-emerald-900">
-            <strong class="block text-sm">اطلاعات دستی محافظت می‌شود</strong>
-            {{ (syncDryRun?.skipped_manual_fields.length || 0).toLocaleString('fa-IR') }} فیلد دستی در این همگام‌سازی بازنویسی نخواهد شد.
-          </div>
-          <label class="mt-4 flex cursor-pointer gap-3 rounded-2xl border border-red-200 bg-red-50/60 p-4">
-            <input v-model="syncOverwrite" type="checkbox" class="mt-1 accent-[var(--admin-danger)]">
-            <span class="text-xs leading-6 text-[var(--admin-danger)]">
-              <strong class="block text-sm">بازنویسی اطلاعات دستی</strong>
-              این گزینه ممکن است اصلاحات تیم محتوا را با داده TMDB جایگزین کند.
-            </span>
-          </label>
-        </template>
-      </div>
-      <template #footer>
-        <div class="flex justify-end gap-2">
-          <AdminButton variant="ghost" :disabled="actionLoading" @click="syncTarget = null">انصراف</AdminButton>
-          <AdminButton :loading="actionLoading" @click="confirmSync">همگام‌سازی</AdminButton>
-        </div>
+    <RvPanel :icon="Film" :padded="false">
+      <template #actions>
+        <span v-if="total" class="text-xs font-bold text-[var(--rv-muted)]">{{ fa(from) }}–{{ fa(to) }} از {{ fa(total) }}</span>
       </template>
-    </AdminModal>
+
+      <RvState v-if="error" kind="error" title="خطا در دریافت فهرست" @retry="refresh()" />
+      <RvState v-else-if="!pending && rows.length === 0" title="فیلمی یافت نشد" message="با فیلترهای دیگری امتحان کنید." />
+
+      <div v-else class="overflow-x-auto">
+        <table class="rv-table">
+          <thead>
+            <tr>
+              <th class="w-10">
+                <input
+                  type="checkbox" class="rv-focus size-4 accent-[var(--rv-accent)]"
+                  :checked="allSelected" aria-label="انتخاب همهٔ ردیف‌های این صفحه" @change="toggleAll"
+                >
+              </th>
+              <th>عنوان</th>
+              <th>سال</th>
+              <th>نوع</th>
+              <th>وضعیت</th>
+              <th class="text-center">اقدامات</th>
+            </tr>
+          </thead>
+          <tbody>
+            <template v-if="pending && rows.length === 0">
+              <tr v-for="i in 8" :key="`sk${i}`">
+                <td colspan="6"><div class="rv-skeleton h-9 w-full" /></td>
+              </tr>
+            </template>
+            <tr v-for="movie in rows" :key="movie.id">
+              <td>
+                <input
+                  type="checkbox" class="rv-focus size-4 accent-[var(--rv-accent)]"
+                  :checked="selected.includes(movie.id)" :aria-label="`انتخاب ${movie.title}`"
+                  @change="toggleOne(movie.id)"
+                >
+              </td>
+              <td>
+                <div class="flex items-center gap-3">
+                  <div class="h-14 w-10 shrink-0 overflow-hidden rounded-md bg-[var(--rv-surface-3)]">
+                    <img v-if="movie.poster_url" :src="movie.poster_url" :alt="movie.title" class="size-full object-cover" loading="lazy">
+                  </div>
+                  <div class="min-w-0">
+                    <NuxtLink :to="`/admin/movies/${movie.id}`" class="rv-focus block truncate font-bold text-[var(--rv-text)] hover:text-[var(--rv-accent)]">
+                      {{ movie.title }}
+                    </NuxtLink>
+                    <p v-if="movie.original_title && movie.original_title !== movie.title" class="truncate text-xs text-[var(--rv-faint)]" dir="ltr">{{ movie.original_title }}</p>
+                  </div>
+                </div>
+              </td>
+              <td class="tabular-nums text-[var(--rv-muted)]">{{ movie.release_year ? fa(movie.release_year) : '—' }}</td>
+              <td><RvBadge tone="info">{{ TYPE_LABEL[movie.catalog_type] ?? movie.catalog_type }}</RvBadge></td>
+              <td><RvBadge :tone="STATUS_TONE[movie.publication_status]" dot>{{ STATUS_LABEL[movie.publication_status] }}</RvBadge></td>
+              <td>
+                <div class="flex items-center justify-center gap-1">
+                  <button
+                    type="button" class="rv-icon-btn rv-focus" :disabled="busy[movie.id]"
+                    :title="movie.is_featured ? 'حذف از ویژه‌ها' : 'افزودن به ویژه‌ها'"
+                    :style="movie.is_featured ? { color: 'var(--rv-warning)' } : {}"
+                    @click="toggleFeatured(movie)"
+                  >
+                    <Star class="size-4" :fill="movie.is_featured ? 'currentColor' : 'none'" />
+                  </button>
+                  <button
+                    type="button" class="rv-icon-btn rv-focus" :disabled="busy[movie.id]"
+                    :title="movie.publication_status === 'published' ? 'به پیش‌نویس' : 'انتشار'"
+                    @click="togglePublish(movie)"
+                  >
+                    <component :is="movie.publication_status === 'published' ? EyeOff : Eye" class="size-4" />
+                  </button>
+                  <NuxtLink :to="`/admin/movies/${movie.id}`" class="rv-icon-btn rv-focus" title="ویرایش">
+                    <Pencil class="size-4" />
+                  </NuxtLink>
+                  <NuxtLink :to="`/movies/${movie.slug}`" target="_blank" class="rv-icon-btn rv-focus" title="مشاهده در سایت">
+                    <ExternalLink class="size-4" />
+                  </NuxtLink>
+                  <button
+                    v-if="movie.publication_status !== 'archived'"
+                    type="button" class="rv-icon-btn rv-icon-btn--danger rv-focus" :disabled="busy[movie.id]"
+                    title="بایگانی" @click="archiveMovie(movie)"
+                  >
+                    <Archive class="size-4" />
+                  </button>
+                </div>
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <!-- Pagination -->
+      <div v-if="total > PAGE_SIZE" class="flex items-center justify-between gap-3 border-t border-[var(--rv-border)] px-4 py-3">
+        <button type="button" class="rv-btn rv-btn--subtle rv-focus !min-h-9" :disabled="offset === 0 || pending" @click="offset = Math.max(0, offset - PAGE_SIZE)">
+          <ChevronRight class="size-4" /> قبلی
+        </button>
+        <span class="text-xs font-bold text-[var(--rv-muted)]">{{ fa(from) }}–{{ fa(to) }} از {{ fa(total) }}</span>
+        <button type="button" class="rv-btn rv-btn--subtle rv-focus !min-h-9" :disabled="to >= total || pending" @click="offset = offset + PAGE_SIZE">
+          بعدی <ChevronLeft class="size-4" />
+        </button>
+      </div>
+    </RvPanel>
+
+    <RvBulkBar kind="movie" :ids="selected" @done="afterBulk" @clear="selected = []" />
   </div>
 </template>

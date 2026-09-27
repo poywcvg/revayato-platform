@@ -125,10 +125,26 @@ export function isDeadPlaybackHost(url?: string | null) {
   }
 }
 
-/** URL is usable as an online progressive/HLS source (non-empty, not a dead Soft CDN). */
-export function isPlayablePlaybackUrl(url?: string | null) {
+/** Dornatv/CDN signed URLs self-expire (~13 h) — has this one's token lapsed?
+ *
+ *  Mirrors `media_probe.signature_expired` on the backend. A lapsed token says
+ *  nothing about the file: it is still on the origin and one re-crawl away from
+ *  being playable. Treating it as death is what left viewers on «پخش ویدیو ممکن
+ *  نشد» for films that were fine — so callers that are about to *play* pass
+ *  `ignoreExpiry` and let `usePlaybackResolve` fetch a fresh signature instead.
+ */
+export function isExpiredPlaybackUrl(url?: string | null) {
+  const match = String(url || '').match(/[?&]expires=(\d{9,})/i)
+  if (!match) return false
+  const expiresSeconds = Number(match[1])
+  return Number.isFinite(expiresSeconds) && expiresSeconds * 1000 < Date.now()
+}
+
+/** URL is usable as an online progressive/HLS source (non-empty, not a dead Soft CDN, not expired). */
+export function isPlayablePlaybackUrl(url?: string | null, options: { ignoreExpiry?: boolean } = {}) {
   const raw = String(url || '').trim()
   if (!raw || isDeadPlaybackHost(raw)) return false
+  if (!options.ignoreExpiry && isExpiredPlaybackUrl(raw)) return false
   try {
     const parsed = new URL(raw, 'https://revayato.invalid')
     if (!['http:', 'https:'].includes(parsed.protocol)) return false
@@ -175,10 +191,68 @@ export function isChromiumLikePlayback() {
   return /Chrome|Chromium|CriOS|Edg|EdgiOS|OPR/i.test(ua) || vendor.includes('Google')
 }
 
-/** Browsers whose engines are known to have incomplete MKV/AVI/WMV demux support. */
+interface MediaSourceLike {
+  isTypeSupported(type: string): boolean
+}
+
+/**
+ * Kill switch for the in-page MKV remuxer on Chromium. Chromium opens MKV
+ * natively, so it does not need the remuxer and stays on `<video src>` (a
+ * tester can opt one browser in with localStorage `revayato:remux` = '1').
+ * Safari, every iOS browser and Firefox cannot open MKV at all and the stream
+ * gateway cannot reach the provider CDNs, so for them the remuxer is the only
+ * way the catalogue plays — switching it off there left them a black player.
+ */
+const REMUX_ENABLED = false
+
+function remuxOptedIn(): boolean {
+  if (REMUX_ENABLED) return true
+  // Every iOS browser is WebKit underneath, whatever its UA says (CriOS too).
+  if (isSafariLikePlayback() || !isChromiumLikePlayback()) return true
+  try {
+    return window.localStorage.getItem('revayato:remux') === '1'
+  }
+  catch {
+    return false
+  }
+}
+
+/**
+ * Whether the in-page MKV remuxer (utils/remux/engine) can run here: Media
+ * Source — ManagedMediaSource on iOS 17.1+ — with H.264, and streaming fetch.
+ */
+export function remuxSupported(): boolean {
+  if (typeof window === 'undefined') return false
+  if (!remuxOptedIn()) return false
+  try {
+    const w = window as unknown as { ManagedMediaSource?: MediaSourceLike, MediaSource?: MediaSourceLike }
+    const ms = w.ManagedMediaSource || w.MediaSource
+    if (!ms || typeof fetch !== 'function' || typeof ReadableStream === 'undefined') return false
+    return ms.isTypeSupported('video/mp4; codecs="avc1.64001f"')
+  }
+  catch {
+    return false
+  }
+}
+
+/** Sources the remuxer can take: progressive MKV/WebM over http(s). */
+export function isRemuxCandidate(url?: string | null): boolean {
+  const raw = String(url || '').trim()
+  if (!/^https?:\/\//i.test(raw)) return false
+  const path = (raw.split(/[?#]/)[0] || '').toLowerCase()
+  return /\.(mkv|webm)$/.test(path)
+}
+
+/**
+ * Browsers that cannot be trusted with an MKV source. Any browser with Media
+ * Source can: the player remuxes MKV to MP4 in the page (utils/remux), which
+ * covers Safari on macOS and iOS 17.1+ and Firefox. What is left is older iOS
+ * and legacy WebViews, which still need MP4/HLS mirrors or the gateway.
+ */
 export function prefersBrowserSafeContainers() {
   if (!import.meta.client) return false
   try {
+    if (remuxSupported()) return false
     if (isSafariLikePlayback()) return true
     if (/Firefox|FxiOS/i.test(getUserAgent())) return true
     // Conservative default for unknown/legacy UAs (e.g., old WebView, UC, Dolphin).
@@ -194,6 +268,128 @@ export function progressiveUrlLikelyUnsupported(url?: string | null) {
   if (!prefersBrowserSafeContainers()) return false
   const raw = String(url || '').split('?')[0]?.toLowerCase() || ''
   return /\.(mkv|avi|wmv)$/i.test(raw)
+}
+
+export type VideoCodecFamily = 'hevc' | 'av1' | 'h264' | ''
+
+/**
+ * Codec family read from a source URL + quality/label tokens ('' when unknown).
+ * Provider filenames embed the codec directly (e.g. ``1080p.x265.10bit``), which
+ * is the only reliable signal available before the media element loads.
+ */
+export function videoCodecFamily(url?: string | null, quality?: string | null, label?: string | null): VideoCodecFamily {
+  const blob = `${url || ''} ${quality || ''} ${label || ''}`.toLowerCase()
+  if (/(dolby[\s._-]*vision|dovi|\bdvhe\b|\bdvh1\b)/.test(blob)) return 'hevc'
+  if (/(\bx265\b|\bh265\b|\bhevc\b|\bhev1\b|\bhvc1\b)/.test(blob)) return 'hevc'
+  if (/(\bav1\b|\bav01\b)/.test(blob)) return 'av1'
+  if (/(\bx264\b|\bh264\b|\bavc1\b|\bavc\b)/.test(blob)) return 'h264'
+  // Standalone 10-bit encodes are virtually always HEVC in these providers.
+  if (/\b10bit\b|\b10-bit\b/.test(blob)) return 'hevc'
+  return ''
+}
+
+let hevcSupport: boolean | null = null
+let hevc10Support: boolean | null = null
+
+function probeVideoTypes(variants: string[]) {
+  try {
+    const probe = document.createElement('video')
+    return variants.some((type) => {
+      const result = probe.canPlayType(type)
+      return result === 'probably' || result === 'maybe'
+    })
+  } catch {
+    return false
+  }
+}
+
+/**
+ * Whether the current browser can decode HEVC/H.265 (Safari + HW-assisted
+ * Chromium). `tenBit` asks for Main10: plenty of GPUs decode 8-bit HEVC only,
+ * and the provider "x265.10bit" encodes then play sound over a black picture.
+ */
+export function browserSupportsHevc(tenBit = false): boolean {
+  if (!import.meta.client) return false
+  if (hevcSupport === null) {
+    hevcSupport = probeVideoTypes([
+      'video/mp4; codecs="hev1.1.6.L120.90"',
+      'video/mp4; codecs="hev1.1.6.L93.B0"',
+      'video/mp4; codecs="hvc1.1.6.L120.90"',
+      'video/mp4; codecs="hvc1.1.6.L93.B0"',
+    ])
+  }
+  if (!tenBit || !hevcSupport) return hevcSupport
+  if (hevc10Support === null) {
+    hevc10Support = probeVideoTypes([
+      'video/mp4; codecs="hvc1.2.4.L120.90"',
+      'video/mp4; codecs="hev1.2.4.L120.90"',
+      'video/mp4; codecs="hvc1.2.4.L93.90"',
+    ])
+  }
+  return hevc10Support
+}
+
+function isTenBitSource(blob: string) {
+  return /\b10[\s._-]?bit\b|\bhdr(10)?\b|dolby[\s._-]*vision|\bdovi\b|\bmain10\b/.test(blob)
+}
+
+/**
+ * Can this HEVC source actually show a picture here? The canPlayType answer is
+ * for HEVC in MP4. Chromium's native player does not decode HEVC out of a
+ * Matroska file — the audio plays, the video stays black and no error event
+ * ever fires — so an HEVC MKV is only playable through the in-page remuxer.
+ */
+function hevcPlayable(url?: string | null, quality?: string | null, label?: string | null) {
+  const blob = `${url || ''} ${quality || ''} ${label || ''}`.toLowerCase()
+  if (!browserSupportsHevc(isTenBitSource(blob))) return false
+  const path = (String(url || '').split(/[?#]/)[0] || '').toLowerCase()
+  if (/\.(mkv|avi|wmv)$/.test(path)) return remuxSupported() && isRemuxCandidate(url) && mseDecodesHevc(isTenBitSource(blob))
+  return true
+}
+
+/** The remuxer hands HEVC to Media Source, which has its own codec list. */
+function mseDecodesHevc(tenBit: boolean) {
+  try {
+    const w = window as unknown as { ManagedMediaSource?: MediaSourceLike, MediaSource?: MediaSourceLike }
+    const ms = w.ManagedMediaSource || w.MediaSource
+    return Boolean(ms?.isTypeSupported(tenBit ? 'video/mp4; codecs="hvc1.2.4.L120.90"' : 'video/mp4; codecs="hvc1.1.6.L93.B0"'))
+  }
+  catch {
+    return false
+  }
+}
+
+let av1Support: boolean | null = null
+
+/** Whether the current browser can decode AV1. */
+export function browserSupportsAv1(): boolean {
+  if (!import.meta.client) return false
+  if (av1Support !== null) return av1Support
+  try {
+    const result = document.createElement('video').canPlayType('video/mp4; codecs="av01.0.05M.08"')
+    av1Support = result === 'probably' || result === 'maybe'
+  } catch {
+    av1Support = false
+  }
+  return av1Support
+}
+
+/** True when this source's codec cannot be decoded by the current browser. */
+export function codecLikelyUnsupported(url?: string | null, quality?: string | null, label?: string | null): boolean {
+  if (!import.meta.client) return false
+  const family = videoCodecFamily(url, quality, label)
+  if (family === 'hevc') return !hevcPlayable(url, quality, label)
+  if (family === 'av1') return !browserSupportsAv1()
+  return false
+}
+
+function codecScore(url?: string | null, quality?: string | null, label?: string | null): number {
+  if (!import.meta.client) return 0
+  const family = videoCodecFamily(url, quality, label)
+  if (family === 'hevc') return hevcPlayable(url, quality, label) ? 0 : -160
+  if (family === 'av1') return browserSupportsAv1() ? 0 : -160
+  if (family === 'h264') return 6
+  return 0
 }
 
 function isBrowserFriendlyContainer(url: string) {
@@ -217,7 +413,7 @@ function containerScore(url: string) {
  * label scores higher — codec probing and failed fallback cost more than a rung.
  * Known-dead Soft CDN hosts are skipped so Hard/Dub live mirrors win.
  */
-export function pickStreamFriendlyLink<T extends { quality?: string, url: string }>(
+export function pickStreamFriendlyLink<T extends { quality?: string, url: string, label?: string }>(
   links: readonly T[],
   preferLean: boolean | StreamNetworkProfile = false,
 ): T | null {
@@ -226,14 +422,17 @@ export function pickStreamFriendlyLink<T extends { quality?: string, url: string
   const pool = liveLinks.length ? liveLinks : links.filter(link => Boolean(String(link.url || '').trim()))
   const mediaLinks = pool.filter(link => !isSubtitleFile(link.url))
   const friendlyLinks = mediaLinks.filter(link => isBrowserFriendlyContainer(link.url))
+  // Codec-safe mirrors first: never start on a HEVC/AV1 file the current
+  // browser cannot decode (Safari can; Chrome/Firefox usually cannot).
+  const codecSafeLinks = mediaLinks.filter(link => !codecLikelyUnsupported(link.url, link.quality, link.label))
   const strict = prefersBrowserSafeContainers()
   // Firefox/Safari: never pick MKV when any MP4/HLS mirror exists in the lane.
   const playableLinks = strict
     ? mediaLinks.filter(link => !progressiveUrlLikelyUnsupported(link.url))
     : mediaLinks
-  const candidates = friendlyLinks.length
-    ? friendlyLinks
-    : (playableLinks.length ? playableLinks : (mediaLinks.length ? mediaLinks : pool))
+  const candidates = codecSafeLinks.length
+    ? codecSafeLinks
+    : (friendlyLinks.length ? friendlyLinks : (playableLinks.length ? playableLinks : (mediaLinks.length ? mediaLinks : pool)))
   const leanBias = strict
     ? 'lean'
     : (typeof preferLean === 'string' ? preferLean : (preferLean ? 'lean' : streamNetworkProfile()))
@@ -242,6 +441,8 @@ export function pickStreamFriendlyLink<T extends { quality?: string, url: string
     let scoreB = streamQualityScore(b.quality, leanBias)
     scoreA += containerScore(a.url)
     scoreB += containerScore(b.url)
+    scoreA += codecScore(a.url, a.quality, a.label)
+    scoreB += codecScore(b.url, b.quality, b.label)
     // Prefer live hosts even when the only remaining candidates are dead.
     if (isDeadPlaybackHost(a.url)) scoreA -= 1000
     if (isDeadPlaybackHost(b.url)) scoreB -= 1000

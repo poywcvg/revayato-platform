@@ -1,8 +1,49 @@
 <script setup lang="ts">
-const APP_VERSION = '5.0.2'
-const APP_SIZE = '۷٫۴ مگابایت'
-const APK_URL = '/downloads/revayato-native-v5.0.2.apk'
+// The download page used to hardcode the build it offered, so every release
+// needed an edit here too — and a forgotten one left the page advertising a
+// version the directory no longer held. `/api/app/version/` is the same source
+// of truth the installed app polls for updates, and it only ever names an APK
+// that is actually on disk. These constants are the floor: what the page shows
+// before the call answers, and if it never does.
+const APP_VERSION_FALLBACK = '1.0.16'
+const APP_SIZE_FALLBACK = '۳ مگابایت'
+const APK_URL_FALLBACK = '/downloads/revayato-1.0.16.apk'
 const STORE_URL = 'https://revayato.com/app'
+
+interface AppRelease {
+  available?: boolean
+  version_name?: string
+  download_url?: string
+  size_bytes?: number
+}
+
+const { api } = useApi()
+const { data: release } = await useAsyncData<AppRelease | null>(
+  'android-release',
+  // A download page that cannot reach the API still has to render a button.
+  () => api<AppRelease>('/app/version/').catch(() => null),
+  { default: () => null },
+)
+
+const APP_VERSION = computed(() => {
+  const named = release.value?.available ? (release.value.version_name || '').trim() : ''
+  return named || APP_VERSION_FALLBACK
+})
+
+const APK_URL = computed(() => {
+  const url = release.value?.available ? (release.value.download_url || '').trim() : ''
+  return url || APK_URL_FALLBACK
+})
+
+const APP_SIZE = computed(() => {
+  const bytes = release.value?.available ? Number(release.value.size_bytes || 0) : 0
+  if (!bytes) return APP_SIZE_FALLBACK
+  const mb = bytes / (1024 * 1024)
+  // One decimal below 10 MB, whole megabytes above — the extra digit stops
+  // mattering once the number is big.
+  const shown = mb < 10 ? Math.round(mb * 10) / 10 : Math.round(mb)
+  return `${shown.toLocaleString('fa-IR')} مگابایت`
+})
 
 const features = [
   { icon: 'play', title: 'پخش آنلاین', text: 'پخش روان فیلم و سریال با انتخاب کیفیت و منبع جایگزین خودکار.' },
@@ -44,22 +85,14 @@ useSeoMeta({
       icon="rocket"
     >
       <div class="flex flex-col gap-3 sm:flex-row sm:items-center">
-        <a
-          :href="APK_URL"
-          download
-          class="inline-flex items-center justify-center gap-2.5 rounded-2xl bg-primary-500 px-7 py-4 text-base font-black text-ink shadow-[0_10px_30px_-10px_theme(colors.primary.500)] transition-transform duration-150 hover:-translate-y-0.5 active:translate-y-0"
-        >
+        <UiButtonA :href="APK_URL" download variant="primary" size="lg">
           <CinematicIcon name="download" class="size-5" />
           <span>دانلود نسخه {{ APP_VERSION }}</span>
-        </a>
-        <button
-          type="button"
-          class="inline-flex items-center justify-center gap-2 rounded-2xl bg-elevated px-5 py-4 text-sm font-bold text-secondary ring-1 ring-line transition-colors hover:text-ink"
-          @click="copyLink"
-        >
+        </UiButtonA>
+        <UiButtonA variant="ghost" size="lg" @click="copyLink">
           <CinematicIcon :name="copied ? 'check' : 'share'" class="size-4" />
           <span>{{ copied ? 'لینک کپی شد' : 'کپی لینک صفحه' }}</span>
-        </button>
+        </UiButtonA>
       </div>
       <p class="mt-3 text-xs text-muted">
         حجم {{ APP_SIZE }} · نسخه {{ APP_VERSION }} · اندروید ۷ (API 24) و بالاتر
@@ -110,10 +143,10 @@ useSeoMeta({
         <code dir="ltr" class="select-all rounded-xl bg-elevated px-3 py-2 text-xs text-secondary ring-1 ring-line">{{ APK_URL }}</code>
       </div>
       <div class="mt-4 flex flex-wrap gap-3">
-        <a :href="APK_URL" download class="inline-flex items-center gap-2 rounded-xl bg-primary-500 px-5 py-3 text-sm font-black text-ink">
+        <UiButtonA :href="APK_URL" download variant="primary" size="md">
           <CinematicIcon name="download" class="size-4" />
           <span>دانلود مستقیم APK</span>
-        </a>
+        </UiButtonA>
       </div>
     </section>
   </div>

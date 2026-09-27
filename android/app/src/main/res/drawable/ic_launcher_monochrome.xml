@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Android 13 themed icon: same mark as a single-colour mask. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <group
+        android:scaleX="0.145"
+        android:scaleY="0.145"
+        android:translateX="16.88"
+        android:translateY="16.73">
+        <path
+            android:pathData="M132,424 V252 C132,184 194,134 256,90 C318,134 380,184 380,252 V424"
+            android:strokeColor="#FFFFFFFF"
+            android:strokeWidth="30"
+            android:strokeLineCap="round"
+            android:strokeMiterLimit="12" />
+        <path
+            android:fillColor="#FFFFFFFF"
+            android:fillType="evenOdd"
+            android:pathData="M256,150 C262,198 336,236 336,312 C336,358 300,394 256,394 C212,394 176,358 176,312 C176,270 200,244 218,222 C220,244 230,258 244,264 C236,226 240,184 256,150 Z M236,298 L236,346 Q236,356 244.6,350.9 L285.4,327.1 Q294,322 285.4,316.9 L244.6,293.1 Q236,288 236,298 Z" />
+    </group>
+</vector>

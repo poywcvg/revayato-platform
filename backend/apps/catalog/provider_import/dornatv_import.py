@@ -93,8 +93,15 @@ def _save_checkpoint(path: Path, payload: dict) -> None:
 
 
 def _year_window(*, year_start: int | None, year_end: int | None) -> tuple[int, int]:
-    """Inclusive year window walked newest → oldest (start >= end)."""
-    start = int(year_start if year_start is not None else getattr(settings, 'DORNATV_IMPORT_YEAR_START', 2026))
+    """Inclusive year window walked newest → oldest (start >= end).
+
+    The upper bound follows the clock when unset, so the walk keeps covering the
+    newest releases next January without a code change.
+    """
+    from django.utils import timezone
+
+    configured_hi = int(getattr(settings, 'DORNATV_IMPORT_YEAR_START', 0) or 0)
+    start = int(year_start if year_start is not None else (configured_hi or timezone.now().year + 1))
     end = int(year_end if year_end is not None else getattr(settings, 'DORNATV_IMPORT_YEAR_END', 1970))
     if start < end:
         start, end = end, start
@@ -141,17 +148,20 @@ def run_dornatv_missing_import(
     movies_limit: int | None = None,
     series_limit: int | None = None,
     checkpoint_path: str | None = None,
+    budget_seconds: float | None = None,
     delay: float = 0.35,
     dry_run: bool = False,
     queue_softsub: bool = True,
     year_start: int | None = None,
     year_end: int | None = None,
+    strict_year_window: bool = False,
+    should_cancel=lambda: False,
 ) -> dict:
     """Import a batch of missing Dornatv titles. Designed for Celery beat ticks.
 
-    Walks release years from ``year_start`` (default 2026) down to ``year_end``,
-    creating only titles not already in the catalog (TMDB/IMDb dedupe) with
-    streamable download links + TMDB metadata.
+    Walks release years from ``year_start`` (default: next calendar year) down to
+    ``year_end``, creating only titles not already in the catalog (TMDB/IMDb
+    dedupe) with streamable download links + TMDB metadata.
     """
     from apps.catalog.ingestion import upsert_tmdb_movie, upsert_tmdb_series
     from apps.catalog.iranian import is_iranian_catalog_item, is_iranian_tmdb_details
@@ -169,7 +179,6 @@ def run_dornatv_missing_import(
         coalesce_download_links,
         ensure_episodes_from_download_links,
     )
-    from apps.catalog.provider_import.catalog_lookup import _prefer_streamable_download
     from apps.catalog.tasks import enqueue_movie_softsub, enqueue_series_softsub
     from apps.catalog.top_catalog import (
         _has_download_links,
@@ -192,6 +201,22 @@ def run_dornatv_missing_import(
     movie_page = max(1, int(state.get('movie_page') or 1))
     series_page = max(1, int(state.get('series_page') or 1))
 
+    # A tick must end on its own terms, before Celery's soft time limit ends it for
+    # us. Without this every run walked until it was killed at 12 min, so it never
+    # returned a result, never logged its stats, and reported failure to anything
+    # watching — while the work it had done was real and already checkpointed. The
+    # walk is resumable by design, so stopping early costs nothing: the next tick
+    # picks up at the same page. Under the soft limit by a wide margin, because the
+    # budget is only checked between items and one item can take tens of seconds.
+    tick_budget = float(
+        budget_seconds if budget_seconds is not None
+        else getattr(settings, 'DORNATV_IMPORT_BUDGET_SECONDS', 9 * 60)
+    )
+    started_at = time.monotonic()
+
+    def out_of_time() -> bool:
+        return tick_budget > 0 and (time.monotonic() - started_at) >= tick_budget
+
     def _clamp_year(raw, fallback: int) -> int:
         try:
             value = int(raw if raw is not None else fallback)
@@ -201,7 +226,8 @@ def run_dornatv_missing_import(
             return year_hi
         return value
 
-    # Separate year cursors so movies finishing 2026 do not skip series still on 2026.
+    # Separate year cursors so movies finishing the newest year do not skip series
+    # still working through it.
     legacy_year = state.get('current_year')
     movie_year = _clamp_year(state.get('movie_year', legacy_year), year_hi)
     series_year = _clamp_year(state.get('series_year', legacy_year), year_hi)
@@ -269,6 +295,8 @@ def run_dornatv_missing_import(
 
     def import_one(*, content_type: str, item: dict, expected_year: int, enforce_year: bool = True) -> str:
         nonlocal stats
+        if should_cancel():
+            return 'cancelled'
         parsed = parse_wp_rest_item(item, content_type=content_type)
         page_path = parsed['provider_item_id']
         done = done_movie_paths if content_type == 'movie' else done_series_paths
@@ -281,6 +309,19 @@ def run_dornatv_missing_import(
             stats['skipped_existing'] += 1
             done.add(page_path)
             return 'existing'
+
+        # A strict one-year run can reject taxonomy/modified-list rows before
+        # downloading their much larger detail pages. TMDB is still verified
+        # later for rows that claim the requested year.
+        parsed_year = parsed.get('year')
+        try:
+            parsed_year_i = int(parsed_year) if parsed_year else None
+        except (TypeError, ValueError):
+            parsed_year_i = None
+        if strict_year_window and parsed_year_i and not (year_lo <= parsed_year_i <= year_hi):
+            stats['skipped_wrong_year'] += 1
+            done.add(page_path)
+            return 'wrong_year'
 
         try:
             crawled = connector.crawl_download_links(page_path, content_type=content_type)
@@ -324,9 +365,9 @@ def run_dornatv_missing_import(
             year_i = None
         # When walking a release-year taxonomy, skip titles that clearly belong
         # elsewhere — but do NOT checkpoint them, so the real year can import later.
-        # The modified-sweep (enforce_year=False) accepts any year; it discovers
+        # The modified-sweep normally accepts any year; it discovers
         # new/updated titles without walking release taxonomies.
-        if enforce_year and year_i and abs(year_i - int(expected_year)) > 1:
+        if (enforce_year or strict_year_window) and year_i and not (year_lo <= year_i <= year_hi):
             stats['skipped_wrong_year'] += 1
             return 'wrong_year'
 
@@ -378,6 +419,18 @@ def run_dornatv_missing_import(
             logger.exception('dornatv upsert failed tmdb=%s', tmdb_id)
             return 'error'
 
+        # Provider years can be missing or inaccurate. For a bounded one-year
+        # import, verify the authoritative TMDB detail year before retaining the
+        # newly-created row. This check intentionally leaves the normal rolling
+        # importer unchanged unless strict_year_window=True.
+        actual_year = getattr(obj, 'release_year', None) if content_type == 'movie' else getattr(obj, 'start_year', None)
+        if strict_year_window and actual_year not in range(year_lo, year_hi + 1):
+            if created:
+                obj.delete()
+            stats['skipped_wrong_year'] += 1
+            done.add(page_path)
+            return 'wrong_year'
+
         if not created:
             stats['skipped_existing'] += 1
             existing_tmdb.add(tmdb_id)
@@ -388,6 +441,18 @@ def run_dornatv_missing_import(
         _apply_dornatv_page_metadata(obj, crawled)
 
         normalized = normalize_download_links(available)
+        # The discovery crawler used to store whatever the page listed. Run the
+        # same guards the shared storage path uses — links that belong to another
+        # title are rejected, links the CDN has deleted are dropped — before any
+        # of this reaches a viewer.
+        from apps.catalog.provider_import.link_apply import guard_provider_links
+
+        normalized, _bad, _dead = guard_provider_links(obj, normalized)
+        if not normalized:
+            obj.delete()
+            stats['no_links'] += 1
+            done.add(page_path)
+            return 'no_links'
         obj.download_links = _stamp_page_path(
             coalesce_download_links([], normalized, replace=True),
             crawled.get('page_path') or page_path,
@@ -395,11 +460,14 @@ def run_dornatv_missing_import(
         if imdb_id and not obj.imdb_id:
             obj.imdb_id = imdb_id
         flag_fields = apply_availability_flags(obj, obj.download_links)
-        preferred = _prefer_streamable_download(list(obj.download_links or []))
         update_fields = ['download_links', 'updated_at', *flag_fields]
-        if preferred and hasattr(obj, 'video_url'):
-            obj.video_url = preferred
-            update_fields.append('video_url')
+        # Online playback gets a source that passed the tests, not the best
+        # looking file name. See playback_gate.
+        if hasattr(obj, 'video_url'):
+            from apps.catalog import playback_gate
+
+            _choice, gate_fields = playback_gate.gate_links(obj, obj.download_links or [])
+            update_fields.extend(gate_fields)
         if imdb_id:
             update_fields.append('imdb_id')
         if content_type == 'movie' and not getattr(obj, 'quality', None):
@@ -469,6 +537,11 @@ def run_dornatv_missing_import(
         nonlocal movie_page, series_page, movie_year, series_year
         pages_scanned = 0
         while stats[kept_key] < limit and pages_scanned < max_pages:
+            if should_cancel():
+                return 'cancelled'
+            if out_of_time():
+                persist()
+                return 'budget'
             if content_type == 'movie':
                 year = movie_year
                 page = movie_page
@@ -508,6 +581,12 @@ def run_dornatv_missing_import(
                 persist()
                 continue
             for item in rows:
+                if should_cancel():
+                    persist()
+                    return 'cancelled'
+                if out_of_time():
+                    persist()
+                    return 'budget'
                 if stats[kept_key] >= limit:
                     break
                 result = import_one(content_type=content_type, item=item, expected_year=year)
@@ -571,6 +650,12 @@ def run_dornatv_missing_import(
 
         pages = 0
         while pages < modified_pages:
+            if should_cancel():
+                persist()
+                return 'cancelled'
+            if out_of_time():
+                persist()
+                return 'budget'
             rows, meta = connector._rest_list_by_category(
                 category_ids=all_categories, page=modified_page, embed=True,
                 orderby='modified',
@@ -580,6 +665,12 @@ def run_dornatv_missing_import(
             total_pages = int(meta.get('total_pages') or 0)
             page_oldest_mod = ''  # smallest (oldest) modified in this page
             for item in rows:
+                if should_cancel():
+                    persist()
+                    return 'cancelled'
+                if out_of_time():
+                    persist()
+                    return 'budget'
                 mod = str(item.get('modified') or '')
                 if mod and (not page_oldest_mod or mod < page_oldest_mod):
                     page_oldest_mod = mod
@@ -611,10 +702,12 @@ def run_dornatv_missing_import(
         return 'ok'
 
     def _mod_year(item: dict) -> int:
+        # A missing/garbled ``modified`` stamp is treated as the newest year in the
+        # window, so the row is not silently pushed outside it.
         try:
-            return int(str((item.get('modified') or '')[:4]) or 2026)
+            return int(str((item.get('modified') or '')[:4]) or year_hi)
         except (TypeError, ValueError):
-            return 2026
+            return year_hi
 
     def refresh_stale_links() -> int:
         """Re-crawl published dornatv-sourced rows whose signed CDN links expired.
@@ -716,9 +809,11 @@ def run_dornatv_missing_import(
             # 1) Incremental recent-changes sweep first — cheap, catches new titles.
             if modified_pages > 0:
                 status = scan_recent_modified()
-                if status == 'rate_limited':
-                    return {'status': 'rate_limited', **stats}
+                if status in ('rate_limited', 'budget'):
+                    return {'status': status, **stats}
             # 2) Refresh signed-link staleness on published titles (small budget).
+            if out_of_time():
+                return {'status': 'budget', **stats}
             refresh_stale_links()
             if movies_limit > 0:
                 status = scan_content(
@@ -728,8 +823,8 @@ def run_dornatv_missing_import(
                     limit=movies_limit,
                     max_pages=40,
                 )
-                if status == 'rate_limited':
-                    return {'status': 'rate_limited', **stats}
+                if status in ('rate_limited', 'budget'):
+                    return {'status': status, **stats}
             if series_limit > 0:
                 status = scan_content(
                     content_type='series',
@@ -738,8 +833,8 @@ def run_dornatv_missing_import(
                     limit=series_limit,
                     max_pages=30,
                 )
-                if status == 'rate_limited':
-                    return {'status': 'rate_limited', **stats}
+                if status in ('rate_limited', 'budget'):
+                    return {'status': status, **stats}
     finally:
         close = getattr(connector, 'close', None)
         if callable(close):

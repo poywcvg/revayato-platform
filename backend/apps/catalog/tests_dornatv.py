@@ -95,7 +95,10 @@ class DornatvParserTests(SimpleTestCase):
         <a class="download" href="https://cdn.example/Test.2026.2160p.BluRay.DV.10bit.HEVC.mkv">دانلود</a>
         '''
         row = parse_download_links(html, page_path='/test-2026/')['available_links'][0]
-        self.assertEqual(row['quality'], 'BluRay 2160p Dolby Vision 10bit x265')
+        # ``canonicalize_download_link`` normalizes to resolution-first so the
+        # public quality selector can group encodes by resolution, while the
+        # richer source/HDR/codec tags are preserved.
+        self.assertEqual(row['quality'], '2160p BluRay Dolby Vision 10bit x265')
 
     def test_trailers_and_short_t_files_are_not_download_qualities(self):
         html = '''
@@ -379,3 +382,15 @@ class DornatvProviderSeedTests(TestCase):
         self.assertEqual(provider.slug, 'dornatv')
         self.assertTrue(provider.is_active)
         self.assertIn('dornatv', list_connectors())
+
+
+class DornatvEmbeddedSubtitleTargetTests(SimpleTestCase):
+    def test_series_is_skipped_before_any_download(self):
+        from unittest import mock
+
+        from apps.catalog.provider_import import dornatv_sync
+
+        tracks = [{'id': 'fa', 'source_url': 'https://dornatv.example/sub.vtt'}]
+        with mock.patch('apps.catalog.subtitle_extract.extract_webvtt_from_url') as fetch:
+            self.assertFalse(dornatv_sync._ingest_embedded_subtitle_tracks(Series(pk=1), tracks))
+        fetch.assert_not_called()

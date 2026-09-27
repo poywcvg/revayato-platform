@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Warm hearth ground with a soft amber glow behind the flame. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:aapt="http://schemas.android.com/aapt"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <path android:pathData="M0,0 h108 v108 h-108 z">
+        <aapt:attr name="android:fillColor">
+            <gradient
+                android:type="linear"
+                android:startX="0" android:startY="0"
+                android:endX="0" android:endY="108"
+                android:startColor="#FF3A2219"
+                android:endColor="#FF170D09" />
+        </aapt:attr>
+    </path>
+    <path android:pathData="M0,0 h108 v108 h-108 z">
+        <aapt:attr name="android:fillColor">
+            <gradient
+                android:type="radial"
+                android:centerX="54" android:centerY="61"
+                android:gradientRadius="44"
+                android:startColor="#6BF29F3D"
+                android:endColor="#00F29F3D" />
+        </aapt:attr>
+    </path>
+</vector>

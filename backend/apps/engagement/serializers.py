@@ -1,7 +1,26 @@
-﻿from rest_framework import serializers
+﻿from django.db.models import F
+
+from rest_framework import serializers
 
 from . import selectors
 from .models import Like, Rating, SupportMessage, SupportTicket, UserActivityEvent, WatchlistItem
+
+
+def _bump_view_count(action, content_type, object_id):
+    """Atomically increment Movie/Series.view_count for a tracked detail view.
+
+    Imported lazily to avoid a catalog<->engagement import cycle, and wrapped so
+    a counter hiccup can never break activity ingestion.
+    """
+    if action not in ('view_movie', 'view_series') or not object_id:
+        return
+    try:
+        from apps.catalog.models import Movie, Series
+
+        model = Movie if action == 'view_movie' else Series
+        model.objects.filter(pk=object_id).update(view_count=F('view_count') + 1)
+    except Exception:  # pragma: no cover - counter must never break tracking
+        pass
 
 
 PRIVACY_SAFE_EVENT_TYPES = [
@@ -27,6 +46,10 @@ PRIVACY_SAFE_EVENT_TYPES = [
     'click_director',
     'filter_apply',
     'sort_apply',
+    'download',
+    'app_install_prompt',
+    'app_install_click',
+    'app_install_dismiss',
 ]
 
 EVENT_ACTION_MAP = {
@@ -52,6 +75,10 @@ EVENT_ACTION_MAP = {
     'sort_apply': 'search',
     'continue_watch': 'play',
     'empty_search': 'search',
+    'download': 'download_click',
+    'app_install_prompt': 'app_install_prompt',
+    'app_install_click': 'app_install_click',
+    'app_install_dismiss': 'app_install_dismiss',
 }
 
 
@@ -61,10 +88,10 @@ class PrivacySafeEventInputSerializer(serializers.Serializer):
     event_id = serializers.RegexField(regex=r'^[A-Za-z0-9:_\-.]{8,100}$', required=False)
     event_type = serializers.ChoiceField(choices=PRIVACY_SAFE_EVENT_TYPES)
     title_id = serializers.IntegerField(min_value=1, required=False, allow_null=True)
-    title_slug = serializers.SlugField(max_length=120, required=False, allow_blank=True, allow_null=True)
+    title_slug = serializers.SlugField(max_length=120, required=False, allow_blank=True, allow_null=True, allow_unicode=True)
     # Temporary aliases for older clients. New clients use title_id/title_slug.
     movie_id = serializers.IntegerField(min_value=1, required=False, allow_null=True, write_only=True)
-    movie_slug = serializers.SlugField(max_length=120, required=False, allow_blank=True, allow_null=True, write_only=True)
+    movie_slug = serializers.SlugField(max_length=120, required=False, allow_blank=True, allow_null=True, write_only=True, allow_unicode=True)
     content_type = serializers.ChoiceField(choices=['movie', 'series'], required=False)
     query = serializers.CharField(max_length=255, required=False, allow_blank=True, allow_null=True, trim_whitespace=True)
     genre = serializers.CharField(max_length=100, required=False, allow_blank=True, allow_null=True, trim_whitespace=True)
@@ -74,6 +101,10 @@ class PrivacySafeEventInputSerializer(serializers.Serializer):
     filter_name = serializers.CharField(max_length=60, required=False, allow_blank=True)
     filter_value = serializers.CharField(max_length=120, required=False, allow_blank=True)
     sort = serializers.CharField(max_length=60, required=False, allow_blank=True)
+    # Download signal fields (event_type == 'download'). All optional so other
+    # event types are unaffected; captured into metadata for the downloads panel.
+    quality = serializers.CharField(max_length=40, required=False, allow_blank=True)
+    platform = serializers.ChoiceField(choices=['web', 'android'], required=False)
     source_page = serializers.CharField(max_length=180)
     timestamp = serializers.DateTimeField(required=False)
     anonymous_session_id = serializers.RegexField(
@@ -140,10 +171,12 @@ class PrivacySafeEventInputSerializer(serializers.Serializer):
             'filter_value': validated_data.get('filter_value', ''),
             'sort': validated_data.get('sort', ''),
             'is_empty_query': validated_data.get('is_empty_query', False),
+            'quality': validated_data.get('quality', ''),
+            'platform': validated_data.get('platform', ''),
         }
         metadata = {key: value for key, value in metadata.items() if value not in (None, '')}
 
-        return UserActivityEvent.objects.create(
+        event = UserActivityEvent.objects.create(
             user=user if getattr(user, 'is_authenticated', False) else None,
             client_event_id=event_id or None,
             session_key=validated_data.get('anonymous_session_id', ''),
@@ -160,6 +193,14 @@ class PrivacySafeEventInputSerializer(serializers.Serializer):
             device_type='',
         )
 
+        # Keep the denormalised catalog view counter real: every tracked detail
+        # view (only reached once per new event, dedup returns earlier) bumps the
+        # title's view_count so analytics and "most viewed" rankings reflect
+        # actual traffic instead of a permanently-zero column.
+        _bump_view_count(action, content_type, event.object_id)
+
+        return event
+
 
 class UserActivityEventSerializer(serializers.ModelSerializer):
     class Meta:
@@ -175,14 +216,33 @@ class UserActivityEventSerializer(serializers.ModelSerializer):
 
 class RatingSerializer(serializers.ModelSerializer):
     username = serializers.CharField(source='user.username', read_only=True)
+    # Emit score as a JSON number, not the DRF-default quoted decimal string
+    # ("8.0"). Native clients decode this straight into a numeric type, so a
+    # quoted value made the rate() response unparseable — a saved review then
+    # looked like a failed submit. The web reads it via Number() either way.
+    score = serializers.FloatField()
+    admin_reply_by_name = serializers.SerializerMethodField()
 
     class Meta:
         model = Rating
         fields = [
             'id', 'username', 'content_type', 'object_id',
-            'score', 'review', 'is_spoiler', 'is_hidden', 'created_at', 'updated_at',
+            'score', 'review', 'is_spoiler', 'is_hidden',
+            'admin_reply', 'admin_reply_at', 'admin_reply_by_name',
+            'is_featured', 'featured_at',
+            'created_at', 'updated_at',
         ]
-        read_only_fields = ['id', 'username', 'is_hidden', 'created_at', 'updated_at']
+        read_only_fields = [
+            'id', 'username', 'is_hidden',
+            'admin_reply', 'admin_reply_at', 'admin_reply_by_name',
+            'is_featured', 'featured_at',
+            'created_at', 'updated_at',
+        ]
+
+    def get_admin_reply_by_name(self, obj):
+        # A single, branded voice for every official reply, regardless of which
+        # staff member wrote it.
+        return 'تیم روایتو' if obj.admin_reply else ''
 
 
 class RateContentInputSerializer(serializers.Serializer):
@@ -308,3 +368,19 @@ class AdminSupportTicketUpdateSerializer(serializers.Serializer):
 
 class AdminRatingHideSerializer(serializers.Serializer):
     is_hidden = serializers.BooleanField()
+
+
+class AdminReviewActionSerializer(serializers.Serializer):
+    """One endpoint drives every moderation action on a review: hide/unhide,
+    feature/unfeature, and set/clear the team's public reply. Every field is
+    optional so the admin panel can send just the toggle it changed."""
+    is_hidden = serializers.BooleanField(required=False)
+    is_featured = serializers.BooleanField(required=False)
+    admin_reply = serializers.CharField(
+        required=False, allow_blank=True, max_length=4000, trim_whitespace=False,
+    )
+
+    def validate(self, attrs):
+        if not attrs:
+            raise serializers.ValidationError('هیچ تغییری ارسال نشده است.')
+        return attrs

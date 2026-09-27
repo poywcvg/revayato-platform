@@ -72,23 +72,56 @@ const { trackSearch } = useAnalyticsEvent()
 
 // Always query the live catalog API so newly published titles appear immediately.
 // Do not rank against the lean home catalog cache — that subset misses most of the archive.
-const debouncedQuery = refDebounced(query, 220)
+// /search/suggest/ answers from an in-memory index in milliseconds, so a short
+// debounce only coalesces bursts of fast typing instead of hiding latency.
+const debouncedQuery = refDebounced(query, 90)
+
+interface CachedSuggestion {
+  hits: RankedSearchHit[]
+  actors: SiteActor[]
+}
+// Backspacing or retyping a prefix is answered instantly from this LRU.
+const SUGGESTION_CACHE_SIZE = 80
+const suggestionCache = new Map<string, CachedSuggestion>()
+
+function rememberSuggestion(key: string, value: CachedSuggestion) {
+  suggestionCache.delete(key)
+  suggestionCache.set(key, value)
+  if (suggestionCache.size > SUGGESTION_CACHE_SIZE) {
+    const oldest = suggestionCache.keys().next().value
+    if (oldest !== undefined) suggestionCache.delete(oldest)
+  }
+}
 const isAlive = computed(() => focused.value || Boolean(query.value.trim()) || props.active || open.value)
-const placeholder = computed(() => props.compactPlaceholder ? 'نام یا سال…' : 'جستجوی فیلم، سریال، بازیگر یا سال…')
+
+// The empty field cycles through what can be searched (titles, people, a bare
+// year) instead of one long placeholder. It pauses while the field is in use
+// and never moves for reduced-motion users.
+const hints = computed(() => props.compactPlaceholder
+  ? ['فیلم یا سریال…', 'نام بازیگر…', 'یا یک سال، مثل 2024']
+  : ['جستجوی فیلم و سریال…', 'نام بازیگر را بنویس…', 'یا فقط یک سال، مثل 2024'])
+const hintIndex = ref(0)
+const reducedMotion = usePreferredReducedMotion()
+const hintTicker = useIntervalFn(() => {
+  hintIndex.value = (hintIndex.value + 1) % hints.value.length
+}, 3200, { immediate: false })
+function syncHintTicker() {
+  if (focused.value || query.value || reducedMotion.value === 'reduce') hintTicker.pause()
+  else hintTicker.resume()
+}
+onMounted(syncHintTicker)
+watch([focused, query, reducedMotion], syncHintTicker)
 const normalizedLiveQuery = computed(() => normalizeSearchText(debouncedQuery.value))
 const normalizedQuery = computed(() => normalizeSearchText(query.value))
 const parsedQuery = computed(() => parseSearchQuery(query.value))
 const canSearch = computed(() => Boolean(
   parsedQuery.value.year
-  || normalizeSearchText(parsedQuery.value.text).replace(/\s/g, '').length >= 2,
+  || normalizeSearchText(parsedQuery.value.text).replace(/\s/g, '').length >= 1,
 ))
 
-const hits = computed(() => {
-  const term = normalizedLiveQuery.value
-  if (!term) return [] as RankedSearchHit[]
-  if (resolvedRemoteQuery.value === term) return remoteHits.value
-  return [] as RankedSearchHit[]
-})
+// Keep the previous answer on screen until the next one lands: blanking the
+// list on every keystroke made the results flicker while typing.
+const hits = computed(() => normalizedQuery.value ? remoteHits.value : [] as RankedSearchHit[])
 
 const exactHits = computed(() => hits.value.filter(hit => hit.kind !== 'similar'))
 const similarHits = computed(() => hits.value.filter(hit => hit.kind === 'similar'))
@@ -101,9 +134,36 @@ const searching = computed(() => canSearch.value && (
 ))
 const shortQuery = computed(() => showPanel.value && !canSearch.value)
 const emptyState = computed(() => showPanel.value && canSearch.value && !remoteError.value && !hits.value.length && !actorHits.value.length && !searching.value)
-const directSectionLabel = computed(() => parsedQuery.value.year
-  ? `آثار سال ${parsedQuery.value.year}`
-  : 'نتایج مستقیم از کل آرشیو')
+
+interface CatalogSection {
+  key: 'exact' | 'similar'
+  label: string | null
+  hits: RankedSearchHit[]
+  offset: number
+}
+
+// Direct hits need no heading unless the query was a year; near-matches always
+// say they are near-matches so a fuzzy result never passes as the title typed.
+const catalogSections = computed<CatalogSection[]>(() => {
+  const sections: CatalogSection[] = []
+  if (hasExact.value) {
+    sections.push({
+      key: 'exact',
+      label: parsedQuery.value.year ? `آثار سال ${parsedQuery.value.year}` : null,
+      hits: exactHits.value,
+      offset: 0,
+    })
+  }
+  if (similarHits.value.length) {
+    sections.push({
+      key: 'similar',
+      label: hasExact.value ? 'شبیه به جستجوی تو' : 'نتیجهٔ دقیقی نبود؛ شاید منظورت این‌ها باشد',
+      hits: similarHits.value,
+      offset: exactHits.value.length,
+    })
+  }
+  return sections
+})
 
 const flatHits = computed<FlatSearchOption[]>(() => [
   ...exactHits.value.map(hit => ({ kind: 'catalog' as const, hit, section: 'exact' as const })),
@@ -139,9 +199,21 @@ async function loadRemoteHits(value: string) {
   const requestId = ++remoteRequestId
   remoteAbortController?.abort()
   remoteAbortController = null
-  if (!parsed.year && normalizeSearchText(parsed.text).replace(/\s/g, '').length < 2) {
+  if (!parsed.year && !normalizeSearchText(parsed.text).replace(/\s/g, '')) {
     actorHits.value = []
     remoteHits.value = []
+    resolvedRemoteQuery.value = term
+    remotePending.value = false
+    remoteError.value = false
+    return
+  }
+
+  const cacheKey = `${normalizeSearchText(parsed.text)}|${parsed.year || ''}`
+  const cached = suggestionCache.get(cacheKey)
+  if (cached) {
+    rememberSuggestion(cacheKey, cached)
+    remoteHits.value = cached.hits
+    actorHits.value = cached.actors
     resolvedRemoteQuery.value = term
     remotePending.value = false
     remoteError.value = false
@@ -153,12 +225,12 @@ async function loadRemoteHits(value: string) {
   const controller = new AbortController()
   remoteAbortController = controller
   try {
-    const response = await api<ApiSearchResponse>('/search/', {
+    const response = await api<ApiSearchResponse>('/search/suggest/', {
       query: {
         ...(parsed.text && { q: parsed.text }),
         ...(parsed.year && { year: parsed.year }),
         type: 'all',
-        limit: 12,
+        limit: 10,
       },
       signal: controller.signal,
       timeout: 5_000,
@@ -186,6 +258,7 @@ async function loadRemoteHits(value: string) {
       .map(({ hit }) => hit)
     actorHits.value = (response.actors || []).map(adaptSearchActor)
     resolvedRemoteQuery.value = term
+    rememberSuggestion(cacheKey, { hits: remoteHits.value, actors: actorHits.value })
   } catch {
     if (requestId !== remoteRequestId) return
     actorHits.value = []
@@ -278,7 +351,6 @@ function onFocus() {
 
 function onInput() {
   open.value = true
-  actorHits.value = []
   remoteError.value = false
 }
 
@@ -337,12 +409,6 @@ function focusFromShortcut(event: KeyboardEvent) {
   input.value?.focus()
 }
 
-function kindLabel(kind: RankedSearchHit['kind']) {
-  if (kind === 'exact') return 'تطبیق دقیق'
-  if (kind === 'prefix' || kind === 'contains') return 'نتیجه مرتبط'
-  return 'مرتبط یا شبیه'
-}
-
 onKeyStroke('/', focusFromShortcut)
 watch(() => route.fullPath, () => {
   query.value = queryFromRoute()
@@ -366,35 +432,46 @@ watch(() => props.autofocus, async (value) => {
   <div ref="root" class="header-search-shell">
     <form
       class="header-search"
-      :class="{ 'header-search--alive': isAlive, 'header-search--active': active, 'header-search--open': showPanel }"
+      :class="{
+        'header-search--alive': isAlive,
+        'header-search--active': active,
+        'header-search--open': showPanel,
+        'header-search--busy': showPanel && searching,
+      }"
       role="search"
       @submit.prevent="submit()"
     >
-      <label class="sr-only" :for="inputId">جستجوی فیلم، سریال یا بازیگر</label>
+      <label class="sr-only" :for="inputId">جستجوی فیلم، سریال، بازیگر یا سال</label>
       <span class="header-search__icon" aria-hidden="true">
         <CinematicIcon name="search" class="size-[1.05rem]" />
       </span>
-      <input
-        :id="inputId"
-        ref="input"
-        v-model="query"
-        type="search"
-        inputmode="search"
-        enterkeyhint="search"
-        autocomplete="off"
-        autocorrect="off"
-        spellcheck="false"
-        class="header-search__input"
-        :placeholder="placeholder"
-        role="combobox"
-        :aria-expanded="showPanel"
-        aria-autocomplete="list"
-        :aria-controls="listboxId"
-        :aria-activedescendant="activeIndex >= 0 ? `${listboxId}-option-${activeIndex}` : undefined"
-        @focus="onFocus"
-        @input="onInput"
-        @keydown="onKeydown"
-      >
+      <span class="header-search__field">
+        <input
+          :id="inputId"
+          ref="input"
+          v-model="query"
+          type="search"
+          inputmode="search"
+          enterkeyhint="search"
+          autocomplete="off"
+          autocorrect="off"
+          spellcheck="false"
+          class="header-search__input"
+          role="combobox"
+          :aria-expanded="showPanel"
+          aria-autocomplete="list"
+          :aria-controls="listboxId"
+          :aria-activedescendant="activeIndex >= 0 ? `${listboxId}-option-${activeIndex}` : undefined"
+          @focus="onFocus"
+          @input="onInput"
+          @keydown="onKeydown"
+        >
+        <span v-if="!query" class="header-search__hint" aria-hidden="true">
+          <Transition name="search-hint">
+            <span :key="hintIndex" class="header-search__hint-text">{{ hints[hintIndex] }}</span>
+          </Transition>
+        </span>
+      </span>
       <button
         v-if="query"
         type="button"
@@ -405,6 +482,7 @@ watch(() => props.autofocus, async (value) => {
         <CinematicIcon name="x" class="size-3.5" />
       </button>
       <kbd v-else class="header-search__kbd" aria-hidden="true">/</kbd>
+      <span class="header-search__busy" aria-hidden="true" />
     </form>
 
     <Transition name="search-suggest">
@@ -415,64 +493,34 @@ watch(() => props.autofocus, async (value) => {
         role="listbox"
         :aria-label="`پیشنهادهای جستجو برای ${query}`"
       >
-        <div v-if="searching && !hits.length && !actorHits.length" class="header-search__status" role="status">
-          <CinematicIcon name="refresh" class="mx-auto mb-2 size-5 animate-spin text-brand" />
-          در حال جستجو در آرشیو…
+        <div v-if="searching && !hits.length && !actorHits.length" class="header-search__skeleton" role="status">
+          <span class="sr-only">در حال جستجو…</span>
+          <span v-for="n in 3" :key="n" class="header-search__skeleton-row" aria-hidden="true">
+            <i class="header-search__skeleton-poster" />
+            <span class="header-search__skeleton-lines"><i /><i /></span>
+          </span>
         </div>
 
         <template v-else-if="hits.length || actorHits.length">
-          <p v-if="hasExact" class="header-search__section-label">{{ directSectionLabel }}</p>
-          <button
-            v-for="(hit, index) in exactHits"
-            :id="`${listboxId}-option-${index}`"
-            :key="`exact-${hit.item.type}-${hit.item.id}`"
-            type="button"
-            role="option"
-            class="header-search__option"
-            :class="{ 'header-search__option--active': activeIndex === index }"
-            :aria-selected="activeIndex === index"
-            @mousedown.prevent="openItem(hit)"
+          <div
+            v-for="section in catalogSections"
+            :key="section.key"
+            class="header-search__group"
+            role="group"
+            :aria-label="section.label || 'نتایج'"
           >
-            <CinematicImage
-              :src="hit.item.poster_url"
-              :alt="`پوستر ${hit.item.title}`"
-              ratio="poster"
-              class="header-search__poster"
-              :fallback-label="hit.item.title"
-            />
-            <span class="min-w-0 flex-1 text-right">
-              <span class="block truncate text-sm font-black text-ink" dir="auto">{{ hit.item.title }}</span>
-              <span v-if="hit.item.secondary_title" class="mt-0.5 block truncate text-[11px] text-muted" dir="rtl">{{ hit.item.secondary_title }}</span>
-              <span class="mt-1 flex flex-wrap items-center gap-1.5 text-[11px] text-secondary">
-                <span class="rounded-md bg-elevated px-1.5 py-0.5 font-bold">{{ hit.item.type === 'movie' ? 'فیلم' : 'سریال' }}</span>
-                <span v-if="hit.item.year" class="tabular-nums">{{ hit.item.year }}</span>
-                <DubSubtitleBadge
-                  v-if="hit.item.is_dubbed || hit.item.has_subtitle"
-                  :is-dubbed="hit.item.is_dubbed"
-                  :has-subtitle="hit.item.has_subtitle"
-                  icons-only
-                  compact
-                />
-                <span class="text-muted">{{ kindLabel(hit.kind) }}</span>
-              </span>
-            </span>
-            <CinematicIcon name="arrow-left" class="size-4 shrink-0 text-muted" />
-          </button>
-
-          <template v-if="similarHits.length">
-            <p class="header-search__section-label">
-              {{ hasExact ? 'موارد مرتبط و نام‌های شبیه' : 'نتیجهٔ مستقیم پیدا نشد؛ نزدیک‌ترین پیشنهادها' }}
-            </p>
+            <p v-if="section.label" class="header-search__section-label">{{ section.label }}</p>
             <button
-              v-for="(hit, index) in similarHits"
-              :id="`${listboxId}-option-${exactHits.length + index}`"
-              :key="`similar-${hit.item.type}-${hit.item.id}`"
+              v-for="(hit, index) in section.hits"
+              :id="`${listboxId}-option-${section.offset + index}`"
+              :key="`${section.key}-${hit.item.type}-${hit.item.id}`"
               type="button"
               role="option"
               class="header-search__option"
-              :class="{ 'header-search__option--active': activeIndex === exactHits.length + index }"
-              :aria-selected="activeIndex === exactHits.length + index"
+              :class="{ 'header-search__option--active': activeIndex === section.offset + index }"
+              :aria-selected="activeIndex === section.offset + index"
               @mousedown.prevent="openItem(hit)"
+              @mouseenter="activeIndex = section.offset + index"
             >
               <CinematicImage
                 :src="hit.item.poster_url"
@@ -481,69 +529,72 @@ watch(() => props.autofocus, async (value) => {
                 class="header-search__poster"
                 :fallback-label="hit.item.title"
               />
-              <span class="min-w-0 flex-1 text-right">
-                <span class="block truncate text-sm font-black text-ink" dir="auto">{{ hit.item.title }}</span>
-                <span v-if="hit.item.secondary_title" class="mt-0.5 block truncate text-[11px] text-muted" dir="rtl">{{ hit.item.secondary_title }}</span>
-                <span class="mt-1 flex flex-wrap items-center gap-1.5 text-[11px] text-secondary">
-                  <span class="rounded-md bg-elevated px-1.5 py-0.5 font-bold">{{ hit.item.type === 'movie' ? 'فیلم' : 'سریال' }}</span>
-                  <span v-if="hit.item.year" class="tabular-nums">{{ hit.item.year }}</span>
-                  <DubSubtitleBadge
-                    v-if="hit.item.is_dubbed || hit.item.has_subtitle"
-                    :is-dubbed="hit.item.is_dubbed"
-                    :has-subtitle="hit.item.has_subtitle"
-                    icons-only
-                    compact
-                  />
-                  <span class="text-primary-300">مرتبط یا شبیه</span>
+              <span class="header-search__text">
+                <span class="header-search__title" dir="auto">{{ hit.item.title }}</span>
+                <span class="header-search__meta">
+                  <span>{{ hit.item.type === 'movie' ? 'فیلم' : 'سریال' }}</span>
+                  <template v-if="hit.item.year">
+                    <i class="header-search__dot" aria-hidden="true" />
+                    <span class="tabular-nums">{{ hit.item.year }}</span>
+                  </template>
+                  <template v-if="hit.item.secondary_title">
+                    <i class="header-search__dot" aria-hidden="true" />
+                    <span class="header-search__alt" dir="auto">{{ hit.item.secondary_title }}</span>
+                  </template>
                 </span>
               </span>
-              <CinematicIcon name="arrow-left" class="size-4 shrink-0 text-muted" />
-            </button>
-          </template>
-
-          <template v-if="actorHits.length">
-            <p class="header-search__section-label">بازیگران</p>
-            <button
-              v-for="(actor, index) in actorHits"
-              :id="`${listboxId}-option-${hits.length + index}`"
-              :key="`actor-${actor.id}`"
-              type="button"
-              role="option"
-              class="header-search__option"
-              :class="{ 'header-search__option--active': activeIndex === hits.length + index }"
-              :aria-selected="activeIndex === hits.length + index"
-              @mousedown.prevent="openActor(actor)"
-            >
-              <CinematicImage
-                :src="actor.photo || ''"
-                :alt="`تصویر ${actor.name}`"
-                ratio="poster"
-                class="header-search__poster header-search__poster--actor"
-                :fallback-label="actor.name"
+              <DubSubtitleBadge
+                v-if="hit.item.is_dubbed || hit.item.has_subtitle"
+                class="header-search__badges"
+                :is-dubbed="hit.item.is_dubbed"
+                :has-subtitle="hit.item.has_subtitle"
+                icons-only
+                compact
               />
-              <span class="min-w-0 flex-1 text-right">
-                <span class="block truncate text-sm font-black text-ink" dir="auto">{{ actor.name }}</span>
-                <span v-if="actor.secondary_name" class="mt-0.5 block truncate text-[11px] text-muted" dir="rtl">{{ actor.secondary_name }}</span>
-                <span class="mt-1 inline-flex rounded-md bg-elevated px-1.5 py-0.5 text-[11px] font-bold text-secondary">بازیگر</span>
-              </span>
-              <CinematicIcon name="arrow-left" class="size-4 shrink-0 text-muted" />
+              <CinematicIcon name="arrow-left" class="header-search__go size-4" aria-hidden="true" />
             </button>
-          </template>
+          </div>
+
+          <div v-if="actorHits.length" class="header-search__group" role="group" aria-label="بازیگران">
+            <p class="header-search__section-label">بازیگران</p>
+            <div class="header-search__chips">
+              <button
+                v-for="(actor, index) in actorHits"
+                :id="`${listboxId}-option-${hits.length + index}`"
+                :key="`actor-${actor.id}`"
+                type="button"
+                role="option"
+                class="header-search__chip"
+                :class="{ 'header-search__chip--active': activeIndex === hits.length + index }"
+                :aria-selected="activeIndex === hits.length + index"
+                @mousedown.prevent="openActor(actor)"
+                @mouseenter="activeIndex = hits.length + index"
+              >
+                <CinematicImage
+                  :src="actor.photo || ''"
+                  :alt="`تصویر ${actor.name}`"
+                  ratio="square"
+                  class="header-search__avatar"
+                  :fallback-label="actor.name"
+                />
+                <span class="truncate" dir="auto">{{ actor.name }}</span>
+              </button>
+            </div>
+          </div>
 
           <button
             type="button"
             class="header-search__footer"
             @mousedown.prevent="submit()"
           >
-            مشاهده همه نتایج برای «{{ query.trim() }}»
-            <CinematicIcon name="arrow-left" class="size-3.5" />
+            <span class="truncate">همه نتایج برای «{{ query.trim() }}»</span>
+            <CinematicIcon name="arrow-left" class="size-3.5 shrink-0" />
           </button>
         </template>
 
         <div v-else-if="remoteError" class="header-search__status" role="alert">
-          <CinematicIcon name="signal-off" class="mx-auto mb-2 size-5 text-muted" />
-          <p class="font-bold text-ink">ارتباط با جستجو برقرار نشد</p>
-          <p class="mt-1 text-[11px] leading-5 text-muted">اتصال اینترنت را بررسی کن و دوباره تلاش کن.</p>
+          <p class="header-search__status-title">جستجو در دسترس نیست</p>
+          <p class="header-search__status-note">اتصال اینترنت را بررسی کن و دوباره امتحان کن.</p>
           <button type="button" class="header-search__retry" @mousedown.prevent="retry">
             <CinematicIcon name="refresh" class="size-3.5" />
             تلاش دوباره
@@ -551,14 +602,14 @@ watch(() => props.autofocus, async (value) => {
         </div>
 
         <div v-else-if="shortQuery" class="header-search__status">
-          <p class="font-bold text-ink">کمی بیشتر بنویس</p>
-          <p class="mt-1 text-[11px] leading-5 text-muted">حداقل دو حرف یا یک سال چهاررقمی مثل 2024 وارد کن.</p>
+          <p class="header-search__status-title">کمی بیشتر بنویس</p>
+          <p class="header-search__status-note">یک حرف دیگر، یا یک سال چهاررقمی مثل 2024.</p>
         </div>
 
         <div v-else-if="emptyState" class="header-search__status">
-          <p class="font-bold text-ink">نتیجه‌ای پیدا نشد</p>
-          <p class="mt-1 text-[11px] leading-5 text-muted">نام یا سال دیگری بنویس، یا جست‌وجوی پیشرفته را باز کن.</p>
-          <button type="button" class="header-search__footer mt-2" @mousedown.prevent="submit()">
+          <p class="header-search__status-title">چیزی پیدا نشد</p>
+          <p class="header-search__status-note">املای دیگری امتحان کن، یا نام انگلیسی را بنویس.</p>
+          <button type="button" class="header-search__retry" @mousedown.prevent="submit()">
             جستجوی پیشرفته
             <CinematicIcon name="arrow-left" class="size-3.5" />
           </button>
@@ -569,78 +620,87 @@ watch(() => props.autofocus, async (value) => {
 </template>
 
 <style scoped>
+/* =====================================================================
+   Header search — one quiet pill. At rest it is a hint that cycles through
+   what can be searched; on focus it lights a mint ring (the host header
+   also widens it). Results are a single clean list: poster, title, one
+   meta line. Everything reads theme tokens, so light mode needs no forks.
+   ===================================================================== */
 .header-search-shell {
+  --hs-accent: var(--theme-accent-primary, #b0e4cc);
+  --hs-h: 2.6rem;
   position: relative;
   width: 100%;
   min-width: 0;
 }
 
 .header-search {
-  --search-fg: var(--theme-text-secondary);
   position: relative;
   z-index: 2;
   display: flex;
-  min-width: 0;
   width: 100%;
-  max-width: 100%;
-  height: 2.75rem;
+  min-width: 0;
+  height: var(--hs-h);
   align-items: center;
-  gap: .5rem;
-  padding-inline: .85rem .65rem;
+  gap: .55rem;
+  padding-inline: .95rem .45rem;
   overflow: hidden;
-  border: 1px solid color-mix(in srgb, var(--theme-border) 88%, transparent);
-  border-radius: .7rem;
-  background:
-    linear-gradient(180deg, rgb(255 255 255 / 5%), transparent 55%),
-    color-mix(in srgb, var(--theme-bg-elevated) 38%, transparent);
-  color: var(--search-fg);
-  transition: border-color 200ms ease, background-color 200ms ease, color 180ms ease;
-  -webkit-backdrop-filter: blur(14px) saturate(140%);
-  backdrop-filter: blur(14px) saturate(140%);
+  border: 1px solid color-mix(in srgb, var(--theme-text-primary, #fff) 9%, transparent);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--theme-text-primary, #fff) 5%, transparent);
+  color: var(--theme-text-secondary, #c4c4c4);
+  cursor: text;
+  transition:
+    border-color 200ms ease,
+    background-color 200ms ease,
+    box-shadow 260ms cubic-bezier(.22, 1, .36, 1);
 }
 
-.header-search--alive,
-.header-search--active,
+.header-search:hover {
+  border-color: color-mix(in srgb, var(--theme-text-primary, #fff) 16%, transparent);
+}
+
 .header-search:focus-within,
 .header-search--open {
-  --search-fg: var(--theme-text-primary);
-  border-color: color-mix(in srgb, var(--theme-accent-primary) 42%, var(--theme-border));
-  background:
-    linear-gradient(180deg, rgb(255 255 255 / 7%), transparent 55%),
-    color-mix(in srgb, var(--theme-bg-surface) 55%, transparent);
+  border-color: color-mix(in srgb, var(--hs-accent) 60%, transparent);
+  background: color-mix(in srgb, var(--theme-bg-surface, #0d0d0d) 70%, transparent);
+  color: var(--theme-text-primary, #fff);
+  box-shadow: 0 0 0 4px color-mix(in srgb, var(--hs-accent) 14%, transparent);
 }
 
 .header-search__icon {
   display: grid;
   flex: none;
   place-items: center;
-  color: color-mix(in srgb, var(--theme-accent-primary) 78%, var(--theme-text-secondary));
+  color: var(--theme-text-muted, #979797);
+  transition: color 200ms ease, transform 260ms cubic-bezier(.34, 1.56, .64, 1);
 }
 
-.header-search:focus-within .header-search__icon {
-  color: var(--theme-accent-primary);
+.header-search:focus-within .header-search__icon,
+.header-search--active .header-search__icon {
+  color: var(--hs-accent);
+  transform: scale(1.08);
+}
+
+.header-search__field {
+  position: relative;
+  display: flex;
+  min-width: 0;
+  height: 100%;
+  flex: 1 1 auto;
+  align-items: center;
 }
 
 .header-search__input {
+  width: 100%;
   min-width: 0;
-  flex: 1 1 auto;
   height: 100%;
   border: 0;
   background: transparent;
-  color: var(--theme-text-secondary);
+  color: var(--theme-text-primary, #fff);
   font-size: .875rem;
   font-weight: 500;
-  letter-spacing: -.01em;
   outline: none;
-}
-
-.header-search:focus-within .header-search__input {
-  color: var(--theme-text-primary);
-}
-
-.header-search__input::placeholder {
-  color: var(--theme-text-muted);
-  font-weight: 400;
 }
 
 .header-search__input::-webkit-search-decoration,
@@ -650,196 +710,421 @@ watch(() => props.autofocus, async (value) => {
   display: none;
 }
 
+/* Cycling hint: stacked in one grid cell so the outgoing and incoming lines
+   cross-slide in place without shifting anything around them. */
+.header-search__hint {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  align-items: center;
+  overflow: hidden;
+  pointer-events: none;
+  color: var(--theme-text-muted, #979797);
+  font-size: .85rem;
+  white-space: nowrap;
+  transition: opacity 160ms ease;
+}
+
+.header-search__hint-text {
+  grid-area: 1 / 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.header-search:focus-within .header-search__hint { opacity: .6; }
+
+.search-hint-enter-active,
+.search-hint-leave-active {
+  transition: opacity 320ms ease, transform 420ms cubic-bezier(.22, 1, .36, 1);
+}
+
+.search-hint-enter-from {
+  opacity: 0;
+  transform: translateY(70%);
+}
+
+.search-hint-leave-to {
+  opacity: 0;
+  transform: translateY(-70%);
+}
+
 .header-search__clear {
   display: grid;
   flex: none;
-  width: 2.25rem;
-  height: 2.25rem;
+  width: 1.85rem;
+  height: 1.85rem;
   place-items: center;
-  border-radius: 9999px;
-  background: color-mix(in srgb, var(--theme-bg-elevated) 70%, transparent);
-  color: var(--theme-text-secondary);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--theme-text-primary, #fff) 8%, transparent);
+  color: var(--theme-text-secondary, #c4c4c4);
+  transition: background-color 160ms ease, color 160ms ease, transform 160ms ease;
   -webkit-tap-highlight-color: transparent;
 }
 
-@media (max-width: 1023px) {
-  .header-search {
-    height: 2.75rem;
-    padding-inline: .7rem .45rem;
-  }
-
-  .header-search__input {
-    font-size: 1rem; /* avoid iOS zoom on focus */
-  }
-
-  .header-search__panel {
-    max-height: min(58dvh, 24rem);
-    overscroll-behavior: contain;
-    -webkit-overflow-scrolling: touch;
-  }
-}
+.header-search__clear:active { transform: scale(.9); }
 
 .header-search__kbd {
   display: none;
   flex: none;
-  min-width: 1.35rem;
-  padding: .15rem .35rem;
-  border: 1px solid color-mix(in srgb, var(--theme-border) 90%, transparent);
-  border-radius: .45rem;
-  background: color-mix(in srgb, var(--theme-bg-main) 55%, transparent);
-  color: var(--theme-text-muted);
+  min-width: 1.6rem;
+  height: 1.6rem;
+  place-items: center;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--theme-text-primary, #fff) 7%, transparent);
+  color: var(--theme-text-muted, #979797);
   font-family: var(--font-latin-ui);
-  font-size: .625rem;
-  font-weight: 500;
-  line-height: 1.2;
-  opacity: .85;
+  font-size: 0.75rem;
+  font-weight: 600;
+  line-height: 1;
+  transition: opacity 160ms ease;
 }
 
+.header-search:focus-within .header-search__kbd { opacity: 0; }
+
+/* A thin mint sweep along the pill's floor while an answer is in flight. */
+.header-search__busy {
+  position: absolute;
+  inset-inline: 1.2rem;
+  bottom: 0;
+  height: 2px;
+  border-radius: 999px;
+  background: linear-gradient(90deg, transparent, var(--hs-accent), transparent);
+  background-size: 40% 100%;
+  background-repeat: no-repeat;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 160ms ease;
+}
+
+.header-search--busy .header-search__busy {
+  opacity: .9;
+  animation: header-search-sweep 900ms ease-in-out infinite;
+}
+
+@keyframes header-search-sweep {
+  from { background-position: 130% 0; }
+  to { background-position: -30% 0; }
+}
+
+/* ---- Results ---- */
 .header-search__panel {
   position: absolute;
   inset-inline: 0;
-  top: calc(100% + .5rem);
+  top: calc(100% + .6rem);
   z-index: 80;
-  max-height: min(70dvh, 28rem);
+  display: flex;
+  flex-direction: column;
+  max-height: min(70dvh, 30rem);
+  padding: .4rem;
   overflow: auto;
-  border: 1px solid color-mix(in srgb, var(--theme-accent-primary) 28%, var(--theme-border));
-  border-radius: .8rem;
-  background: color-mix(in srgb, var(--theme-bg-surface) 98%, transparent);
-  box-shadow: 0 18px 40px rgb(0 0 0 / 28%);
+  overscroll-behavior: contain;
+  border: 1px solid color-mix(in srgb, var(--theme-text-primary, #fff) 9%, transparent);
+  border-radius: 1.35rem;
+  background: color-mix(in srgb, var(--theme-bg-elevated, #141414) 96%, transparent);
+  box-shadow:
+    0 1.5rem 3rem rgb(0 0 0 / 38%),
+    inset 0 1px 0 rgb(255 255 255 / 5%);
   -webkit-backdrop-filter: blur(18px) saturate(140%);
   backdrop-filter: blur(18px) saturate(140%);
+  scrollbar-width: thin;
+}
+
+.header-search__group + .header-search__group {
+  margin-top: .25rem;
+  padding-top: .25rem;
+  border-top: 1px solid color-mix(in srgb, var(--theme-text-primary, #fff) 6%, transparent);
 }
 
 .header-search__section-label {
-  padding: .75rem 1rem .3rem;
-  color: color-mix(in srgb, var(--theme-text-primary) 78%, transparent);
-  font-size: .6875rem;
-  font-weight: 800;
+  padding: .55rem .7rem .35rem;
+  color: var(--theme-text-muted, #979797);
+  font-size: 0.75rem;
+  font-weight: 700;
 }
 
 .header-search__option {
   display: flex;
   width: 100%;
   align-items: center;
-  gap: .75rem;
-  padding: .5rem 1rem;
+  gap: .7rem;
+  padding: .4rem .5rem;
+  border-radius: .95rem;
   text-align: right;
   transition: background-color 140ms ease;
 }
 
 .header-search__option--active {
-  background: color-mix(in srgb, var(--theme-accent-primary-soft) 88%, transparent);
+  background: color-mix(in srgb, var(--hs-accent) 11%, transparent);
 }
 
 .header-search__poster {
-  width: 2.5rem;
+  width: 2.3rem;
   flex: none;
   overflow: hidden;
-  border-radius: .55rem;
-  box-shadow: inset 0 0 0 1px rgb(var(--palette-ink-rgb) / 8%);
+  border-radius: .6rem;
+  box-shadow: inset 0 0 0 1px rgb(255 255 255 / 6%);
 }
 
-.header-search__poster--actor {
+.header-search__text {
+  display: flex;
+  min-width: 0;
+  flex: 1 1 auto;
+  flex-direction: column;
+  gap: .2rem;
+}
+
+.header-search__title {
+  overflow: hidden;
+  color: var(--theme-text-primary, #fff);
+  font-size: .875rem;
+  font-weight: 800;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.header-search__meta {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: .4rem;
+  color: var(--theme-text-muted, #979797);
+  font-size: .72rem;
+  white-space: nowrap;
+}
+
+.header-search__alt {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.header-search__dot {
+  width: 3px;
+  height: 3px;
+  flex: none;
+  border-radius: 50%;
+  background: currentcolor;
+  opacity: .6;
+}
+
+.header-search__badges { flex: none; }
+
+.header-search__go {
+  flex: none;
+  color: var(--hs-accent);
+  opacity: 0;
+  transform: translateX(.35rem);
+  transition: opacity 160ms ease, transform 200ms cubic-bezier(.22, 1, .36, 1);
+}
+
+.header-search__option--active .header-search__go {
+  opacity: 1;
+  transform: none;
+}
+
+/* Actors: a wrap of compact chips instead of full rows. */
+.header-search__chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: .4rem;
+  padding: .1rem .5rem .5rem;
+}
+
+.header-search__chip {
+  display: inline-flex;
+  max-width: 12rem;
+  align-items: center;
+  gap: .45rem;
+  padding: .2rem .25rem .2rem .75rem;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--theme-text-primary, #fff) 5%, transparent);
+  color: var(--theme-text-secondary, #c4c4c4);
+  font-size: .78rem;
+  font-weight: 600;
+  transition: background-color 140ms ease, color 140ms ease;
+}
+
+.header-search__chip--active {
+  background: color-mix(in srgb, var(--hs-accent) 16%, transparent);
+  color: var(--theme-text-primary, #fff);
+}
+
+.header-search__avatar {
+  width: 1.7rem;
+  flex: none;
+  overflow: hidden;
   border-radius: 999px;
 }
 
 .header-search__footer {
   display: flex;
-  width: 100%;
-  min-height: 2.75rem;
+  min-height: 2.6rem;
   align-items: center;
   justify-content: center;
   gap: .4rem;
-  border-top: 1px solid var(--theme-border);
-  padding: .75rem .9rem;
-  color: var(--theme-accent-primary);
-  font-size: .75rem;
+  margin-top: .3rem;
+  padding-inline: 1rem;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--hs-accent) 9%, transparent);
+  color: var(--hs-accent);
+  font-size: .78rem;
   font-weight: 800;
+  transition: background-color 160ms ease;
+}
+
+/* ---- Loading / empty / error ---- */
+.header-search__skeleton {
+  display: grid;
+  gap: .15rem;
+  padding: .1rem 0;
+}
+
+.header-search__skeleton-row {
+  display: flex;
+  align-items: center;
+  gap: .7rem;
+  padding: .4rem .5rem;
+}
+
+.header-search__skeleton-poster,
+.header-search__skeleton-lines i {
+  display: block;
+  border-radius: .5rem;
+  background: color-mix(in srgb, var(--theme-text-primary, #fff) 7%, transparent);
+  animation: header-search-pulse 1.2s ease-in-out infinite;
+}
+
+.header-search__skeleton-poster {
+  width: 2.3rem;
+  height: 3.45rem;
+  flex: none;
+  border-radius: .6rem;
+}
+
+.header-search__skeleton-lines {
+  display: grid;
+  flex: 1;
+  gap: .45rem;
+}
+
+.header-search__skeleton-lines i:first-child { width: 55%; height: .7rem; }
+.header-search__skeleton-lines i:last-child { width: 30%; height: .55rem; }
+.header-search__skeleton-row:nth-child(3) i { animation-delay: 120ms; }
+.header-search__skeleton-row:nth-child(4) i { animation-delay: 240ms; }
+
+@keyframes header-search-pulse {
+  0%, 100% { opacity: .55; }
+  50% { opacity: 1; }
+}
+
+.header-search__status {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: .3rem;
+  padding: 1.1rem 1rem 1rem;
+  text-align: center;
+}
+
+.header-search__status-title {
+  color: var(--theme-text-primary, #fff);
+  font-size: .85rem;
+  font-weight: 800;
+}
+
+.header-search__status-note {
+  color: var(--theme-text-muted, #979797);
+  font-size: .75rem;
+  line-height: 1.6;
 }
 
 .header-search__retry {
   display: inline-flex;
-  min-height: 2.5rem;
+  min-height: 2.3rem;
   align-items: center;
-  justify-content: center;
   gap: .4rem;
-  margin-top: .65rem;
-  padding-inline: .9rem;
-  border-radius: .8rem;
-  background: color-mix(in srgb, var(--theme-accent-primary) 14%, transparent);
-  color: var(--theme-accent-primary);
+  margin-top: .45rem;
+  padding-inline: 1rem;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--hs-accent) 12%, transparent);
+  color: var(--hs-accent);
   font-size: .75rem;
   font-weight: 800;
 }
 
 @media (hover: hover) and (pointer: fine) {
   .header-search__clear:hover {
-    background: color-mix(in srgb, var(--theme-accent-primary) 18%, transparent);
-    color: var(--theme-accent-primary);
+    background: color-mix(in srgb, var(--hs-accent) 18%, transparent);
+    color: var(--hs-accent);
   }
 
-  .header-search__option:hover {
-    background: color-mix(in srgb, var(--theme-accent-primary-soft) 88%, transparent);
+  .header-search__chip:hover {
+    background: color-mix(in srgb, var(--hs-accent) 16%, transparent);
+    color: var(--theme-text-primary, #fff);
   }
 
-  .header-search__footer:hover {
-    background: color-mix(in srgb, var(--theme-accent-primary-soft) 70%, transparent);
-  }
-
+  .header-search__footer:hover,
   .header-search__retry:hover {
-    background: color-mix(in srgb, var(--theme-accent-primary) 22%, transparent);
+    background: color-mix(in srgb, var(--hs-accent) 17%, transparent);
   }
-}
-
-.header-search__status {
-  padding: 1rem .95rem 1.05rem;
-  color: var(--theme-text-secondary);
-  font-size: .8125rem;
-  text-align: center;
 }
 
 .search-suggest-enter-active,
 .search-suggest-leave-active {
-  transition: opacity 140ms ease, transform 160ms ease;
+  transition: opacity 160ms ease, transform 220ms cubic-bezier(.22, 1, .36, 1);
+  transform-origin: top center;
 }
 
 .search-suggest-enter-from,
 .search-suggest-leave-to {
   opacity: 0;
-  transform: translateY(-.35rem);
+  transform: translateY(-.4rem) scale(.98);
+}
+
+@media (max-width: 1023px) {
+  .header-search-shell { --hs-h: 2.85rem; }
+
+  .header-search__input,
+  .header-search__hint {
+    font-size: 1rem; /* 16px keeps iOS from zooming on focus */
+  }
+
+  .header-search__panel {
+    max-height: min(62dvh, 26rem);
+    -webkit-overflow-scrolling: touch;
+  }
 }
 
 @media (min-width: 1280px) {
-  .header-search {
-    height: 2.5rem;
-    padding-inline: 1rem .8rem;
-  }
-
-  .header-search__kbd {
-    display: inline-grid;
-    place-items: center;
-  }
+  .header-search__kbd { display: inline-grid; }
 }
 
 :global(html[data-theme="light"] .header-search) {
-  border-color: var(--theme-border-strong);
-  background:
-    linear-gradient(180deg, rgb(255 255 255 / 96%), rgb(248 250 248 / 92%)),
-    var(--theme-bg-surface);
-  box-shadow: 0 1px 0 rgb(23 50 38 / 3%);
+  border-color: var(--theme-border, #d5ddd8);
+  background: var(--theme-bg-surface, #fff);
 }
 
 :global(html[data-theme="light"] .header-search__panel) {
-  border-color: var(--theme-border);
-  background: color-mix(in srgb, var(--theme-bg-surface) 98%, transparent);
-  box-shadow: var(--theme-shadow-float);
+  border-color: var(--theme-border, #d5ddd8);
+  background: var(--theme-bg-surface, #fff);
+  box-shadow: var(--theme-shadow-float, 0 18px 40px rgb(23 50 38 / 14%));
 }
 
 @media (prefers-reduced-motion: reduce) {
   .header-search,
+  .header-search__icon,
+  .header-search__go,
+  .search-hint-enter-active,
+  .search-hint-leave-active,
   .search-suggest-enter-active,
   .search-suggest-leave-active {
     transition: none;
+  }
+
+  .header-search--busy .header-search__busy,
+  .header-search__skeleton-poster,
+  .header-search__skeleton-lines i {
+    animation: none;
   }
 }
 </style>

@@ -42,7 +42,7 @@ watch(() => props.messages.length, async () => {
   <section class="flex min-h-0 flex-1 flex-col" :aria-labelledby="titleId">
     <div class="mb-2 flex items-center justify-between">
       <h3 :id="titleId" class="text-xs font-black text-white/80">گفت‌وگوی زنده</h3>
-      <span class="inline-flex items-center gap-1.5 text-[10px] font-bold text-white/35">
+      <span class="inline-flex items-center gap-1.5 text-[11px] font-bold text-white/35">
         <span class="size-1.5 animate-pulse rounded-full bg-success" />زنده
       </span>
     </div>
@@ -58,13 +58,13 @@ watch(() => props.messages.length, async () => {
         :key="message.id"
         class="flex gap-2 rounded-xl px-1 py-1 transition hover:bg-white/[.03]"
       >
-        <span class="mt-0.5 grid size-7 shrink-0 place-items-center rounded-full bg-primary-500/15 text-[11px] font-black text-primary-300">
+        <span class="mt-0.5 grid size-7 shrink-0 place-items-center rounded-full bg-primary-500/15 text-xs font-black text-primary-300">
           {{ initial(message.user.display_name) }}
         </span>
         <div class="min-w-0 flex-1">
           <div class="flex items-baseline justify-between gap-2">
-            <p class="truncate text-[11px] font-black text-primary-300">{{ message.user.display_name }}</p>
-            <time :datetime="message.created_at" class="font-latin shrink-0 text-[9px] text-white/30">{{ formatTime(message.created_at) }}</time>
+            <p class="truncate text-xs font-black text-primary-300">{{ message.user.display_name }}</p>
+            <time :datetime="message.created_at" class="font-latin shrink-0 text-[11px] text-white/30">{{ formatTime(message.created_at) }}</time>
           </div>
           <p class="mt-0.5 whitespace-pre-wrap break-words text-xs leading-6 text-white/70">{{ message.message }}</p>
         </div>
@@ -75,7 +75,7 @@ watch(() => props.messages.length, async () => {
             <CinematicIcon name="comments" class="size-6 text-white/35" />
           </span>
           <p class="mt-3 text-sm font-black text-white/70">هنوز پیامی نیست</p>
-          <p class="mt-1.5 text-[11px] leading-5 text-white/40">
+          <p class="mt-1.5 text-xs leading-5 text-white/40">
             واکنش کوتاه بنویس؛ همه در اتاق آن را می‌بینند.
             <span class="block text-white/30">از اسپویل زیاد پرهیز کن.</span>
           </p>
@@ -94,7 +94,7 @@ watch(() => props.messages.length, async () => {
           placeholder="واکنش سریع بنویس…"
           class="min-h-11 w-full rounded-xl border border-white/10 bg-white/[.04] px-3 text-xs text-white outline-none transition placeholder:text-white/30 focus:border-primary-500/50 focus:ring-2 focus:ring-primary-500/15 disabled:cursor-not-allowed"
         >
-        <p class="mt-1 px-1 text-left font-latin text-[9px] text-white/30" dir="ltr">
+        <p class="mt-1 px-1 text-left font-latin text-[11px] text-white/30" dir="ltr">
           {{ draft.length }}/{{ MAX_LEN }}
         </p>
       </div>

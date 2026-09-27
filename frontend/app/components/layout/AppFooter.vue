@@ -9,6 +9,18 @@ const quickLinks = [
   { label: 'اپلیکیشن', to: '/app' },
 ]
 
+// The head queries people search for, as real crawlable links on every page.
+const categoryLinks = [
+  { label: 'فیلم دوبله فارسی', to: '/movies/dubbed' },
+  { label: 'سریال کره‌ای', to: '/series/country/kr' },
+  { label: 'سریال ترکی', to: '/series/country/tr' },
+  { label: 'فیلم هندی', to: '/movies/country/in' },
+  { label: 'فیلم اکشن', to: '/movies/genre/action' },
+  { label: 'فیلم ترسناک', to: '/movies/genre/horror' },
+  { label: 'انیمه', to: '/series/genre/anime' },
+  { label: '۲۵۰ فیلم برتر IMDb', to: '/top250' },
+]
+
 const supportLinks = [
   { label: 'درخواست فیلم یا سریال', to: '/contact?subject=content_request' },
   { label: 'درباره ما', to: '/about' },
@@ -62,6 +74,22 @@ function isActive(to: string) {
           <h2 class="site-footer__heading">دسترسی سریع</h2>
           <ul class="site-footer__list">
             <li v-for="item in quickLinks" :key="item.to">
+              <NuxtLink
+                :to="item.to"
+                class="site-footer__link"
+                :class="{ 'is-active': isActive(item.to) }"
+                :aria-current="isActive(item.to) ? 'page' : undefined"
+              >
+                {{ item.label }}
+              </NuxtLink>
+            </li>
+          </ul>
+        </nav>
+
+        <nav class="site-footer__col" aria-label="دسته‌های محبوب">
+          <h2 class="site-footer__heading">دسته‌های محبوب</h2>
+          <ul class="site-footer__list">
+            <li v-for="item in categoryLinks" :key="item.to">
               <NuxtLink
                 :to="item.to"
                 class="site-footer__link"
@@ -138,7 +166,7 @@ function isActive(to: string) {
 
 @media (min-width: 1024px) {
   .site-footer__grid {
-    grid-template-columns: minmax(0, 1.5fr) 1fr 1fr;
+    grid-template-columns: minmax(0, 1.5fr) 1fr 1fr 1fr;
     gap: 3rem;
   }
 }
@@ -187,7 +215,7 @@ function isActive(to: string) {
 .site-footer__telegram-handle {
   color: var(--theme-text-muted);
   font-family: var(--font-latin-ui);
-  font-size: .66rem;
+  font-size: 0.75rem;
   font-weight: 600;
 }
 
@@ -213,17 +241,43 @@ function isActive(to: string) {
 }
 
 .site-footer__link {
+  position: relative;
   display: inline-flex;
   min-height: 2rem;
   align-items: center;
   color: var(--theme-text-muted);
   font-size: .75rem;
-  transition: color 160ms ease;
+  transition: color 160ms ease, transform 160ms ease;
+}
+
+/* Underline grows from the inline-start (RTL-correct) on hover/active. */
+.site-footer__link::after {
+  content: '';
+  position: absolute;
+  inset-block-end: .28rem;
+  inset-inline-start: 0;
+  height: 1.5px;
+  width: 100%;
+  border-radius: 999px;
+  background: var(--theme-accent-primary);
+  transform: scaleX(0);
+  transform-origin: right; /* RTL site: inline-start is the right edge */
+  transition: transform 220ms cubic-bezier(.22, 1, .36, 1);
 }
 
 .site-footer__link:hover,
 .site-footer__link.is-active {
   color: var(--theme-accent-primary);
+}
+
+.site-footer__link:hover { transform: translateX(-2px); }
+
+.site-footer__link:hover::after,
+.site-footer__link.is-active::after { transform: scaleX(1); }
+
+@media (prefers-reduced-motion: reduce) {
+  .site-footer__link, .site-footer__link::after { transition-duration: 1ms; }
+  .site-footer__link:hover { transform: none; }
 }
 
 .site-footer__bar {
@@ -240,13 +294,13 @@ function isActive(to: string) {
 .site-footer__copy {
   margin: 0;
   color: var(--theme-text-muted);
-  font-size: .7rem;
+  font-size: 0.75rem;
 }
 
 .site-footer__handle {
   color: var(--theme-text-muted);
   font-family: var(--font-latin-ui);
-  font-size: .7rem;
+  font-size: 0.75rem;
   transition: color 160ms ease;
 }
 

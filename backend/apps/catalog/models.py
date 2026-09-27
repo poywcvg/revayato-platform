@@ -9,6 +9,8 @@ from django.utils.translation import gettext_lazy as _
 from config.public_urls import (
     validate_download_links, validate_object_key, validate_subtitle_tracks,
 )
+# Pure data (no Django imports) — safe to load while the app registry is warming.
+from apps.catalog import report_catalog as _report_catalog
 
 
 def _safe_movie_image_path(directory, filename):
@@ -38,6 +40,25 @@ class MediaStatus(models.TextChoices):
     READY = 'ready', _('Media ready')
     ERROR = 'error', _('Media error')
     FAILED = 'failed', _('Media failed')
+
+
+class PlaybackMode(models.TextChoices):
+    """How the online player should be told to open this title's ``video_url``.
+
+    Set by :mod:`apps.catalog.playback_gate`, which tests the source instead of
+    reading its file name. ``UNVERIFIED`` is the default and means exactly what
+    it says — nothing has been measured yet, so the client behaves the way it
+    always did (try the file, fall back to the gateway on failure).
+    """
+
+    #: Tested: a strict browser plays this file as it stands.
+    DIRECT = 'direct', _('Plays directly')
+    #: Reachable and real, but needs the gateway's HLS rewrap (MKV, HEVC, DTS).
+    GATEWAY = 'gateway', _('Needs gateway')
+    #: Not measured yet, or the probe could not reach the host.
+    UNVERIFIED = 'unverified', _('Not verified')
+    #: Every candidate source answered "gone".
+    NONE = 'none', _('No playable source')
 
 
 class CatalogSyncRun(models.Model):
@@ -427,6 +448,14 @@ class Movie(models.Model):
     backdrop = models.ImageField(_('Backdrop'), upload_to=movie_backdrop_upload_path, null=True, blank=True)
     trailer_url = models.CharField(_('Trailer object key'), max_length=500, blank=True, validators=[validate_object_key])
     video_url = models.CharField(_('HLS manifest object key'), max_length=500, blank=True, validators=[validate_object_key])
+    #: What testing the source proved about it. See :class:`PlaybackMode`.
+    playback_mode = models.CharField(
+        _('Playback mode'), max_length=16, choices=PlaybackMode.choices,
+        default=PlaybackMode.UNVERIFIED, db_index=True,
+    )
+    playback_checked_at = models.DateTimeField(
+        _('Playback checked at'), null=True, blank=True, db_index=True,
+    )
     download_key = models.CharField(_('Download object key'), max_length=500, blank=True, validators=[validate_object_key])
     download_links = models.JSONField(
         _('Download links'), default=list, blank=True, validators=[validate_download_links],
@@ -463,10 +492,26 @@ class Movie(models.Model):
         db_index=True,
         help_text=_('1–250 when this title is on the IMDb Top 250 chart; null otherwise.'),
     )
+    imdb_votes = models.PositiveIntegerField(
+        _('IMDb votes'), null=True, blank=True,
+        help_text=_('Vote count behind imdb_rating, from the same source.'),
+    )
+    imdb_rating_source = models.CharField(
+        _('IMDb rating source'), max_length=12, blank=True, db_index=True,
+        help_text=_(
+            'Where imdb_rating came from: imdb (exact, from IMDb\u2019s own dataset), '
+            'omdb, manual (an admin typed it, wins over everything), or tmdb (an '
+            'approximation kept only until the real score is available).'
+        ),
+    )
+    imdb_rating_synced_at = models.DateTimeField(
+        _('IMDb rating synced at'), null=True, blank=True,
+    )
     site_rating = models.DecimalField(
         _('Site Rating'), max_digits=3, decimal_places=1, null=True, blank=True,
         validators=[MinValueValidator(0), MaxValueValidator(10)],
     )
+    site_rating_count = models.PositiveIntegerField(_('Site rating votes'), default=0, db_index=True)
     age_rating = models.CharField(_('Age Rating'), max_length=20, blank=True, db_index=True)
     language = models.CharField(_('Language'), max_length=100, blank=True)
     original_language = models.CharField(_('Original language'), max_length=20, blank=True, db_index=True)
@@ -644,6 +689,12 @@ class Movie(models.Model):
         # Never auto-publish titles without download/playback URLs.
         if not self.has_downloads and not (self.video_url or '').strip():
             blockers.append('missing_playback_links')
+        else:
+            # Having links is not the same as those links serving a video, so the
+            # stored pre-publish probe verdict decides (see media_verification).
+            from .media_verification import media_publish_blockers
+
+            blockers.extend(media_publish_blockers(self))
         # The full catalog structure is mandatory before going live.
         for gap in publish_blockers(self):
             if gap not in blockers:
@@ -751,10 +802,26 @@ class Series(models.Model):
         db_index=True,
         help_text=_('1–250 when this title is on the IMDb Top 250 TV chart; null otherwise.'),
     )
+    imdb_votes = models.PositiveIntegerField(
+        _('IMDb votes'), null=True, blank=True,
+        help_text=_('Vote count behind imdb_rating, from the same source.'),
+    )
+    imdb_rating_source = models.CharField(
+        _('IMDb rating source'), max_length=12, blank=True, db_index=True,
+        help_text=_(
+            'Where imdb_rating came from: imdb (exact, from IMDb\u2019s own dataset), '
+            'omdb, manual (an admin typed it, wins over everything), or tmdb (an '
+            'approximation kept only until the real score is available).'
+        ),
+    )
+    imdb_rating_synced_at = models.DateTimeField(
+        _('IMDb rating synced at'), null=True, blank=True,
+    )
     site_rating = models.DecimalField(
         _('Site Rating'), max_digits=3, decimal_places=1, null=True, blank=True,
         validators=[MinValueValidator(0), MaxValueValidator(10)],
     )
+    site_rating_count = models.PositiveIntegerField(_('Site rating votes'), default=0, db_index=True)
     age_rating = models.CharField(_('Age Rating'), max_length=20, blank=True, db_index=True)
     language = models.CharField(_('Language'), max_length=100, blank=True)
     original_language = models.CharField(_('Original language'), max_length=20, blank=True, db_index=True)
@@ -863,6 +930,10 @@ class Series(models.Model):
         # neither has nothing to watch and must not go live.
         if not self.has_downloads and not self.seasons.filter(episodes__isnull=False).exists():
             blockers.append('missing_playback_links')
+        else:
+            from .media_verification import media_publish_blockers
+
+            blockers.extend(media_publish_blockers(self))
         if not self.poster and not self.poster_external_url:
             blockers.append('missing_poster')
         return blockers
@@ -937,6 +1008,14 @@ class Episode(models.Model):
 
     poster = models.ImageField(_('Poster'), upload_to='catalog/episodes/posters/', null=True, blank=True)
     video_url = models.CharField(_('HLS manifest object key'), max_length=500, blank=True, validators=[validate_object_key])
+    #: What testing the source proved about it. See :class:`PlaybackMode`.
+    playback_mode = models.CharField(
+        _('Playback mode'), max_length=16, choices=PlaybackMode.choices,
+        default=PlaybackMode.UNVERIFIED, db_index=True,
+    )
+    playback_checked_at = models.DateTimeField(
+        _('Playback checked at'), null=True, blank=True, db_index=True,
+    )
     trailer_url = models.CharField(_('Trailer object key'), max_length=500, blank=True, validators=[validate_object_key])
     download_key = models.CharField(_('Download object key'), max_length=500, blank=True, validators=[validate_object_key])
     subtitle_tracks = models.JSONField(_('Subtitle tracks'), default=list, blank=True, validators=[validate_subtitle_tracks])
@@ -1375,3 +1454,390 @@ class PlaybackSubtitleGap(models.Model):
 
     def __str__(self):
         return f'{self.content_type}:{self.object_id} · {self.status}'
+
+
+class SubtitleSyncVote(models.Model):
+    """One viewer's settled subtitle timing offset for a served subtitle track.
+
+    The web/app player reports the manual offset a viewer converged on for a
+    specific served VTT (identified by ``sig`` — a hash of the current subtitle
+    object key). One row per viewer per track (``voter_key`` dedup, latest
+    wins), so a stubborn desync collects independent human ground-truth cheaply.
+    The verifier task takes the trimmed median across viewers, bakes it into the
+    VTT timestamps, then clears the consumed votes — a self-correcting loop that
+    needs no audio processing. Votes whose ``sig`` no longer matches the track's
+    current key are stale (the file was already re-synced or replaced) and are
+    ignored/pruned.
+    """
+
+    class ContentType(models.TextChoices):
+        MOVIE = 'movie', _('Movie')
+        SERIES = 'series', _('Series')
+
+    content_type = models.CharField(max_length=16, choices=ContentType.choices, db_index=True)
+    object_id = models.PositiveIntegerField(db_index=True)
+    episode_id = models.PositiveIntegerField(default=0, db_index=True)
+    track_id = models.CharField(max_length=80)
+    sig = models.CharField(max_length=32, db_index=True)
+    # Stable per-viewer key (user id, else hashed session/IP) so one viewer can
+    # refine but never ballot-stuff the consensus.
+    voter_key = models.CharField(max_length=64)
+    # Seconds the viewer added on top of the served file: positive = subtitles
+    # were late and pushed earlier; negative = subtitles were early.
+    offset = models.FloatField()
+    created_at = models.DateTimeField(auto_now_add=True, db_index=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ['-updated_at']
+        verbose_name = _('Subtitle sync vote')
+        verbose_name_plural = _('Subtitle sync votes')
+        indexes = [
+            models.Index(fields=['content_type', 'object_id', 'episode_id', 'track_id', 'sig']),
+            models.Index(fields=['sig', '-updated_at']),
+        ]
+        constraints = [
+            models.UniqueConstraint(
+                fields=['content_type', 'object_id', 'episode_id', 'track_id', 'voter_key'],
+                name='uniq_subtitle_sync_vote_voter',
+            ),
+        ]
+
+    def __str__(self):
+        return f'{self.content_type}:{self.object_id} {self.track_id} → {self.offset:+.2f}s'
+
+
+class PlaybackSourceGap(models.Model):
+    """Browser-unplayable title: every live source is MKV/AVI/WMV or HEVC/AV1.
+
+    Downloads fine, but a page ``<video>`` on iOS/Safari/Firefox shows
+    "پخش ویدیو ممکن نشد". The playback-source crawler re-crawls providers to pull a
+    browser-safe (HLS/MP4 + H.264) mirror and closes the row when one lands.
+    """
+
+    class ContentType(models.TextChoices):
+        MOVIE = 'movie', _('Movie')
+        SERIES = 'series', _('Series')
+
+    class Status(models.TextChoices):
+        OPEN = 'open', _('Open')
+        QUEUED = 'queued', _('Queued')
+        RESOLVED = 'resolved', _('Resolved')
+        UNAVAILABLE = 'unavailable', _('Unavailable')
+
+    content_type = models.CharField(max_length=16, choices=ContentType.choices, db_index=True)
+    object_id = models.PositiveIntegerField(db_index=True)
+    episode_id = models.PositiveIntegerField(default=0, db_index=True)
+    slug = models.SlugField(max_length=255, blank=True)
+    title = models.CharField(max_length=300, blank=True)
+    reason = models.CharField(max_length=32, blank=True)
+    status = models.CharField(
+        max_length=16, choices=Status.choices, default=Status.OPEN, db_index=True,
+    )
+    report_count = models.PositiveIntegerField(default=1)
+    last_result = models.CharField(max_length=64, blank=True)
+    meta = models.JSONField(default=dict, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True, db_index=True)
+    updated_at = models.DateTimeField(auto_now=True)
+    resolved_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        ordering = ['-updated_at']
+        verbose_name = _('Playback source gap')
+        verbose_name_plural = _('Playback source gaps')
+        indexes = [
+            models.Index(fields=['content_type', 'object_id', 'status']),
+            models.Index(fields=['status', '-updated_at']),
+        ]
+        constraints = [
+            models.UniqueConstraint(
+                fields=['content_type', 'object_id', 'episode_id'],
+                name='uniq_playback_source_gap_target',
+            ),
+        ]
+
+    def __str__(self):
+        return f'{self.content_type}:{self.object_id} · {self.status}'
+
+
+class ContentIssueReport(models.Model):
+    """A viewer's structured "something is wrong with this title" report.
+
+    Filed from the in-player «گزارش خطا» control on web and Android. Unlike a
+    free-text support ticket, the ``problem_type`` is machine-actionable: it
+    names one precise symptom, and :mod:`apps.catalog.content_remediation`
+    dispatches each to the repair that actually addresses it. The buttons the
+    viewer chooses from are defined once in :mod:`apps.catalog.report_catalog`;
+    only ``other`` has no automatic repair and goes straight to a human.
+
+    The types are deliberately finer than the symptom words suggest — "subtitle
+    problem" covers a missing file, a mistimed one and a mojibake one, which are
+    three unrelated repairs, so each gets its own button.
+
+    Reports dedupe on (content, episode, problem_type): a repeat bumps
+    ``report_count`` and re-opens a resolved row, so popular breakages surface
+    without spamming the queue.
+    """
+
+    class ContentType(models.TextChoices):
+        MOVIE = 'movie', _('Movie')
+        SERIES = 'series', _('Series')
+
+    class Problem(models.TextChoices):
+        PLAYBACK = 'playback', _('Will not play at all')
+        BUFFERING = 'buffering', _('Stalls / buffers constantly')
+        AUDIO_SILENT = 'audio_silent', _('Picture but no sound')
+        AUDIO_DESYNC = 'audio_desync', _('Audio out of sync with picture')
+        SUBTITLE_MISSING = 'subtitle_missing', _('No subtitle available')
+        SUBTITLE_SYNC = 'subtitle_sync', _('Subtitle out of sync')
+        SUBTITLE_GARBLED = 'subtitle_garbled', _('Subtitle garbled / wrong text')
+        WRONG_TITLE = 'wrong_title', _('Wrong film / mismatched title')
+        WRONG_EPISODE = 'wrong_episode', _('Wrong episode placed')
+        QUALITY = 'quality', _('Picture quality far below the label')
+        DOWNLOAD_DEAD = 'download_dead', _('Download link does not work')
+        OTHER = 'other', _('Other')
+        # Retired spellings kept as valid choices so rows written before the
+        # split still validate; intake normalizes new reports off them.
+        SUBTITLE = 'subtitle', _('Subtitle problem (legacy)')
+        AUDIO = 'audio', _('Audio problem (legacy)')
+
+    class Status(models.TextChoices):
+        OPEN = 'open', _('Open')
+        QUEUED = 'queued', _('Queued')
+        REMEDIATING = 'remediating', _('Remediating')
+        RESOLVED = 'resolved', _('Resolved')
+        NEEDS_REVIEW = 'needs_review', _('Needs review')
+        REJECTED = 'rejected', _('Rejected')
+        UNAVAILABLE = 'unavailable', _('Unavailable')
+
+    # Problem types the remediation engine can attempt automatically. Sourced
+    # from the button catalogue so a new button with a repair behind it is
+    # picked up here without a second edit.
+    AUTO_PROBLEMS = _report_catalog.AUTO_PROBLEMS
+
+    content_type = models.CharField(max_length=16, choices=ContentType.choices, db_index=True)
+    object_id = models.PositiveIntegerField(db_index=True)
+    # 0 for movies; the Episode PK for a series report so remediation stays scoped.
+    episode_id = models.PositiveIntegerField(default=0, db_index=True)
+    season_number = models.PositiveSmallIntegerField(default=0)
+    episode_number = models.PositiveSmallIntegerField(default=0)
+    slug = models.SlugField(max_length=255, blank=True)
+    title = models.CharField(max_length=300, blank=True)
+
+    problem_type = models.CharField(max_length=20, choices=Problem.choices, db_index=True)
+    # What the viewer was watching, for a precise re-crawl of the same source.
+    playback_version = models.CharField(max_length=32, blank=True)
+    source_url = models.URLField(max_length=1000, blank=True)
+    detail = models.TextField(blank=True)
+
+    reporter = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='content_issue_reports',
+    )
+    # Stable per-viewer key (user id, else hashed session/IP) for anon dedup.
+    reporter_key = models.CharField(max_length=64, blank=True, db_index=True)
+
+    status = models.CharField(
+        max_length=16, choices=Status.choices, default=Status.OPEN, db_index=True,
+    )
+    report_count = models.PositiveIntegerField(default=1)
+    remediation_action = models.CharField(max_length=64, blank=True)
+    last_result = models.CharField(max_length=200, blank=True)
+    attempts = models.PositiveIntegerField(default=0)
+    # Cross-links so staff can jump to the auto-opened support ticket.
+    support_ticket = models.ForeignKey(
+        'engagement.SupportTicket',
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='content_issue_reports',
+    )
+    meta = models.JSONField(default=dict, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True, db_index=True)
+    updated_at = models.DateTimeField(auto_now=True)
+    remediated_at = models.DateTimeField(null=True, blank=True)
+    resolved_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        ordering = ['-updated_at']
+        verbose_name = _('Content issue report')
+        verbose_name_plural = _('Content issue reports')
+        indexes = [
+            models.Index(fields=['content_type', 'object_id', 'status']),
+            models.Index(fields=['status', '-updated_at']),
+            models.Index(fields=['problem_type', 'status']),
+        ]
+        constraints = [
+            models.UniqueConstraint(
+                fields=['content_type', 'object_id', 'episode_id', 'problem_type'],
+                name='uniq_content_issue_report_target',
+            ),
+        ]
+
+    def __str__(self):
+        return f'{self.content_type}:{self.object_id} · {self.problem_type} · {self.status}'
+
+
+class MediaCheck(models.Model):
+    """Result of the pre-publish media check for one movie / series / episode.
+
+    The importer must prove a title actually plays and downloads *before* it
+    reaches a viewer, but proving it costs network calls, so the answer is stored
+    here and the publish gates read this row instead of probing inline. See
+    :mod:`apps.catalog.media_verification` for the policy and
+    :mod:`apps.catalog.media_probe` for the network layer.
+
+    ``status`` is deliberately three-valued: ``failed`` means the servers said the
+    sources are gone, ``unknown`` means this box could not get an answer (a
+    datacenter TLS block is not a broken film) — only the first is grounds for
+    dropping links, and neither is grounds for publishing.
+    """
+
+    class ContentType(models.TextChoices):
+        MOVIE = 'movie', _('Movie')
+        SERIES = 'series', _('Series')
+
+    class Status(models.TextChoices):
+        PASSED = 'passed', _('Passed')
+        FAILED = 'failed', _('Failed')
+        UNKNOWN = 'unknown', _('Unknown')
+
+    content_type = models.CharField(max_length=16, choices=ContentType.choices, db_index=True)
+    object_id = models.PositiveIntegerField(db_index=True)
+    episode_id = models.PositiveIntegerField(default=0, db_index=True)
+    status = models.CharField(
+        max_length=16, choices=Status.choices, default=Status.UNKNOWN, db_index=True,
+    )
+    #: A browser-safe source answered and is seekable — the online player will work.
+    playable = models.BooleanField(default=False, db_index=True)
+    #: At least one live link of any container — the download button will work.
+    downloadable = models.BooleanField(default=False)
+    reason = models.CharField(max_length=64, blank=True)
+    checked_urls = models.PositiveIntegerField(default=0)
+    dead_urls = models.PositiveIntegerField(default=0)
+    attempts = models.PositiveIntegerField(default=0)
+    #: Per-URL probe results, newest run only (url, verdict, reason, status, ms).
+    detail = models.JSONField(default=dict, blank=True)
+    checked_at = models.DateTimeField(null=True, blank=True, db_index=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True, db_index=True)
+
+    class Meta:
+        ordering = ['-updated_at']
+        verbose_name = _('Media check')
+        verbose_name_plural = _('Media checks')
+        indexes = [
+            models.Index(fields=['content_type', 'object_id', 'status']),
+            models.Index(fields=['status', 'checked_at']),
+        ]
+        constraints = [
+            models.UniqueConstraint(
+                fields=['content_type', 'object_id', 'episode_id'],
+                name='uniq_media_check_target',
+            ),
+        ]
+
+    def __str__(self):
+        target = f'{self.content_type}:{self.object_id}'
+        if self.episode_id:
+            target = f'{target}:ep{self.episode_id}'
+        return f'{target} · {self.status}'
+
+
+class ImdbChartEntry(models.Model):
+    """One position on the IMDb Top 250 — the chart itself, not our copy of it.
+
+    The chart is a *fact about IMDb*, so it is stored whether or not we hold the
+    title. That is the whole point: «هر ۲۵۰ تا کامل باشن» is only answerable if
+    the 250 rows exist to be counted against. Without them the site can show
+    "here are the 219 Top-250 films we happen to have" and has no way to name the
+    31 it is missing, let alone go and fetch them.
+
+    Building the chart costs two multi-hundred-megabyte downloads from
+    ``datasets.imdbws.com`` (IMDb's public chart HTML is bot-gated), so it is
+    refreshed on a slow cadence into this table and every reader — the API, the
+    apps, the completion lane — reads the table instead.
+
+    ``movie`` / ``series`` are filled in by matching ``imdb_id``; exactly one of
+    them is set, or neither while the title is still missing.
+    """
+
+    class Kind(models.TextChoices):
+        MOVIE = 'movie', _('Movie')
+        SERIES = 'series', _('Series')
+
+    kind = models.CharField(max_length=16, choices=Kind.choices, db_index=True)
+    rank = models.PositiveSmallIntegerField(_('Chart position'), db_index=True)
+    imdb_id = models.CharField(_('IMDb ID'), max_length=20, db_index=True)
+    primary_title = models.CharField(max_length=255, blank=True)
+    original_title = models.CharField(max_length=255, blank=True)
+    start_year = models.PositiveSmallIntegerField(null=True, blank=True)
+    average_rating = models.DecimalField(max_digits=3, decimal_places=1, null=True, blank=True)
+    num_votes = models.PositiveIntegerField(default=0)
+    movie = models.ForeignKey(
+        'catalog.Movie', null=True, blank=True, on_delete=models.SET_NULL,
+        related_name='imdb_chart_entries',
+    )
+    series = models.ForeignKey(
+        'catalog.Series', null=True, blank=True, on_delete=models.SET_NULL,
+        related_name='imdb_chart_entries',
+    )
+    #: Why this position is not yet watchable — ``''`` once it is. Written by the
+    #: completion lane so the gap is diagnosable without re-deriving it.
+    gap_reason = models.CharField(max_length=64, blank=True)
+    #: Last time the completion lane worked on this position. Lets the lane rotate
+    #: over the hard cases instead of retrying rank 1 forever.
+    attempted_at = models.DateTimeField(null=True, blank=True, db_index=True)
+    attempts = models.PositiveIntegerField(default=0)
+    refreshed_at = models.DateTimeField(auto_now=True, db_index=True)
+
+    class Meta:
+        ordering = ['kind', 'rank']
+        verbose_name = _('IMDb chart entry')
+        verbose_name_plural = _('IMDb chart entries')
+        indexes = [
+            models.Index(fields=['kind', 'rank']),
+        ]
+        constraints = [
+            models.UniqueConstraint(fields=['kind', 'rank'], name='uniq_imdb_chart_position'),
+            models.UniqueConstraint(fields=['kind', 'imdb_id'], name='uniq_imdb_chart_title'),
+        ]
+
+    def __str__(self):
+        return f'{self.kind} #{self.rank} · {self.primary_title or self.imdb_id}'
+
+    @property
+    def target(self):
+        """The catalog row behind this position, or ``None`` while it is missing."""
+        return self.movie if self.kind == self.Kind.MOVIE else self.series
+
+
+class CatalogSlugAlias(models.Model):
+    """A former page address of a movie or series, kept so old links still work.
+
+    Written automatically whenever a row's slug changes (see
+    ``apps.catalog.slugs``); the API resolves it and the web app 301s to the
+    current address.
+    """
+
+    class Kind(models.TextChoices):
+        MOVIE = 'movie', _('Movie')
+        SERIES = 'series', _('Series')
+
+    kind = models.CharField(max_length=16, choices=Kind.choices)
+    old_slug = models.SlugField(max_length=280, allow_unicode=True)
+    object_id = models.PositiveIntegerField(db_index=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        verbose_name = _('Catalog slug alias')
+        verbose_name_plural = _('Catalog slug aliases')
+        constraints = [
+            models.UniqueConstraint(fields=['kind', 'old_slug'], name='uniq_catalog_slug_alias'),
+        ]
+
+    def __str__(self):
+        return f'{self.kind}:{self.old_slug} → #{self.object_id}'

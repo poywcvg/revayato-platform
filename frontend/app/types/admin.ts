@@ -412,7 +412,10 @@ export interface ProviderImportJob {
   trigger?: string
   target_movie?: number | null
   target_series?: number | null
-  content_type: 'movies' | 'series' | 'both' | 'movie'
+  /** The catalog row a per-title crawl targets, when it is not a broad sweep. */
+  object_id?: number | null
+  job_type?: string
+  content_type: 'movies' | 'series' | 'both' | 'movie' | 'serie'
   status: ProviderImportJobStatus
   mode: 'discover_only' | 'import_missing_files' | 'import_selected' | 'import_missing' | 'sync_all'
   params: Record<string, unknown>
@@ -420,6 +423,8 @@ export interface ProviderImportJob {
   processed_items: number
   matched_items: number
   imported_files: number
+  /** Older alias for `imported_files`; some responses still carry only this. */
+  imported_items?: number
   skipped_items: number
   failed_items: number
   current_item_label: string
@@ -487,6 +492,33 @@ export interface AdminUser {
   locked_until: string | null
 }
 
+export interface AdminUserActivityStats {
+  downloads: number
+  plays: number
+  completes: number
+  searches: number
+  total_events: number
+  likes: number
+  ratings: number
+  watchlist: number
+  last_seen: string | null
+  days_since_joined: number | null
+}
+
+export interface AdminUserRecentActivity {
+  action: string
+  content_type: string
+  object_id: number | null
+  title: string
+  slug: string
+  created_at: string | null
+}
+
+export interface AdminUserDetail extends AdminUser {
+  stats: AdminUserActivityStats
+  recent_activity: AdminUserRecentActivity[]
+}
+
 export interface AdminUserFilters {
   q?: string
   role?: '' | 'staff' | 'user'
@@ -500,12 +532,24 @@ export interface AdminUserListResponse {
   next: string | null
   previous: string | null
   results: AdminUser[]
+  summary: {
+    total: number
+    active: number
+    inactive: number
+    staff: number
+    verified: number
+  }
 }
 
 export interface AdminReviewContent {
+  id: number
+  content_type: 'movie' | 'series'
   title: string
   slug: string
   poster: string | null
+  site_rating: number | null
+  release_year?: number | null
+  start_year?: number | null
 }
 
 export interface AdminReviewItem {
@@ -517,6 +561,11 @@ export interface AdminReviewItem {
   review: string
   is_spoiler: boolean
   is_hidden: boolean
+  admin_reply: string
+  admin_reply_at: string | null
+  admin_reply_by_name: string
+  is_featured: boolean
+  featured_at: string | null
   created_at: string
   updated_at: string
   content: AdminReviewContent | null
@@ -527,6 +576,7 @@ export interface AdminReviewListResponse {
   next: string | null
   previous: string | null
   results: AdminReviewItem[]
+  counts: AdminReviewCounts
 }
 
 export interface AdminSupportInboxResponse {
@@ -626,6 +676,12 @@ export interface AdminDashboardResponse {
     view_to_complete: AdminDashboardFunnelRate
     stages: Array<{ key: string, label: string, count: number }>
   }
+  app_install_funnel?: {
+    prompts: number
+    clicks: number
+    dismissals: number
+    click_through_rate: number | null
+  }
   users: {
     total: number
     active: number
@@ -684,4 +740,385 @@ export interface AdminDashboardResponse {
     scope: 'recorded_events_only'
     consent_required: boolean
   }
+}
+
+// --------------------------------------------------------------------------- //
+//  Community: review moderation + support inbox (admin↔user interaction)
+//  (AdminReviewContent / AdminReviewItem / AdminReviewListResponse and
+//  AdminSupportInboxResponse are declared above and extended in-place.)
+// --------------------------------------------------------------------------- //
+export interface AdminReviewCounts {
+  total: number
+  unanswered: number
+  answered: number
+  featured: number
+  hidden: number
+}
+
+export type AdminSupportTicket = import('./engagement').SupportTicket & {
+  staff_note: string
+  user_email: string
+}
+
+export interface AdminInteractionOverview {
+  reviews: AdminReviewCounts
+  support: { unread: number, open: number, total: number }
+}
+
+/* --- staff-driven import ------------------------------------------------- */
+
+/** One TMDB hit, from `/admin/tmdb/search/?kind=all`. */
+export interface TmdbSearchRow {
+  tmdb_id: number
+  /** Which TMDB index this came from. The import endpoints differ per kind. */
+  kind: 'movie' | 'series'
+  title: string
+  original_title: string | null
+  overview: string
+  /** `release_date` for films, `first_air_date` for shows — normalized server-side. */
+  release_date: string
+  original_language: string
+  vote_average: number | null
+  popularity: number | null
+  poster_url: string | null
+  backdrop_url: string | null
+  already_imported: boolean
+  local_item: { id: number, slug: string, title: string } | null
+}
+
+export interface TmdbSearchResponse {
+  query: string
+  kind: 'movie' | 'series' | 'all'
+  page: number
+  total_pages: number
+  total_results: number
+  proxy: boolean
+  results: TmdbSearchRow[]
+}
+
+/** TMDB detail used to confirm a title before it is written to the catalog. */
+export interface TmdbPreview {
+  tmdb_id: number
+  title?: string
+  name?: string
+  original_title?: string
+  overview?: string
+  release_date?: string
+  first_air_date?: string
+  runtime?: number | null
+  number_of_seasons?: number | null
+  number_of_episodes?: number | null
+  genres?: { id?: number, name?: string }[] | string[]
+  vote_average?: number | null
+  imdb_id?: string | null
+  imdb_rating?: number | null
+  poster_url?: string | null
+  backdrop_url?: string | null
+  already_imported?: boolean
+  local_movie?: { id: number, slug: string, title: string, is_published?: boolean } | null
+  local_item?: { id: number, slug: string, title: string, is_published?: boolean } | null
+  duplicates?: unknown[]
+}
+
+/**
+ * Alias of {@link ProviderImportJobStatus}, kept because the import console and
+ * the operations page both spell it this way. A *second* `ProviderImportJob`
+ * interface used to live here; TypeScript merged it with the one above instead
+ * of rejecting it, which turned every field whose optionality differed into an
+ * error somewhere else entirely.
+ */
+export type ProviderJobStatus = ProviderImportJobStatus
+
+// ---------------------------------------------------------------------------
+// Operations desk — /api/admin/catalog/… and /api/admin/ops/…
+//
+// Mirrors `backend/apps/catalog/admin_ops.py`. The desk is one payload on
+// purpose: links, the last media verdict, the open gaps and the viewer reports
+// have to agree on screen, and they only do when they arrive together.
+// ---------------------------------------------------------------------------
+
+export type LinkHealth = 'live' | 'dead' | 'unknown' | 'unchecked'
+export type AdminContentKind = 'movie' | 'series'
+
+export interface DeskLink {
+  index: number
+  url: string
+  label: string
+  quality: string
+  size_label: string
+  kind: string
+  source: string
+  season_number: number | null
+  episode_number: number | null
+  health: LinkHealth
+  reason: string
+  browser_safe: boolean | null
+  container: string
+  video_codec: string
+  codec_family: string
+  integrity: { category: string, contaminated: boolean }
+}
+
+export interface DeskSubtitle {
+  index: number
+  src: string
+  label: string
+  lang: string
+  kind: string
+  offset_seconds?: number | null
+}
+
+export interface DeskCheck {
+  status: string
+  playable: boolean
+  downloadable: boolean
+  reason: string
+  checked_urls: number
+  dead_urls: number
+  attempts: number
+  checked_at: string | null
+  tech: Record<string, unknown> | null
+}
+
+export interface DeskGap {
+  id: number
+  status: string
+  reason: string
+  episode_id: number
+  report_count: number
+  last_result: string
+  updated_at: string | null
+}
+
+export interface DeskReport {
+  id: number
+  problem_type: string
+  problem_label: string
+  status: string
+  status_label: string
+  episode_id: number
+  season_number: number | null
+  episode_number: number | null
+  report_count: number
+  attempts: number
+  remediation_action: string
+  last_result: string
+  detail: string
+  created_at: string
+  updated_at: string
+  target?: HealthTarget
+}
+
+export interface DeskAudit {
+  id: number
+  action: string
+  action_label: string
+  movie_id: number | null
+  movie_title?: string
+  actor: string
+  changed_fields: string[]
+  details: Record<string, unknown>
+  created_at: string
+}
+
+export interface DeskEpisode {
+  id: number
+  season_number: number
+  episode_number: number
+  title: string
+  is_published: boolean
+  has_stream: boolean
+  playback_mode: string
+  link_count: number
+  dead_links: number
+  subtitle_count: number
+  check: DeskCheck | null
+}
+
+export interface DeskJob {
+  id: string
+  status: ProviderJobStatus
+  mode: string
+  trigger: string
+  error_message: string
+  created_at: string
+  finished_at: string | null
+}
+
+export interface DeskDiagnosis {
+  unplayable: boolean
+  safe: number
+  unsafe: number
+  reason: string
+  containers: string[]
+  codecs: string[]
+}
+
+export interface MediaDesk {
+  kind: AdminContentKind
+  id: number
+  title: string
+  slug: string
+  year: number | null
+  is_published: boolean
+  publication_status: string | null
+  tmdb_id: number | null
+  imdb_id: string | null
+  playback_mode: string
+  playback_checked_at: string | null
+  links: DeskLink[]
+  subtitles: DeskSubtitle[]
+  check: DeskCheck | null
+  diagnosis: DeskDiagnosis
+  metadata_gaps: string[]
+  publish_blockers: string[]
+  source_gap: DeskGap | null
+  subtitle_gap: DeskGap | null
+  reports: DeskReport[]
+  jobs: DeskJob[]
+  episodes?: DeskEpisode[]
+  audits: DeskAudit[]
+}
+
+export type DeskAction =
+  | 'verify' | 'remove_link' | 'add_link' | 'prune_dead' | 'strip_contaminated'
+  | 'recrawl' | 'refresh_subtitles' | 'remove_subtitle' | 'publish' | 'unpublish'
+  | 'archive' | 'sync_tmdb' | 'resolve_gaps'
+
+export interface DeskActionResponse {
+  action: DeskAction
+  result: Record<string, unknown>
+  desk: MediaDesk
+}
+
+export interface BulkResultRow {
+  id: number
+  title: string
+  ok: boolean
+  error: string | null
+  result: Record<string, unknown> | null
+}
+
+export interface BulkResponse {
+  action: string
+  kind: AdminContentKind
+  requested: number
+  succeeded: number
+  failed: number
+  results: BulkResultRow[]
+}
+
+export type HealthQueue =
+  | 'source_gaps' | 'subtitle_gaps' | 'failed_checks'
+  | 'reports' | 'unverified' | 'incomplete' | 'approx_ratings' | 'sourceless_drafts'
+
+export type HealthCounts = Record<HealthQueue, number>
+
+export interface HealthTarget {
+  id: number
+  kind: AdminContentKind
+  title: string
+  slug: string
+  is_published?: boolean
+}
+
+/** One queue row. Fields beyond `target` differ per queue; all are optional. */
+export interface HealthRow {
+  id?: number
+  target: HealthTarget
+  episode_id?: number
+  status?: string
+  reason?: string
+  report_count?: number
+  last_result?: string
+  checked_urls?: number
+  dead_urls?: number
+  attempts?: number
+  checked_at?: string | null
+  updated_at?: string
+  link_count?: number
+  gaps?: string[]
+  problem_label?: string
+  status_label?: string
+  detail?: string
+}
+
+export interface HealthResponse {
+  queue: HealthQueue
+  counts: HealthCounts
+  results: HealthRow[]
+  limit: number
+  offset: number
+}
+
+export interface OpsQueueLane { queue: string, label: string, depth: number | null }
+
+export interface OpsWorkers {
+  reachable: boolean
+  workers: { name: string, active_tasks: number, queues: string[] }[]
+}
+
+export interface OpsJobRow {
+  id: string
+  provider: string
+  status: ProviderJobStatus
+  mode: string
+  trigger: string
+  label: string
+  processed: number
+  total: number
+  matched: number
+  failed: number
+  error_message: string
+  created_at: string
+  finished_at: string | null
+}
+
+export interface OpsProvider {
+  id: number
+  name: string
+  slug: string
+  type: string
+  base_url: string
+  is_active: boolean
+  rate_limit_per_minute: number
+  jobs_24h: number
+}
+
+export interface OpsSyncRun {
+  id: number
+  status: string
+  mode: string
+  phase: string
+  processed: number
+  total: number
+  created: number
+  updated: number
+  errors: number
+  started_at: string
+  finished_at: string | null
+}
+
+export interface OpsOverview {
+  queues: OpsQueueLane[]
+  workers: OpsWorkers
+  jobs: {
+    active: number
+    last_24h: number
+    by_status: Record<string, number>
+    recent: OpsJobRow[]
+  }
+  providers: OpsProvider[]
+  sync_runs: OpsSyncRun[]
+  importer_settings: Record<string, unknown>
+  catalog: Record<AdminContentKind, { total: number, published: number, draft: number, archived?: number }>
+  health: HealthCounts
+  generated_at: string
+}
+
+export interface AuditFeedResponse {
+  count: number
+  limit: number
+  offset: number
+  results: DeskAudit[]
 }

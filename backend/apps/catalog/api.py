@@ -9,11 +9,8 @@ from rest_framework.response import Response
 from rest_framework.throttling import AnonRateThrottle
 
 from .cache import (
-    build_catalog_cache_key,
     cache_control_for,
-    catalog_cache_ttl,
-    get_cached_payload,
-    set_cached_payload,
+    cached_catalog_payload,
 )
 from .countries import country_code_for_name, persian_country_name
 from .models import (
@@ -29,9 +26,10 @@ from .search import (
     title_rank_annotation,
     title_search_q,
 )
+from .slugs import canonical_slug
 from .serializers import (
     ActorDetailSerializer, ActorListSerializer, CollectionDetailSerializer,
-    CollectionListSerializer, CountrySerializer, DirectorListSerializer,
+    CollectionListSerializer, CountrySerializer, DirectorDetailSerializer, DirectorListSerializer,
     GenreListSerializer, GenreSerializer, MovieDetailSerializer, MovieListSerializer,
     SeriesDetailSerializer, SeriesListSerializer,
 )
@@ -53,6 +51,24 @@ class PlaybackSubtitleStatusThrottle(AnonRateThrottle):
     scope = 'playback_subtitle_status'
 
 
+class ContentIssueReportThrottle(AnonRateThrottle):
+    """In-player «گزارش خطا» intake; a few reports per client per minute."""
+
+    scope = 'content_issue_report'
+
+
+class ContentIssueStatusThrottle(AnonRateThrottle):
+    """Player poll for a filed report's remediation status."""
+
+    scope = 'content_issue_status'
+
+
+class SubtitleSyncReportThrottle(AnonRateThrottle):
+    """One-vote-per-viewer feedback; a small bucket keeps spam off the consensus."""
+
+    scope = 'subtitle_sync_report'
+
+
 def _queue_missing_softsub(obj, *, kind: str) -> None:
     """Best-effort SoftSub / SubtitleStar backfill when a public detail page is viewed."""
     try:
@@ -62,10 +78,13 @@ def _queue_missing_softsub(obj, *, kind: str) -> None:
             normalize_imdb_id_safe,
         )
         from apps.catalog.tasks import enqueue_movie_softsub, enqueue_series_softsub
+        from apps.catalog.playback_subtitle import _has_tracks
 
         links = [item for item in (getattr(obj, 'download_links', None) or []) if isinstance(item, dict)]
         if kind == 'movie':
-            if getattr(obj, 'subtitle_tracks', None):
+            # A truthy but malformed/stale track must not disable automatic
+            # repair.  Use the same readiness contract as the player.
+            if _has_tracks(getattr(obj, 'subtitle_tracks', None)):
                 return
             eligible = download_links_imply_softsub(links) or (
                 bool(getattr(settings, 'SUBTITLESTAR_ENABLED', True))
@@ -77,14 +96,16 @@ def _queue_missing_softsub(obj, *, kind: str) -> None:
             return
 
         if kind == 'series':
-            from django.db.models import Q
             from apps.catalog.models import Episode
 
-            # Keep queueing while any published episode still lacks SoftSub tracks.
-            missing_tracks = Episode.objects.filter(
+            # Keep queueing while any published episode still lacks a usable
+            # SoftSub track. Checking merely ``[]``/NULL misses malformed or
+            # stale track rows and leaves the player permanently unsubtitled.
+            episode_tracks = Episode.objects.filter(
                 season__series_id=obj.pk,
                 is_published=True,
-            ).filter(Q(subtitle_tracks=[]) | Q(subtitle_tracks__isnull=True)).exists()
+            ).values_list('subtitle_tracks', flat=True).iterator(chunk_size=100)
+            missing_tracks = any(not _has_tracks(tracks) for tracks in episode_tracks)
             if not missing_tracks:
                 return
             eligible = download_links_imply_softsub(links) or (
@@ -108,22 +129,10 @@ def _queue_missing_softsub(obj, *, kind: str) -> None:
 
 def _cached_response(request, namespace: str, kind: str, builder):
     """Serve anonymous catalog JSON from Redis when available."""
-    ttl = catalog_cache_ttl(kind)
-    cache_key = build_catalog_cache_key(namespace, request) if ttl > 0 else None
-    if cache_key:
-        cached = get_cached_payload(cache_key)
-        if cached is not None:
-            response = Response(cached)
-            response['Cache-Control'] = cache_control_for(kind)
-            response['X-Catalog-Cache'] = 'HIT'
-            return response
-
-    payload = builder()
-    if cache_key:
-        set_cached_payload(cache_key, payload, ttl)
+    payload, state = cached_catalog_payload(namespace, request, kind, builder)
     response = Response(payload)
     response['Cache-Control'] = cache_control_for(kind)
-    response['X-Catalog-Cache'] = 'MISS'
+    response['X-Catalog-Cache'] = state
     return response
 
 
@@ -136,34 +145,19 @@ def _relative_pagination_link(url):
 
 
 def _paginated_cached_response(request, namespace: str, queryset, serializer_class, kind='list'):
-    ttl = catalog_cache_ttl(kind)
-    cache_key = build_catalog_cache_key(namespace, request) if ttl > 0 else None
-    if cache_key:
-        cached = get_cached_payload(cache_key)
-        if cached is not None:
-            response = Response(cached)
-            response['Cache-Control'] = cache_control_for(kind)
-            response['X-Catalog-Cache'] = 'HIT'
-            return response
-
-    paginator = LimitOffsetPagination()
-    page = paginator.paginate_queryset(queryset, request)
-    if page is not None:
-        payload = {
+    def build():
+        paginator = LimitOffsetPagination()
+        page = paginator.paginate_queryset(queryset, request)
+        if page is None:
+            return serializer_class(queryset, many=True).data
+        return {
             'count': paginator.count,
             'next': _relative_pagination_link(paginator.get_next_link()),
             'previous': _relative_pagination_link(paginator.get_previous_link()),
             'results': serializer_class(page, many=True).data,
         }
-    else:
-        payload = serializer_class(queryset, many=True).data
 
-    if cache_key:
-        set_cached_payload(cache_key, payload, ttl)
-    response = Response(payload)
-    response['Cache-Control'] = cache_control_for(kind)
-    response['X-Catalog-Cache'] = 'MISS'
-    return response
+    return _cached_response(request, namespace, kind, build)
 
 
 def _bounded_int(value, default, minimum=0, maximum=100):
@@ -316,7 +310,15 @@ def _apply_catalog_filters(queryset, request, year_field):
     if language:
         queryset = queryset.filter(language__icontains=language)
     if age_rating:
-        queryset = queryset.filter(age_rating=age_rating)
+        from .age_ratings import BANDS, raw_ratings_in_band
+
+        if age_rating in BANDS:
+            # Rows store the board's own certification (R, PG-13, 15…); the
+            # site filters by the band it shows.
+            raw_values = queryset.model.objects.exclude(age_rating='').values_list('age_rating', flat=True).distinct()
+            queryset = queryset.filter(age_rating__in=raw_ratings_in_band(raw_values, age_rating))
+        else:
+            queryset = queryset.filter(age_rating=age_rating)
     if availability == 'dubbed':
         queryset = queryset.filter(is_dubbed=True)
     elif availability == 'subtitle':
@@ -372,55 +374,42 @@ def _scored_paginated_response(request, namespace: str, queryset, serializer_cla
     """Paginate after Python ranking so discovery sorts match home rails."""
     from apps.catalog.trending import rank_queryset
 
-    ttl = catalog_cache_ttl(kind)
-    cache_key = build_catalog_cache_key(namespace, request) if ttl > 0 else None
-    if cache_key:
-        cached = get_cached_payload(cache_key)
-        if cached is not None:
-            response = Response(cached)
-            response['Cache-Control'] = cache_control_for(kind)
-            response['X-Catalog-Cache'] = 'HIT'
-            return response
+    def build():
+        limit = _bounded_int(request.GET.get('limit'), 20, 1, 120)
+        offset = _bounded_int(request.GET.get('offset'), 0, 0, 10_000)
+        page, scored_total = rank_queryset(
+            queryset,
+            sort=sort,
+            limit=limit,
+            offset=offset,
+        )
+        # Count reflects scored candidate pool so clients don't invent phantom pages.
+        count = max(scored_total, offset + len(page))
+        next_offset = offset + limit
+        previous_offset = offset - limit
+        base = request.path
+        query = request.GET.copy()
+        payload = {
+            'count': count,
+            'next': None,
+            'previous': None,
+            'results': serializer_class(page, many=True).data,
+        }
+        if next_offset < count:
+            query['limit'] = str(limit)
+            query['offset'] = str(next_offset)
+            payload['next'] = _relative_pagination_link(f'{base}?{query.urlencode()}')
+        if previous_offset >= 0:
+            query['limit'] = str(limit)
+            query['offset'] = str(previous_offset)
+            payload['previous'] = _relative_pagination_link(f'{base}?{query.urlencode()}')
+        elif offset > 0:
+            query['limit'] = str(limit)
+            query['offset'] = '0'
+            payload['previous'] = _relative_pagination_link(f'{base}?{query.urlencode()}')
+        return payload
 
-    limit = _bounded_int(request.GET.get('limit'), 20, 1, 120)
-    offset = _bounded_int(request.GET.get('offset'), 0, 0, 10_000)
-    page, scored_total = rank_queryset(
-        queryset,
-        sort=sort,
-        limit=limit,
-        offset=offset,
-    )
-    # Count reflects scored candidate pool so clients don't invent phantom pages.
-    count = max(scored_total, offset + len(page))
-    next_offset = offset + limit
-    previous_offset = offset - limit
-    base = request.path
-    query = request.GET.copy()
-    payload = {
-        'count': count,
-        'next': None,
-        'previous': None,
-        'results': serializer_class(page, many=True).data,
-    }
-    if next_offset < count:
-        query['limit'] = str(limit)
-        query['offset'] = str(next_offset)
-        payload['next'] = _relative_pagination_link(f'{base}?{query.urlencode()}')
-    if previous_offset >= 0:
-        query['limit'] = str(limit)
-        query['offset'] = str(previous_offset)
-        payload['previous'] = _relative_pagination_link(f'{base}?{query.urlencode()}')
-    elif offset > 0:
-        query['limit'] = str(limit)
-        query['offset'] = '0'
-        payload['previous'] = _relative_pagination_link(f'{base}?{query.urlencode()}')
-
-    if cache_key:
-        set_cached_payload(cache_key, payload, ttl)
-    response = Response(payload)
-    response['Cache-Control'] = cache_control_for(kind)
-    response['X-Catalog-Cache'] = 'MISS'
-    return response
+    return _cached_response(request, namespace, kind, build)
 
 
 def _catalog_list_response(request, namespace: str, queryset, serializer_class, year_field: str):
@@ -450,6 +439,8 @@ def movie_list(request):
 @api_view(['GET'])
 @throttle_classes([CatalogReadThrottle])
 def movie_detail(request, slug):
+    slug = canonical_slug(Movie, slug)
+
     def build():
         movie = get_object_or_404(
             Movie.objects.filter(is_published=True)
@@ -499,6 +490,8 @@ def series_list(request):
 @api_view(['GET'])
 @throttle_classes([CatalogReadThrottle])
 def series_detail(request, slug):
+    slug = canonical_slug(Series, slug)
+
     def build():
         playable_episodes = (
             Episode.objects.filter(is_published=True)
@@ -563,6 +556,7 @@ def series_detail(request, slug):
 @throttle_classes([CatalogReadThrottle])
 def movie_similar(request, slug):
     """Published movies genuinely similar to ``slug`` (same director/cast/genres)."""
+    slug = canonical_slug(Movie, slug)
 
     def build(limit):
         from apps.recommendations.services import _similar_content
@@ -582,6 +576,7 @@ def movie_similar(request, slug):
 @throttle_classes([CatalogReadThrottle])
 def series_similar(request, slug):
     """Published series genuinely similar to ``slug`` (same director/cast/genres)."""
+    slug = canonical_slug(Series, slug)
 
     def build(limit):
         from apps.recommendations.services import _similar_content
@@ -715,6 +710,226 @@ def recent_catalog(request):
 
 @api_view(['GET'])
 @throttle_classes([CatalogReadThrottle])
+def weekly_schedule(request):
+    """Weekly airing schedule built from real Episode.air_date / release dates."""
+    import datetime
+
+    from django.utils import timezone
+
+    from .schedule import DEFAULT_DAYS, build_weekly_schedule, week_start_for
+
+    days = _bounded_int(request.GET.get('days'), DEFAULT_DAYS, 1, 21)
+    include_movies = request.GET.get('movies', '1').strip().lower() not in {'0', 'false', 'no'}
+
+    start = None
+    raw_start = (request.GET.get('start') or '').strip()
+    if raw_start:
+        try:
+            start = datetime.date.fromisoformat(raw_start)
+        except ValueError:
+            start = None
+    if start is None:
+        start = week_start_for(timezone.localdate())
+
+    def build():
+        return build_weekly_schedule(start=start, days=days, include_movies=include_movies)
+
+    return _cached_response(request, 'weekly-schedule', 'list', build)
+
+
+@api_view(['GET'])
+@throttle_classes([CatalogReadThrottle])
+def anime_catalog(request):
+    """Published anime — movies and series carrying the `anime` genre — mixed by
+    created_at (newest first). Powers the site's dedicated anime shelves."""
+    limit = _bounded_int(request.GET.get('limit'), 24, 1, 48)
+    offset = _bounded_int(request.GET.get('offset'), 0, 0, 10_000)
+    kind = request.GET.get('type', 'all').strip()
+
+    movie_base = Movie.objects.filter(is_published=True, genres__slug='anime')
+    series_base = Series.objects.filter(is_published=True, genres__slug='anime')
+
+    if kind == 'movie':
+        queryset = (
+            movie_base.order_by('-created_at', '-id')
+            .defer(
+                'description', 'source_metadata', 'manual_override_fields',
+                'spoken_languages', 'production_companies', 'crew_metadata',
+                'writers', 'content_warnings', 'seo_keywords',
+            )
+            .prefetch_related('genres', 'directors', 'countries')
+        )
+        return _paginated_cached_response(
+            request, 'anime-movies', queryset, MovieListSerializer, kind='list',
+        )
+    if kind == 'series':
+        queryset = (
+            series_base.order_by('-created_at', '-id')
+            .defer('description', 'source_metadata', 'content_warnings')
+            .prefetch_related('genres', 'directors', 'countries')
+        )
+        return _paginated_cached_response(
+            request, 'anime-series', queryset, SeriesListSerializer, kind='list',
+        )
+
+    def build():
+        window = offset + limit
+        movie_keys = list(
+            movie_base.order_by('-created_at', '-id').values_list('id', 'created_at')[:window]
+        )
+        series_keys = list(
+            series_base.order_by('-created_at', '-id').values_list('id', 'created_at')[:window]
+        )
+        combined = sorted(
+            [('movie', item_id, created_at) for item_id, created_at in movie_keys]
+            + [('series', item_id, created_at) for item_id, created_at in series_keys],
+            key=lambda row: (row[2], row[1]),
+            reverse=True,
+        )
+        count = movie_base.count() + series_base.count()
+        page_keys = combined[offset:offset + limit]
+        movie_ids = [item_id for kind_name, item_id, _ in page_keys if kind_name == 'movie']
+        series_ids = [item_id for kind_name, item_id, _ in page_keys if kind_name == 'series']
+        movies_by_id = {
+            movie.id: movie
+            for movie in Movie.objects.filter(id__in=movie_ids).prefetch_related(
+                'genres', 'directors', 'countries',
+            )
+        }
+        series_by_id = {
+            series.id: series
+            for series in Series.objects.filter(id__in=series_ids).prefetch_related(
+                'genres', 'directors', 'countries',
+            )
+        }
+        results = []
+        for kind_name, item_id, _ in page_keys:
+            if kind_name == 'movie':
+                movie = movies_by_id.get(item_id)
+                if not movie:
+                    continue
+                payload = MovieListSerializer(movie).data
+                payload['content_type'] = 'movie'
+                results.append(payload)
+            else:
+                series = series_by_id.get(item_id)
+                if not series:
+                    continue
+                payload = SeriesListSerializer(series).data
+                payload['content_type'] = 'series'
+                results.append(payload)
+
+        next_offset = offset + limit
+        previous_offset = offset - limit
+        base = request.path
+        query = request.GET.copy()
+        payload = {
+            'count': count,
+            'next': None,
+            'previous': None,
+            'results': results,
+        }
+        if next_offset < count:
+            query['limit'] = str(limit)
+            query['offset'] = str(next_offset)
+            payload['next'] = _relative_pagination_link(f'{base}?{query.urlencode()}')
+        if previous_offset >= 0:
+            query['limit'] = str(limit)
+            query['offset'] = str(previous_offset)
+            payload['previous'] = _relative_pagination_link(f'{base}?{query.urlencode()}')
+        elif offset > 0:
+            query['limit'] = str(limit)
+            query['offset'] = '0'
+            payload['previous'] = _relative_pagination_link(f'{base}?{query.urlencode()}')
+        return payload
+
+    return _cached_response(request, 'anime-catalog', 'list', build)
+
+
+@api_view(['GET'])
+@throttle_classes([CatalogReadThrottle])
+def imdb_top250(request):
+    """The IMDb Top 250 shelves, in chart order.
+
+    ``type`` is ``movie`` (default) or ``series``. Every chart position is
+    returned — a title we can already play carries the full list-card payload
+    plus ``available: true``; a position still being completed carries only
+    the chart facts (rank, title, year, score) and ``available: false`` so the
+    page can show the whole list honestly. ``available=1`` narrows the result to
+    playable positions (what rails and the app grid use). ``coverage`` reports
+    how complete each shelf is.
+    """
+    from .models import ImdbChartEntry
+    from .top250 import coverage
+
+    kind = request.GET.get('type', 'movie').strip().lower()
+    if kind not in ('movie', 'series'):
+        kind = 'movie'
+    only_available = str(request.GET.get('available', '')).strip().lower() in {'1', 'true', 'yes'}
+    limit = _bounded_int(request.GET.get('limit'), 50, 1, 250)
+    offset = _bounded_int(request.GET.get('offset'), 0, 0, 250)
+
+    def build():
+        entries = ImdbChartEntry.objects.filter(kind=kind).order_by('rank')
+        if only_available:
+            published = {f'{kind}__is_published': True}
+            entries = entries.filter(**published)
+        count = entries.count()
+        page = list(entries[offset:offset + limit].values(
+            'rank', 'imdb_id', 'primary_title', 'original_title', 'start_year',
+            'average_rating', 'num_votes', kind,
+        ))
+        model, serializer = (Movie, MovieListSerializer) if kind == 'movie' else (Series, SeriesListSerializer)
+        ids = [row[kind] for row in page if row[kind]]
+        items = {
+            obj.id: obj
+            for obj in model.objects.filter(id__in=ids, is_published=True).prefetch_related(
+                'genres', 'directors', 'countries',
+            )
+        }
+        results = []
+        for row in page:
+            obj = items.get(row[kind])
+            rating = float(row['average_rating']) if row['average_rating'] is not None else None
+            if obj is not None:
+                payload = serializer(obj).data
+                payload['available'] = True
+            else:
+                payload = {
+                    'id': None,
+                    'slug': None,
+                    'title': row['primary_title'],
+                    'english_title': row['primary_title'],
+                    'original_title': row['original_title'],
+                    'year': row['start_year'],
+                    'imdb_rating': rating,
+                    'poster': None,
+                    'available': False,
+                }
+            payload['content_type'] = kind
+            payload['imdb_rank'] = row['rank']
+            payload['imdb_id'] = row['imdb_id']
+            payload['imdb_votes'] = row['num_votes']
+            results.append(payload)
+
+        base = request.path
+        query = request.GET.copy()
+        query['limit'] = str(limit)
+        payload = {'count': count, 'next': None, 'previous': None, 'results': results}
+        if offset + limit < count:
+            query['offset'] = str(offset + limit)
+            payload['next'] = _relative_pagination_link(f'{base}?{query.urlencode()}')
+        if offset > 0:
+            query['offset'] = str(max(0, offset - limit))
+            payload['previous'] = _relative_pagination_link(f'{base}?{query.urlencode()}')
+        payload['coverage'] = coverage().get(kind, {})
+        return payload
+
+    return _cached_response(request, 'imdb-top250', 'list', build)
+
+
+@api_view(['GET'])
+@throttle_classes([CatalogReadThrottle])
 def genre_list(request):
     def build():
         # Two grouped scans beat per-genre filtered Count(distinct) on large M2M tables.
@@ -763,12 +978,20 @@ def home_rails(request):
     limit = _bounded_int(request.GET.get('limit'), 7, 1, 24)
 
     def build():
-        from apps.catalog.trending import build_home_rails, rail_rotation_meta
+        from apps.catalog.trending import build_home_rails, lean_public_queryset, rail_rotation_meta
 
         rails = build_home_rails(limit=limit)
         meta = rails.get('meta') or rail_rotation_meta()
+        # Hero picks are explicitly curated and ordered by the most recent
+        # editorial update. Keep this separate from the scored featured rail:
+        # popularity must never push an unverified title into the main slider.
+        hero = list(
+            lean_public_queryset(Movie.objects.filter(is_published=True, is_featured=True))
+            .order_by('-updated_at', '-id')[:limit]
+        )
         return {
             'meta': meta,
+            'hero': MovieListSerializer(hero, many=True).data,
             'featured': MovieListSerializer(rails['featured'], many=True).data,
             'dubbed': MovieListSerializer(rails['dubbed'], many=True).data,
             'popular_series': SeriesListSerializer(rails['popular_series'], many=True).data,
@@ -956,7 +1179,17 @@ def actor_detail(request, slug):
 @api_view(['GET'])
 @throttle_classes([CatalogReadThrottle])
 def director_list(request):
-    queryset = Director.objects.all().order_by('name')
+    """Directors credited on at least one published title, popular first."""
+    queryset = (
+        Director.objects.filter(
+            Q(movies__is_published=True) | Q(series__is_published=True),
+        )
+        .distinct()
+        .order_by('-is_featured', '-popularity', 'name')
+    )
+    featured = request.GET.get('featured')
+    if featured in {'1', 'true', 'yes'}:
+        queryset = queryset.filter(is_featured=True)
     return _paginated_cached_response(request, 'directors', queryset, DirectorListSerializer, kind='actors')
 
 
@@ -965,7 +1198,7 @@ def director_list(request):
 def director_detail(request, slug):
     def build():
         director = get_object_or_404(Director.objects.all(), slug=slug)
-        return DirectorListSerializer(director).data
+        return DirectorDetailSerializer(director, context={'request': request}).data
 
     return _cached_response(request, f'director:{slug}', 'detail', build)
 
@@ -1188,6 +1421,84 @@ def search_content(request):
 
 @api_view(['GET'])
 @throttle_classes([CatalogReadThrottle])
+def search_suggest(request):
+    """Search-as-you-type: same payload as ``search_content``, answered from the
+    in-memory index (``search_suggest.py``) so every keystroke returns in
+    milliseconds. The full ``/api/search/`` (synopsis/people/genre probes)
+    stays behind the results page."""
+    from . import search_suggest as suggest
+
+    q = request.GET.get('q', '').strip()[:120]
+    parsed_query = parse_search_query(q)
+    search_text = parsed_query.text
+    search_year = _bounded_int(
+        normalize_search_digits(request.GET.get('year')),
+        parsed_query.year,
+        1888,
+        2100,
+    )
+    content_type = request.GET.get('type', 'all')
+    if content_type not in {'all', 'movie', 'series', 'actor'}:
+        content_type = 'all'
+    limit = _bounded_int(request.GET.get('limit'), 8, 1, 24)
+
+    if not search_year and not normalize_search_text(search_text):
+        response = Response({
+            'query': q, 'search_text': search_text, 'year': search_year,
+            'match_type': 'none', 'movies': [], 'series': [], 'actors': [],
+        })
+        response['Cache-Control'] = 'public, max-age=300'
+        return response
+
+    def build():
+        index = suggest.get_index()
+        movie_ids, series_ids, actor_ids = [], [], []
+        exact = False
+        if content_type in ('all', 'movie'):
+            movie_ids, hit = suggest.rank(index.movies, search_text, year=search_year, limit=limit)
+            exact = exact or hit
+        if content_type in ('all', 'series'):
+            series_ids, hit = suggest.rank(index.series, search_text, year=search_year, limit=limit)
+            exact = exact or hit
+        if search_text and search_year is None and content_type in ('all', 'actor'):
+            actor_ids, _ = suggest.rank(index.actors, search_text, year=None, limit=limit)
+
+        match_type = 'direct' if (movie_ids or series_ids or actor_ids) else 'none'
+        # Typo tolerance only once the words are long enough to mean something
+        # and nothing matched as typed (pg_trgm GIN indexes keep this bounded).
+        compact_length = len(normalize_search_text(search_text).replace(' ', ''))
+        if not movie_ids and not series_ids and compact_length >= 3:
+            def scoped(model):
+                source = model.objects.filter(is_published=True)
+                if search_year is not None:
+                    source = source.filter(**{'release_year' if model is Movie else 'start_year': search_year})
+                return source
+
+            if content_type in ('all', 'movie'):
+                movie_ids, hit = rank_similar_title_ids(scoped(Movie), search_text, limit)
+                exact = exact or hit
+            if content_type in ('all', 'series'):
+                series_ids, hit = rank_similar_title_ids(scoped(Series), search_text, limit)
+                exact = exact or hit
+            if movie_ids or series_ids:
+                match_type = 'direct' if (exact or actor_ids) else 'similar'
+
+        prefetch = ('genres', 'directors', 'countries')
+        return {
+            'query': q,
+            'search_text': search_text,
+            'year': search_year,
+            'match_type': match_type,
+            'movies': suggest.serialize_cards(Movie, MovieListSerializer, movie_ids, prefetch=prefetch),
+            'series': suggest.serialize_cards(Series, SeriesListSerializer, series_ids, prefetch=prefetch),
+            'actors': suggest.serialize_cards(Actor, ActorListSerializer, actor_ids),
+        }
+
+    return _cached_response(request, 'suggest', 'search', build)
+
+
+@api_view(['GET'])
+@throttle_classes([CatalogReadThrottle])
 def trending(request):
     content_type = request.GET.get('type', 'all')
     limit = _bounded_int(request.GET.get('limit'), 20, 1, 50)
@@ -1215,7 +1526,7 @@ def trending(request):
 def playback_subtitle_ensure(request):
     """Report a missing SoftSub on the online player and urgently attach cues.
 
-    Order: embedded movie/episode track → SubtitleStar → Subzone/provider fallbacks.
+    Order: embedded movie/episode track → SubtitleStar → SubDL → Subzone.
     Body: ``{ content_type, slug, episode_id?, version?, source_url?, sync? }``
 
     The sync lane is intentionally short (PLAYBACK_SUBTITLE_SYNC_MAX_SECONDS) so
@@ -1269,4 +1580,168 @@ def playback_subtitle_status(request):
     )
     response = Response(result)
     response['Cache-Control'] = 'private, no-store'
+    return response
+
+
+def _sync_voter_key(request) -> str:
+    """Stable per-viewer id for vote dedup: user id, else hashed session+IP+UA."""
+    user = getattr(request, 'user', None)
+    if user is not None and getattr(user, 'is_authenticated', False):
+        return f'u{user.pk}'
+    import hashlib
+
+    meta = request.META
+    forwarded = (meta.get('HTTP_X_FORWARDED_FOR') or '').split(',')[0].strip()
+    ip = forwarded or meta.get('REMOTE_ADDR') or ''
+    session_key = getattr(getattr(request, 'session', None), 'session_key', '') or ''
+    seed = f'{session_key}|{ip}|{meta.get("HTTP_USER_AGENT", "")}'
+    return 'a' + hashlib.sha1(seed.encode('utf-8')).hexdigest()[:32]
+
+
+@api_view(['POST'])
+@throttle_classes([SubtitleSyncReportThrottle])
+def subtitle_sync_report(request):
+    """Record the subtitle timing offset a viewer settled on for a served track.
+
+    Body: ``{ content_type, object_id, track_id, sig, offset, episode_id? }``.
+    One row per viewer per track (latest wins); the verifier task later bakes the
+    crowd consensus into the file. Never fails player UX — always 200 with ``ok``.
+    """
+    from apps.catalog.models import SubtitleSyncVote
+    from apps.catalog.subtitle_sync import MAX_APPLY_SECONDS
+
+    payload = request.data if isinstance(request.data, dict) else {}
+    content_type = str(payload.get('content_type') or payload.get('type') or '').strip().lower()
+    track_id = str(payload.get('track_id') or payload.get('track') or '').strip()[:80]
+    sig = str(payload.get('sig') or payload.get('sync_sig') or '').strip()[:32]
+
+    try:
+        object_id = int(payload.get('object_id') or payload.get('id') or 0)
+    except (TypeError, ValueError):
+        object_id = 0
+    try:
+        episode_id = int(payload.get('episode_id') or payload.get('episode') or 0)
+    except (TypeError, ValueError):
+        episode_id = 0
+    try:
+        offset = round(float(payload.get('offset')), 3)
+    except (TypeError, ValueError):
+        offset = None
+
+    ok = bool(
+        content_type in {'movie', 'series'}
+        and object_id > 0
+        and track_id
+        and sig
+        and offset is not None
+        and abs(offset) <= MAX_APPLY_SECONDS
+    )
+    if ok:
+        try:
+            SubtitleSyncVote.objects.update_or_create(
+                content_type=content_type,
+                object_id=object_id,
+                episode_id=episode_id if content_type == 'series' else 0,
+                track_id=track_id,
+                voter_key=_sync_voter_key(request),
+                defaults={'sig': sig, 'offset': offset},
+            )
+        except Exception:  # noqa: BLE001 — telemetry must never break playback
+            import logging
+
+            logging.getLogger(__name__).warning('subtitle sync vote failed', exc_info=True)
+            ok = False
+
+    response = Response({'ok': ok})
+    response['Cache-Control'] = 'private, no-store'
+    return response
+
+
+@api_view(['POST'])
+@throttle_classes([ContentIssueReportThrottle])
+def report_content_issue(request):
+    """File a structured in-player content-issue report and auto-remediate.
+
+    Body: ``{ content_type, problem_type, object_id?, slug?, episode_id?,
+    version?, source_url?, detail? }``. ``problem_type`` is one of the values
+    ``GET /api/catalog/report-issue/options/`` serves; the retired coarse
+    spellings (``subtitle``, ``audio``) are still accepted and mapped onto the
+    precise button they meant, so an older app keeps working.
+
+    The report is deduped, mirrored to the staff inbox and — for fixable types —
+    remediated inline through the crawler/classifier that already handles it
+    (see :mod:`apps.catalog.content_remediation`). Never blocks player UX.
+    """
+    from apps.catalog.content_reports import record_content_issue_report
+
+    payload = request.data if isinstance(request.data, dict) else {}
+
+    def _int(*keys):
+        for key in keys:
+            raw = payload.get(key)
+            if str(raw or '').strip().isdigit():
+                return int(raw)
+        return 0
+
+    result = record_content_issue_report(
+        request,
+        content_type=str(payload.get('content_type') or payload.get('type') or ''),
+        problem_type=str(payload.get('problem_type') or payload.get('problem') or ''),
+        object_id=_int('object_id', 'id'),
+        slug=str(payload.get('slug') or ''),
+        episode_id=_int('episode_id', 'episode'),
+        playback_version=str(payload.get('version') or payload.get('playback_version') or ''),
+        source_url=str(payload.get('source_url') or payload.get('src') or ''),
+        detail=str(payload.get('detail') or payload.get('note') or ''),
+    )
+    response = Response(result, status=200 if result.get('ok') else 400)
+    response['Cache-Control'] = 'private, no-store'
+    return response
+
+
+@api_view(['GET'])
+@throttle_classes([ContentIssueStatusThrottle])
+def content_issue_status(request):
+    """Player poll: has a filed content-issue report been auto-fixed yet?
+
+    Query: ``report_id``. Never enqueues work — a pure status read.
+    """
+    from apps.catalog.content_reports import read_report_status
+
+    report_id = request.query_params.get('report_id')
+    if not str(report_id or '').strip().isdigit():
+        return Response({'ok': False, 'error': 'report_id_required'}, status=400)
+    response = Response(read_report_status(int(report_id)))
+    response['Cache-Control'] = 'private, no-store'
+    return response
+
+
+@api_view(['GET'])
+def content_issue_options(request):
+    """The «گزارش خطا» buttons this player should render.
+
+    Query: ``content_type`` (``movie``/``series``) and ``episode_id`` — both
+    optional, and both only narrow the list: «قسمت اشتباه» is dropped for a film
+    and for a series whose player has not told us which episode is on screen,
+    because a report the intake would immediately reject is worse than no button.
+
+    Clients ship a bundled copy of this list for first paint and offline use, so
+    the response is cacheable and ordinary; the point of serving it is that a new
+    repair in :mod:`apps.catalog.content_remediation` becomes a new button
+    everywhere without an app release.
+    """
+    from apps.catalog.report_catalog import grouped_for
+
+    content_type = str(request.query_params.get('content_type') or request.query_params.get('type') or '')
+    episode_id = str(request.query_params.get('episode_id') or request.query_params.get('episode') or '')
+    groups = grouped_for(content_type, has_episode=episode_id.strip().isdigit() and int(episode_id) > 0)
+
+    response = Response({
+        'ok': True,
+        'groups': groups,
+        'options': [option for group in groups for option in group['options']],
+    })
+    # Identical for every viewer of a given content type, and it changes only
+    # when we ship a new repair.
+    response['Cache-Control'] = 'public, max-age=300, stale-while-revalidate=3600'
     return response

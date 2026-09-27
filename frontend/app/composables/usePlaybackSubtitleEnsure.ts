@@ -5,7 +5,7 @@
 import type { ContentType, PlaybackTextTrack } from '~/types'
 
 export interface PlaybackSubtitleEnsureResult {
-  status: 'ready' | 'queued' | 'unavailable' | 'missing' | 'invalid' | string
+  status: 'ready' | 'queued' | 'unavailable' | 'missing' | 'invalid' | 'exhausted' | 'not_needed' | string
   reported?: boolean
   queued?: boolean
   has_subtitle_tracks?: boolean
@@ -42,8 +42,10 @@ export function usePlaybackSubtitleEnsure() {
         source_url: input.sourceUrl || '',
         sync: input.sync !== false,
       },
-      // Remote ffmpeg continues on the urgent worker; provider-only sync is short.
-      timeout: 16_000,
+      // The endpoint is now fast (non-blocking enqueue + short best-effort
+      // sidecar attach); keep the client timeout tight so a slow network never
+      // leaves the player stuck waiting on the report call.
+      timeout: 8_000,
     })
   }
 
@@ -60,7 +62,7 @@ export function usePlaybackSubtitleEnsure() {
         episode_id: input.episodeId || 0,
         ...(input.reportId ? { report_id: input.reportId } : {}),
       },
-      timeout: 8_000,
+      timeout: 5_000,
     })
   }
 

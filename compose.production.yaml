@@ -25,8 +25,9 @@ services:
       NUXT_PUBLIC_ANALYTICS_TRANSPORT: api
       NUXT_PUBLIC_EVENTS_ENDPOINT: /events/
       NUXT_API_INTERNAL_BASE: http://backend:8000/api
-      # Keep the SSR process under the container mem_limit on 4Gi hosts.
-      NODE_OPTIONS: --max-old-space-size=768
+      # SSR heap under the container mem_limit (7.8Gi host). Raised from 768
+      # after repeated OOM restarts under crawler long-tail traffic.
+      NODE_OPTIONS: --max-old-space-size=1024
       NITRO_COMPRESS_PUBLIC_ASSETS: "1"
     expose:
       - "3000"
@@ -43,7 +44,7 @@ services:
       timeout: 10s
       retries: 5
       start_period: 45s
-    mem_limit: 1024m
+    mem_limit: 1536m
     cpus: 1.25
     cpu_shares: 1536
     logging: *default-logging
@@ -68,7 +69,11 @@ services:
       DB_PASSWORD: ${POSTGRES_PASSWORD}
       DB_HOST: postgres
       DB_PORT: "5432"
-      DB_CONN_MAX_AGE: "30"
+      # ASGI runs each request in a fresh thread: a persistent connection is
+      # orphaned with it. The per-worker pool reuses connections safely
+      # (settings force CONN_MAX_AGE=0 while it is on).
+      DB_CONN_MAX_AGE: "0"
+      DB_POOL_MAX_SIZE: "${DB_POOL_MAX_SIZE:-10}"
       # Public requests must never pin a worker/database connection indefinitely.
       DB_STATEMENT_TIMEOUT_MS: "5000"
       REDIS_URL: redis://redis:6379/0
@@ -86,6 +91,10 @@ services:
       - static_data:/app/staticfiles
       - media_data:/app/media
       - ${CATALOG_MEDIA_MANIFEST_HOST_PATH:-./backend/catalog-media-manifest.example.json}:/run/catalog-media-manifest.json:ro
+      # The Android update channel reads app-release.json + stats the APK it
+      # names, so it can never advertise a build that is not on disk.
+      # Read-only: this container publishes releases, it does not make them.
+      - ./downloads:/srv/downloads:ro
     expose:
       - "8000"
     depends_on:
@@ -160,6 +169,55 @@ services:
       - edge
       - data
 
+  # User-facing support lane: answers tickets the moment they are filed and fixes
+  # viewer «گزارش خطا» reports. Its own worker so it is never stuck behind the
+  # ~25-minute playback-refresh crawl on ``celery`` (which used to expire ~87% of
+  # the support ticks unrun). Concurrency 2: one slow provider crawl must not
+  # delay a reply to the next user.
+  catalog-worker-support:
+    image: revayato-backend
+    restart: unless-stopped
+    init: true
+    read_only: true
+    tmpfs:
+      - /tmp:size=256m,noexec,nosuid
+    env_file:
+      - .env.production
+    entrypoint: []
+    command: ["celery", "-A", "config", "worker", "--loglevel=INFO", "--concurrency=${CATALOG_SUPPORT_WORKER_CONCURRENCY:-2}", "--prefetch-multiplier=1", "--max-tasks-per-child=25", "-Q", "support"]
+    environment:
+      DJANGO_DEBUG: "False"
+      DB_ENGINE: django.db.backends.postgresql
+      DB_NAME: ${POSTGRES_DB}
+      DB_USER: ${POSTGRES_USER}
+      DB_PASSWORD: ${POSTGRES_PASSWORD}
+      DB_HOST: postgres
+      DB_PORT: "5432"
+      DB_CONN_MAX_AGE: "30"
+      REDIS_URL: redis://redis:6379/0
+      CACHE_URL: redis://redis:6379/1
+      CELERY_BROKER_URL: redis://redis-queue:6379/0
+      CELERY_RESULT_BACKEND: redis://redis-queue:6379/1
+    volumes:
+      # A subtitle report can extract a WebVTT synchronously; it must land on the
+      # same media volume the API serves.
+      - media_data:/app/media
+      - ${CATALOG_MEDIA_MANIFEST_HOST_PATH:-./backend/catalog-media-manifest.example.json}:/run/catalog-media-manifest.json:ro
+    depends_on:
+      backend:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      redis-queue:
+        condition: service_healthy
+    mem_limit: 640m
+    cpus: ${CATALOG_SUPPORT_WORKER_CPUS:-0.35}
+    cpu_shares: 256
+    logging: *default-logging
+    networks:
+      - edge
+      - data
+
   catalog-worker-urgent:
     image: revayato-backend
     restart: unless-stopped
@@ -198,6 +256,102 @@ services:
     mem_limit: 768m
     cpus: ${CATALOG_URGENT_WORKER_CPUS:-0.35}
     cpu_shares: 128
+    logging: *default-logging
+    networks:
+      - edge
+      - data
+
+  # Bulk SoftSub backlog (tens of thousands of rows). It gets its own lane so a
+  # multi-hour extraction queue can never delay the 5-minute maintenance ticks on
+  # ``celery`` or the live-player requests on ``softsub-urgent``.
+  catalog-worker-softsub:
+    image: revayato-backend
+    restart: unless-stopped
+    init: true
+    read_only: true
+    tmpfs:
+      - /tmp:size=768m,noexec,nosuid
+    env_file:
+      - .env.production
+    entrypoint: []
+    command: ["celery", "-A", "config", "worker", "--loglevel=INFO", "--concurrency=${CATALOG_SOFTSUB_WORKER_CONCURRENCY:-1}", "--prefetch-multiplier=1", "--max-tasks-per-child=15", "-Q", "softsub"]
+    environment:
+      DJANGO_DEBUG: "False"
+      DB_ENGINE: django.db.backends.postgresql
+      DB_NAME: ${POSTGRES_DB}
+      DB_USER: ${POSTGRES_USER}
+      DB_PASSWORD: ${POSTGRES_PASSWORD}
+      DB_HOST: postgres
+      DB_PORT: "5432"
+      DB_CONN_MAX_AGE: "30"
+      REDIS_URL: redis://redis:6379/0
+      CACHE_URL: redis://redis:6379/1
+      CELERY_BROKER_URL: redis://redis-queue:6379/0
+      CELERY_RESULT_BACKEND: redis://redis-queue:6379/1
+    volumes:
+      # SoftSub WebVTT extracts must land on the same media volume the API serves.
+      - media_data:/app/media
+      - ${CATALOG_MEDIA_MANIFEST_HOST_PATH:-./backend/catalog-media-manifest.example.json}:/run/catalog-media-manifest.json:ro
+    depends_on:
+      backend:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      redis-queue:
+        condition: service_healthy
+    mem_limit: 768m
+    cpus: ${CATALOG_SOFTSUB_WORKER_CPUS:-0.45}
+    cpu_shares: 96
+    logging: *default-logging
+    networks:
+      - edge
+      - data
+
+  # Admin catalog import jobs run for hours and are network bound. Keeping them
+  # off the ``celery`` lane is what stops a single import from freezing every
+  # beat tick (subtitle drain, playback refresh, Dornatv discovery) behind it.
+  catalog-worker-imports:
+    image: revayato-backend
+    restart: unless-stopped
+    init: true
+    read_only: true
+    tmpfs:
+      - /tmp:size=512m,noexec,nosuid
+    env_file:
+      - .env.production
+    entrypoint: []
+    # ``imports-hot``, ``imports-top250`` then ``imports-discovery`` are listed
+    # first on purpose: queues are drained in the order given, so this week's
+    # trending titles, the IMDb Top 250 shelf and the lane that finds new titles
+    # are always served before the per-title
+    # auto_crawl retries that routinely sit ~790 deep on ``imports``.
+    command: ["celery", "-A", "config", "worker", "--loglevel=INFO", "--concurrency=${CATALOG_IMPORTS_WORKER_CONCURRENCY:-1}", "--prefetch-multiplier=1", "--max-tasks-per-child=10", "-Q", "imports-hot,imports-top250,imports-discovery,imports"]
+    environment:
+      DJANGO_DEBUG: "False"
+      DB_ENGINE: django.db.backends.postgresql
+      DB_NAME: ${POSTGRES_DB}
+      DB_USER: ${POSTGRES_USER}
+      DB_PASSWORD: ${POSTGRES_PASSWORD}
+      DB_HOST: postgres
+      DB_PORT: "5432"
+      DB_CONN_MAX_AGE: "30"
+      REDIS_URL: redis://redis:6379/0
+      CACHE_URL: redis://redis:6379/1
+      CELERY_BROKER_URL: redis://redis-queue:6379/0
+      CELERY_RESULT_BACKEND: redis://redis-queue:6379/1
+    volumes:
+      - media_data:/app/media
+      - ${CATALOG_MEDIA_MANIFEST_HOST_PATH:-./backend/catalog-media-manifest.example.json}:/run/catalog-media-manifest.json:ro
+    depends_on:
+      backend:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      redis-queue:
+        condition: service_healthy
+    mem_limit: 640m
+    cpus: ${CATALOG_IMPORTS_WORKER_CPUS:-0.35}
+    cpu_shares: 96
     logging: *default-logging
     networks:
       - edge
@@ -263,6 +417,21 @@ services:
       MYF2M_MOVIE_REFRESH_ORDER: ${MYF2M_MOVIE_REFRESH_ORDER:-stale}
       MYF2M_CRAWL_CHECKPOINT: /var/lib/revayato-crawler/myf2m-listings.json
       MYF2M_TMDB_MISS_CACHE_SECONDS: ${MYF2M_TMDB_MISS_CACHE_SECONDS:-604800}
+      # --- Archive completion + rating accuracy (lanes 5-7 of the loop) ---
+      # Cached on the durable crawler volume, not tmpfs, so a container restart
+      # does not re-download IMDb's 8 MB dataset.
+      IMDB_DATASET_CACHE_DIR: /var/lib/revayato-crawler/imdb
+      CATALOG_IMDB_SYNC_ENABLED: ${CATALOG_IMDB_SYNC_ENABLED:-1}
+      CATALOG_IMDB_SYNC_EVERY_ROUNDS: ${CATALOG_IMDB_SYNC_EVERY_ROUNDS:-6}
+      CATALOG_DRAFT_SOURCE_ENABLED: ${CATALOG_DRAFT_SOURCE_ENABLED:-1}
+      CATALOG_DRAFT_SCAN_LIMIT: ${CATALOG_DRAFT_SCAN_LIMIT:-600}
+      CATALOG_DRAFT_FIX_LIMIT: ${CATALOG_DRAFT_FIX_LIMIT:-40}
+      CATALOG_DRAFT_DEEP_SCAN_LIMIT: ${CATALOG_DRAFT_DEEP_SCAN_LIMIT:-4000}
+      CATALOG_DRAFT_DEEP_FIX_LIMIT: ${CATALOG_DRAFT_DEEP_FIX_LIMIT:-80}
+      CATALOG_DRAFT_RETRY_HOURS: ${CATALOG_DRAFT_RETRY_HOURS:-168}
+      # Matches MYF2M_BULK_CRAWL_DELAY_SECONDS: the same provider rate budget.
+      CATALOG_DRAFT_DELAY_SECONDS: ${CATALOG_DRAFT_DELAY_SECONDS:-1.4}
+      CATALOG_PUBLISH_BATCH: ${CATALOG_PUBLISH_BATCH:-200}
     volumes:
       - media_data:/app/media
       - crawler_state:/var/lib/revayato-crawler
@@ -275,6 +444,10 @@ services:
       - ./backend/scripts/refresh_series_new_episodes.py:/app/scripts/refresh_series_new_episodes.py:ro
       - ./backend/scripts/refresh_movie_download_links.py:/app/scripts/refresh_movie_download_links.py:ro
       - ./backend/apps/catalog/provider_import/providers/cdn_link_parse.py:/app/apps/catalog/provider_import/providers/cdn_link_parse.py:ro
+      - ./backend/apps/catalog/draft_sources.py:/app/apps/catalog/draft_sources.py:ro
+      - ./backend/apps/catalog/imdb_dataset.py:/app/apps/catalog/imdb_dataset.py:ro
+      - ./backend/apps/catalog/management/commands/hunt_draft_sources.py:/app/apps/catalog/management/commands/hunt_draft_sources.py:ro
+      - ./backend/apps/catalog/management/commands/sync_imdb_ratings.py:/app/apps/catalog/management/commands/sync_imdb_ratings.py:ro
     depends_on:
       catalog-crawler-state-init:
         condition: service_completed_successfully
@@ -287,8 +460,175 @@ services:
       redis-queue:
         condition: service_healthy
     stop_grace_period: 30s
-    mem_limit: 384m
+    # Headroom for MYF2M_CRAWL_WORKERS parallel fetch threads, each holding its
+    # own httpx client and a page of HTML.
+    mem_limit: 768m
     cpus: ${MYF2M_BULK_CRAWLER_CPUS:-1.25}
+    cpu_shares: 64
+    logging: *default-logging
+    networks:
+      - edge
+      - data
+
+  # Permanent, self-healing subtitle backfill crawler. Revolves through the
+  # catalog forever, finding every published movie / episode that still lacks a
+  # synced WebVTT track and handing it to the softsub worker, which extracts an
+  # embedded Persian subtitle from the film itself or matches the exact title
+  # against the configured public sources (SubtitleStar → Subzone.ir) and
+  # imports it. Writes the shared subtitle_tracks field the web player and the
+  # Android app both read, so the two stay in sync automatically. Queue-only, so
+  # this stays light; the heavy ffmpeg/download work runs on catalog-worker-softsub.
+  subtitle-crawler:
+    image: revayato-backend
+    restart: unless-stopped
+    init: true
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m,noexec,nosuid
+    env_file:
+      - .env.production
+    entrypoint: []
+    command: ["python", "/app/scripts/run_subtitle_backfill_loop.py"]
+    environment:
+      DJANGO_DEBUG: "False"
+      DB_ENGINE: django.db.backends.postgresql
+      DB_NAME: ${POSTGRES_DB}
+      DB_USER: ${POSTGRES_USER}
+      DB_PASSWORD: ${POSTGRES_PASSWORD}
+      DB_HOST: postgres
+      DB_PORT: "5432"
+      DB_CONN_MAX_AGE: "0"
+      DB_STATEMENT_TIMEOUT_MS: "30000"
+      REDIS_URL: redis://redis:6379/0
+      CACHE_URL: redis://redis:6379/1
+      CELERY_BROKER_URL: redis://redis-queue:6379/0
+      CELERY_RESULT_BACKEND: redis://redis-queue:6379/1
+      # How often a full crawl round runs. Each round is cheap (DB scan + enqueue).
+      SUBTITLE_CRAWL_INTERVAL_SECONDS: ${SUBTITLE_CRAWL_INTERVAL_SECONDS:-900}
+      SUBTITLE_CRAWLER_NICE: ${SUBTITLE_CRAWLER_NICE:-10}
+      SUBTITLE_EXTRACT_TIMEOUT_SECONDS: ${SUBTITLE_EXTRACT_TIMEOUT_SECONDS:-240}
+      SUBTITLE_EPISODE_LIMIT: ${SUBTITLE_EPISODE_LIMIT:-24}
+      # Fast lane: most-watched / newest missing titles first, every round.
+      SUBTITLE_FAST_MOVIE_LIMIT: ${SUBTITLE_FAST_MOVIE_LIMIT:-40}
+      SUBTITLE_FAST_SERIES_LIMIT: ${SUBTITLE_FAST_SERIES_LIMIT:-20}
+      # Deep lane: random rotation over the whole back catalogue, every N rounds.
+      SUBTITLE_DEEP_EVERY_ROUNDS: ${SUBTITLE_DEEP_EVERY_ROUNDS:-4}
+      SUBTITLE_DEEP_MOVIE_LIMIT: ${SUBTITLE_DEEP_MOVIE_LIMIT:-120}
+      SUBTITLE_DEEP_SERIES_LIMIT: ${SUBTITLE_DEEP_SERIES_LIMIT:-60}
+      SUBTITLE_DRAIN_GAPS: ${SUBTITLE_DRAIN_GAPS:-1}
+    volumes:
+      # Hot-patchable without rebuilding the large backend image (the loop script
+      # and the --order-aware sweep command also ship inside future images).
+      - ./backend/scripts/run_subtitle_backfill_loop.py:/app/scripts/run_subtitle_backfill_loop.py:ro
+      - ./backend/apps/catalog/management/commands/extract_softsub_tracks.py:/app/apps/catalog/management/commands/extract_softsub_tracks.py:ro
+    depends_on:
+      backend:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      redis-queue:
+        condition: service_healthy
+    stop_grace_period: 30s
+    mem_limit: 256m
+    cpus: ${SUBTITLE_CRAWLER_CPUS:-0.5}
+    cpu_shares: 64
+    logging: *default-logging
+    networks:
+      - edge
+      - data
+
+  # Permanent, self-healing crawler for browser-unplayable titles. Revolves the
+  # catalog forever, finding every published movie / series whose only live
+  # sources a browser <video> cannot decode — progressive MKV/AVI/WMV containers
+  # or HEVC/x265/10-bit / AV1 codecs — so iOS/Safari/Firefox viewers hit
+  # "پخش ویدیو ممکن نشد" while the download works. Re-crawls the providers
+  # (myf2m + dornatv) to pull the browser-safe MP4/HLS + H.264 mirror they list
+  # alongside the x265 encode, and records a PlaybackSourceGap per title for
+  # backoff (titles no provider can fix are marked unavailable and only retried
+  # after a long window). Kept light + throttled so it never slows the live site.
+  playback-crawler:
+    image: revayato-backend
+    restart: unless-stopped
+    init: true
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m,noexec,nosuid
+    env_file:
+      - .env.production
+    entrypoint: []
+    command: ["python", "/app/scripts/run_playback_source_loop.py"]
+    environment:
+      DJANGO_DEBUG: "False"
+      DB_ENGINE: django.db.backends.postgresql
+      DB_NAME: ${POSTGRES_DB}
+      DB_USER: ${POSTGRES_USER}
+      DB_PASSWORD: ${POSTGRES_PASSWORD}
+      DB_HOST: postgres
+      DB_PORT: "5432"
+      DB_CONN_MAX_AGE: "0"
+      DB_STATEMENT_TIMEOUT_MS: "30000"
+      REDIS_URL: redis://redis:6379/0
+      CACHE_URL: redis://redis:6379/1
+      CELERY_BROKER_URL: redis://redis-queue:6379/0
+      CELERY_RESULT_BACKEND: redis://redis-queue:6379/1
+      # How often a full crawl round runs. Detection is a cheap DB scan; the fix
+      # lane re-crawls only a small, bounded batch of providers per round.
+      PLAYBACK_SOURCE_INTERVAL_SECONDS: ${PLAYBACK_SOURCE_INTERVAL_SECONDS:-1800}
+      PLAYBACK_SOURCE_CRAWLER_NICE: ${PLAYBACK_SOURCE_CRAWLER_NICE:-10}
+      # Fast lane: most-watched head, every round.
+      PLAYBACK_SOURCE_FAST_SCAN_LIMIT: ${PLAYBACK_SOURCE_FAST_SCAN_LIMIT:-400}
+      PLAYBACK_SOURCE_FAST_FIX_LIMIT: ${PLAYBACK_SOURCE_FAST_FIX_LIMIT:-8}
+      # Deep lane: random rotation over the whole back catalogue, every N rounds.
+      PLAYBACK_SOURCE_DEEP_EVERY_ROUNDS: ${PLAYBACK_SOURCE_DEEP_EVERY_ROUNDS:-6}
+      PLAYBACK_SOURCE_DEEP_SCAN_LIMIT: ${PLAYBACK_SOURCE_DEEP_SCAN_LIMIT:-1500}
+      PLAYBACK_SOURCE_DEEP_FIX_LIMIT: ${PLAYBACK_SOURCE_DEEP_FIX_LIMIT:-12}
+      # A title no provider can fix is retried only after this many hours.
+      PLAYBACK_SOURCE_RETRY_UNAVAILABLE_HOURS: ${PLAYBACK_SOURCE_RETRY_UNAVAILABLE_HOURS:-72}
+      PLAYBACK_SOURCE_RECRAWL_DELAY_SECONDS: ${PLAYBACK_SOURCE_RECRAWL_DELAY_SECONDS:-3}
+      # Expired lane: refresh titles whose only links are expired signed URLs.
+      # Popularity-ordered, --no-delete; the durable replacement for the starved
+      # refresh_expired_playback Celery beat task.
+      PLAYBACK_EXPIRED_REFRESH_LIMIT: ${PLAYBACK_EXPIRED_REFRESH_LIMIT:-60}
+      PLAYBACK_EXPIRED_REFRESH_EVERY_ROUNDS: ${PLAYBACK_EXPIRED_REFRESH_EVERY_ROUNDS:-1}
+      PLAYBACK_EXPIRED_REFRESH_DELAY_SECONDS: ${PLAYBACK_EXPIRED_REFRESH_DELAY_SECONDS:-1}
+      # Gate lane: re-test published playback links, oldest check first, so a
+      # link that stopped being playable is found here and not by a viewer.
+      # Small per round on purpose — the one-off full backfill is run by hand.
+      PLAYBACK_GATE_MOVIE_LIMIT: ${PLAYBACK_GATE_MOVIE_LIMIT:-80}
+      PLAYBACK_GATE_EPISODE_LIMIT: ${PLAYBACK_GATE_EPISODE_LIMIT:-80}
+      PLAYBACK_GATE_EVERY_ROUNDS: ${PLAYBACK_GATE_EVERY_ROUNDS:-1}
+      PLAYBACK_GATE_RECHECK_HOURS: ${PLAYBACK_GATE_RECHECK_HOURS:-168}
+      PLAYBACK_GATE_DELAY_SECONDS: ${PLAYBACK_GATE_DELAY_SECONDS:-0.5}
+      # Confirm lane: only the titles the gate found nothing playable for. A
+      # link is blanked on the second verdict, from a separate run — this is
+      # what makes that second run happen tomorrow instead of next pass.
+      PLAYBACK_GATE_CONFIRM_LIMIT: ${PLAYBACK_GATE_CONFIRM_LIMIT:-60}
+      PLAYBACK_GATE_CONFIRM_HOURS: ${PLAYBACK_GATE_CONFIRM_HOURS:-24}
+    volumes:
+      # Hot-patchable without rebuilding the large backend image (the loop script,
+      # command and detection module also ship inside future images).
+      - ./backend/scripts/run_playback_source_loop.py:/app/scripts/run_playback_source_loop.py:ro
+      - ./backend/scripts/refresh_expired_playback.py:/app/scripts/refresh_expired_playback.py:ro
+      - ./backend/apps/catalog/management/commands/crawl_playback_sources.py:/app/apps/catalog/management/commands/crawl_playback_sources.py:ro
+      - ./backend/apps/catalog/management/commands/verify_playback_links.py:/app/apps/catalog/management/commands/verify_playback_links.py:ro
+      - ./backend/apps/catalog/playback_sources.py:/app/apps/catalog/playback_sources.py:ro
+      - ./backend/apps/catalog/playback_gate.py:/app/apps/catalog/playback_gate.py:ro
+      - ./backend/apps/catalog/media_probe.py:/app/apps/catalog/media_probe.py:ro
+      - ./backend/apps/catalog/playback_refresh.py:/app/apps/catalog/playback_refresh.py:ro
+    depends_on:
+      backend:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      redis-queue:
+        condition: service_healthy
+    stop_grace_period: 30s
+    mem_limit: 384m
+    cpus: ${PLAYBACK_SOURCE_CRAWLER_CPUS:-0.5}
     cpu_shares: 64
     logging: *default-logging
     networks:
@@ -478,6 +818,102 @@ services:
   # 404s. Run with `docker compose run --rm downloads-seed` (see ops/deploy.sh).
   # The APK is gitignored, so ops/deploy.sh stages it from android-app/dist/
   # (or a GitHub Release) onto the host before this runs.
+  # Playback gateway: rewraps sources a browser genuinely cannot open (almost
+  # always H.264 inside Matroska) into fragmented-MP4 HLS, on demand, for the
+  # viewer who hit the wall. Its own container for three reasons — each session
+  # is a long-lived ffmpeg that would otherwise compete with the API for CPU;
+  # each one writes segments that need real disk rather than the API's 128MB
+  # tmpfs; and the reaper that cleans them up has to share a pid namespace with
+  # the processes it judges, which is only true here.
+  stream-gateway:
+    image: revayato-backend
+    restart: unless-stopped
+    init: true
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m,noexec,nosuid
+    env_file:
+      - .env.production
+    # The image entrypoint runs migrate + collectstatic --clear. Both belong to
+    # the web container alone: running them here would race it over the shared
+    # static volume every time this one restarts.
+    entrypoint: []
+    # Spelled out rather than inherited so the request limits can differ: a
+    # worker recycling mid-segment would truncate a viewer's stream, so this
+    # one is never asked to retire on a request count.
+    command:
+      - sh
+      - -c
+      - >-
+        exec uvicorn config.asgi:application --host 0.0.0.0 --port 8000
+        --workers ${STREAM_WEB_CONCURRENCY:-2}
+        --proxy-headers --forwarded-allow-ips='127.0.0.1,172.16.0.0/12,10.0.0.0/8'
+        --timeout-keep-alive 30
+        --limit-concurrency ${STREAM_LIMIT_CONCURRENCY:-120}
+    environment:
+      DJANGO_DEBUG: "False"
+      DB_ENGINE: django.db.backends.postgresql
+      DB_NAME: ${POSTGRES_DB}
+      DB_USER: ${POSTGRES_USER}
+      DB_PASSWORD: ${POSTGRES_PASSWORD}
+      DB_HOST: postgres
+      DB_PORT: "5432"
+      # ASGI runs each request in a fresh thread: a persistent connection is
+      # orphaned with it. The per-worker pool reuses connections safely
+      # (settings force CONN_MAX_AGE=0 while it is on).
+      DB_CONN_MAX_AGE: "0"
+      DB_POOL_MAX_SIZE: "${STREAM_DB_POOL_MAX_SIZE:-6}"
+      # It asks the database one question — does this title own this URL — so a
+      # query that takes longer than this is broken, not slow.
+      DB_STATEMENT_TIMEOUT_MS: "5000"
+      REDIS_URL: redis://redis:6379/0
+      CACHE_URL: redis://redis:6379/1
+      CELERY_BROKER_URL: redis://redis-queue:6379/0
+      CELERY_RESULT_BACKEND: redis://redis-queue:6379/1
+      STREAM_SESSION_ROOT: /var/tmp/revayato-stream
+      # This container is the only place the sweep can tell a live ffmpeg from
+      # a stale pid, so it is the only place it runs.
+      STREAM_GATEWAY_REAPER: "1"
+      # Sized for this host, not for the defaults: ~5.9GB free on the system
+      # disk and ~3GB of RAM unclaimed. Each remux holds roughly eight minutes
+      # of video at a time (readrate lead plus the pruned tail) and about a
+      # tenth of a core; a transcode costs a whole one, and only ~0.1% of the
+      # catalog needs it.
+      STREAM_MAX_CONCURRENT_REMUX: ${STREAM_MAX_CONCURRENT_REMUX:-4}
+      STREAM_MAX_CONCURRENT_TRANSCODE: ${STREAM_MAX_CONCURRENT_TRANSCODE:-1}
+      STREAM_DISK_BUDGET_MB: ${STREAM_DISK_BUDGET_MB:-1536}
+    volumes:
+      # Real disk, not the API's tmpfs: segments are megabytes, not kilobytes.
+      - stream_sessions:/var/tmp/revayato-stream
+    expose:
+      - "8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import os, urllib.request; host=(os.environ.get('DJANGO_ALLOWED_HOSTS') or 'localhost').split(',')[0].strip() or 'localhost'; req=urllib.request.Request('http://127.0.0.1:8000/api/health/', headers={'Host': host}); urllib.request.urlopen(req, timeout=6).read()",
+        ]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 45s
+    mem_limit: ${STREAM_GATEWAY_MEM:-768m}
+    cpus: ${STREAM_GATEWAY_CPUS:-0.9}
+    # Well below the API's 2048: when both want the CPU, the page load wins and
+    # the rewrap simply runs a little behind its viewer.
+    cpu_shares: 256
+    logging: *default-logging
+    networks:
+      - edge
+      - data
+
   downloads-seed:
     image: busybox:1.36
     volumes:
@@ -498,6 +934,7 @@ volumes:
   caddy_config:
   celery_queue_data:
   crawler_state:
+  stream_sessions:
 
 networks:
   edge:

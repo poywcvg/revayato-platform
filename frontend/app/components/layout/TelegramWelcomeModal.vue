@@ -323,7 +323,7 @@ onBeforeUnmount(() => {
   margin-top: .9rem;
   color: var(--theme-text-muted);
   font-family: var(--font-latin-ui);
-  font-size: .68rem;
+  font-size: 0.75rem;
   font-weight: 700;
 }
 

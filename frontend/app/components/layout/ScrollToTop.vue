@@ -23,7 +23,7 @@ onBeforeUnmount(() => observer?.disconnect())
   <Transition name="scroll-top">
     <button v-if="visible" type="button" class="scroll-top-button" aria-label="بازگشت به ابتدای صفحه" @click="scrollToTop">
       <CinematicIcon name="arrow-up" class="size-4.5" />
-      <span class="hidden text-[10px] font-black sm:inline">بالای صفحه</span>
+      <span class="hidden text-[11px] font-black sm:inline">بالای صفحه</span>
     </button>
   </Transition>
 </template>

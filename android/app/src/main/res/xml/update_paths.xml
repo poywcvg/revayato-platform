@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  The only directory the update FileProvider exposes: the cache folder the
+  in-app updater writes the downloaded APK into. Nothing else in the app is
+  shareable through this provider.
+-->
+<paths>
+    <cache-path name="updates" path="updates/" />
+</paths>

@@ -65,7 +65,7 @@ def _existing_paths() -> set[str]:
 def _list_myf2m_slugs(client: httpx.Client, *, max_pages: int) -> list[str]:
     seen: list[str] = []
     known: set[str] = set()
-    base = getattr(settings, 'MYF2M_BASE_URL', 'https://www.myf2m.info').rstrip('/')
+    base = getattr(settings, 'MYF2M_BASE_URL', 'https://www.myf2ms.top').rstrip('/')
     for page in range(1, max_pages + 1):
         path = '/series/' if page == 1 else f'/series/page/{page}/'
         r = client.get(base + path)
@@ -149,7 +149,7 @@ def main() -> int:
 
     tmdb = configured_tmdb_client()
     exclude_iranian = bool(getattr(settings, 'CATALOG_EXCLUDE_IRANIAN', True))
-    base = getattr(settings, 'MYF2M_BASE_URL', 'https://www.myf2m.info').rstrip('/')
+    base = getattr(settings, 'MYF2M_BASE_URL', 'https://www.myf2ms.top').rstrip('/')
     headers = {
         'User-Agent': getattr(settings, 'MYF2M_USER_AGENT', 'RevayatoCatalogCrawler/1.0'),
         'Accept-Language': 'fa-IR,fa;q=0.9,en;q=0.8',

@@ -40,7 +40,7 @@ class PlaybackSubtitleEnsureTests(TestCase):
                 {
                     'content_type': 'movie',
                     'slug': self.movie.slug,
-                    'version': 'dub',
+                    'version': 'original',
                     'sync': True,
                 },
                 format='json',
@@ -56,6 +56,36 @@ class PlaybackSubtitleEnsureTests(TestCase):
             PlaybackSubtitleGap.Status.RESOLVED,
         })
         self.assertIn(response.data.get('status'), {'queued', 'unavailable', 'ready', 'burned_in'})
+
+    def test_dubbed_stream_is_not_a_gap(self):
+        with patch('apps.catalog.tasks.enqueue_movie_softsub_urgent') as enqueue:
+            response = self.client.post(
+                '/api/catalog/playback-subtitle-ensure/',
+                {
+                    'content_type': 'movie',
+                    'slug': self.movie.slug,
+                    'source_url': 'https://cdn.example/movie.Dub.1080p.mkv',
+                    'sync': True,
+                },
+                format='json',
+            )
+        self.assertEqual(response.data.get('status'), 'not_needed')
+        self.assertEqual(response.data.get('reason'), 'dubbed_stream')
+        self.assertFalse(PlaybackSubtitleGap.objects.filter(object_id=self.movie.pk).exists())
+        enqueue.assert_not_called()
+
+    def test_persian_language_title_is_not_a_gap(self):
+        Movie.objects.filter(pk=self.movie.pk).update(original_language='fa')
+        with patch('apps.catalog.tasks.enqueue_movie_softsub_urgent') as enqueue:
+            response = self.client.post(
+                '/api/catalog/playback-subtitle-ensure/',
+                {'content_type': 'movie', 'slug': self.movie.slug, 'version': 'original', 'sync': True},
+                format='json',
+            )
+        self.assertEqual(response.data.get('status'), 'not_needed')
+        self.assertEqual(response.data.get('reason'), 'persian_original')
+        self.assertFalse(PlaybackSubtitleGap.objects.filter(object_id=self.movie.pk).exists())
+        enqueue.assert_not_called()
 
     def test_ensure_ready_when_tracks_exist(self):
         self.movie.subtitle_tracks = [{
@@ -73,6 +103,80 @@ class PlaybackSubtitleEnsureTests(TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.data.get('status'), 'ready')
         self.assertFalse(response.data.get('reported'))
+
+    def test_hardsub_source_still_creates_missing_track_report(self):
+        """A burned-in label must not suppress automatic WebVTT preparation."""
+        hard_url = 'https://cdn.example/movie.HardSub.720p.mp4'
+        self.movie.download_links = [{
+            'url': hard_url,
+            'label': 'زیرنویس چسبیده فارسی · 720p',
+            'quality': '720p',
+            'kind': 'hardsub',
+        }]
+        self.movie.save(update_fields=['download_links'])
+
+        with patch('apps.catalog.tasks.enqueue_movie_softsub_urgent') as enqueue:
+            response = self.client.post(
+                '/api/catalog/playback-subtitle-ensure/',
+                {
+                    'content_type': 'movie',
+                    'slug': self.movie.slug,
+                    'version': 'hardsub',
+                    'source_url': hard_url,
+                    'sync': True,
+                },
+                format='json',
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.data.get('reported'))
+        self.assertTrue(response.data.get('queued'))
+        self.assertTrue(PlaybackSubtitleGap.objects.filter(object_id=self.movie.pk).exists())
+        enqueue.assert_called_once()
+
+    def test_mixed_title_reports_selected_original_source_and_persists_it(self):
+        """A different HardSub encode must not hide a gap on the open original stream."""
+        original_url = 'https://cdn.example/movie.Original.720p.mp4?token=exact'
+        self.movie.download_links = [
+            {
+                'url': 'https://cdn.example/movie.HardSub.720p.mp4',
+                'label': 'زیرنویس چسبیده فارسی · 720p',
+                'kind': 'hardsub',
+            },
+            {
+                'url': original_url,
+                'label': 'نسخه اصلی · 720p',
+                'kind': 'video',
+            },
+        ]
+        self.movie.save(update_fields=['download_links'])
+
+        with (
+            patch('apps.catalog.tasks.enqueue_movie_softsub_urgent', return_value=True) as enqueue,
+            patch('apps.catalog.subtitle_extract._attach_subtitlestar_subtitle', return_value=False),
+            patch('apps.catalog.subtitle_extract._attach_subzone_subtitle', return_value=False),
+        ):
+            response = self.client.post(
+                '/api/catalog/playback-subtitle-ensure/',
+                {
+                    'content_type': 'movie',
+                    'slug': self.movie.slug,
+                    'version': 'original',
+                    'source_url': original_url,
+                    'sync': True,
+                },
+                format='json',
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.data.get('reported'))
+        gap = PlaybackSubtitleGap.objects.get(content_type='movie', object_id=self.movie.pk)
+        self.assertEqual((gap.meta or {}).get('preferred_source_url'), original_url)
+        enqueue.assert_called_once_with(
+            self.movie.pk,
+            force=True,
+            preferred_source_url=original_url,
+        )
 
     def test_background_import_resolves_open_report(self):
         gap = PlaybackSubtitleGap.objects.create(
@@ -148,7 +252,7 @@ class PlaybackSubtitleEnsureTests(TestCase):
         }]
         self.movie.save(update_fields=['download_links'])
 
-        def _fake_star(movie, links, *, timeout_seconds):
+        def _fake_star(movie, links, *, timeout_seconds, preferred_source_url=''):
             movie.subtitle_tracks = [{
                 'id': 'fa-subtitlestar-1',
                 'language': 'fa',
@@ -188,7 +292,7 @@ class PlaybackSubtitleEnsureTests(TestCase):
         }]
         self.movie.save(update_fields=['download_links'])
 
-        def _fake_subzone(movie, links, *, timeout_seconds):
+        def _fake_subzone(movie, links, *, timeout_seconds, preferred_source_url=''):
             movie.subtitle_tracks = [{
                 'id': 'fa-subzone-1',
                 'language': 'fa',
@@ -219,7 +323,7 @@ class PlaybackSubtitleEnsureTests(TestCase):
         self.assertTrue(self.movie.subtitle_tracks)
         self.assertEqual(self.movie.subtitle_tracks[0].get('provider'), 'subzone')
 
-    def test_ensure_reports_burned_in_for_hardsub_only(self):
+    def test_ensure_reports_hardsub_only_when_webvtt_is_missing(self):
         self.movie.download_links = [{
             'url': 'https://cdn.example/Hard/movie.HardSub.1080p.mkv',
             'label': 'زیرنویس چسبیده · 1080p',
@@ -243,12 +347,10 @@ class PlaybackSubtitleEnsureTests(TestCase):
                 timeout_seconds=10,
             )
 
-        # HardSub-only still reports + queues sidecars; cues may land async.
         self.assertTrue(result.get('reported'))
         self.assertTrue(result.get('queued'))
         enqueue.assert_called_once()
-        self.assertIn(result.get('status'), {'queued', 'burned_in'})
-        self.assertIn(result.get('message'), {'loading', 'hardsub_burned_in', 'burned_in_queued'})
+        self.assertIn(result.get('status'), {'queued', 'ready'})
 
 
 @override_settings(
@@ -301,7 +403,12 @@ class PlaybackSubtitleStatusTests(TestCase):
         self.assertTrue(response.data.get('has_subtitle_tracks'))
         self.assertEqual(response.data.get('report_id'), gap.pk)
         self.assertTrue(response.data.get('reported'))
-        self.assertEqual(response.data['subtitle_tracks'][0]['key'], 'catalog/subtitles/persisted.vtt')
+        # The public contract exposes ``src`` and deliberately withholds the
+        # private storage ``key``.
+        self.assertTrue(
+            response.data['subtitle_tracks'][0]['src'].endswith('catalog/subtitles/persisted.vtt'),
+        )
+        self.assertNotIn('key', response.data['subtitle_tracks'][0])
         self.assertEqual(response['Cache-Control'], 'private, no-store')
 
     def test_status_never_enqueues(self):
@@ -474,7 +581,9 @@ class PlaybackSubtitleStampedeTests(TestCase):
         ):
             response = self.client.post(
                 '/api/catalog/playback-subtitle-ensure/',
-                {'content_type': 'movie', 'slug': self.movie.slug, 'sync': False},
+                # The miss-cache re-probe belongs to the attach lane, so this
+                # must exercise the sync path (a poll only registers the gap).
+                {'content_type': 'movie', 'slug': self.movie.slug, 'sync': True},
                 format='json',
             )
             self.assertEqual(response.status_code, 200)
@@ -558,3 +667,241 @@ class PlaybackSubtitleStatusReaderTests(TestCase):
         self.assertEqual(result['report_id'], gap.pk)
         enqueue_movie.assert_not_called()
         enqueue_series.assert_not_called()
+
+
+@override_settings(
+    SUBTITLESTAR_ENABLED=True,
+    CACHES={'default': {'BACKEND': 'django.core.cache.backends.locmem.LocMemCache'}},
+    PLAYBACK_SUBTITLE_EXHAUSTED_COOLDOWN_SECONDS=3600,
+)
+class PlaybackSubtitleExhaustedTests(TestCase):
+    """A full pass that found nothing ends the hunt instead of looping viewers."""
+
+    source_url = 'https://cdn.example/Soft/movie.Farsi.Sub.720p.mkv'
+
+    def setUp(self):
+        cache.clear()
+        self.client = APIClient()
+        self.movie = Movie.objects.create(
+            title='Exhausted Movie',
+            original_title='Exhausted Movie',
+            slug='exhausted-movie-test',
+            imdb_id='tt0111161',
+            is_published=True,
+            download_links=[{
+                'url': self.source_url,
+                'label': 'زیرنویس فارسی · 720p',
+                'quality': '720p',
+            }],
+            subtitle_tracks=[],
+        )
+
+    def _ensure(self, *, sync=True, source_url=None):
+        return self.client.post(
+            '/api/catalog/playback-subtitle-ensure/',
+            {
+                'content_type': 'movie',
+                'slug': self.movie.slug,
+                'source_url': source_url or self.source_url,
+                'sync': sync,
+            },
+            format='json',
+        )
+
+    def _report_and_exhaust(self):
+        from apps.catalog.playback_subtitle import mark_playback_subtitle_gaps_exhausted
+
+        with (
+            patch('apps.catalog.tasks.enqueue_movie_softsub_urgent', return_value=True),
+            patch('apps.catalog.subtitle_extract._attach_subtitlestar_subtitle', return_value=False),
+            patch('apps.catalog.subtitle_extract._attach_subzone_subtitle', return_value=False),
+        ):
+            self._ensure()
+        marked = mark_playback_subtitle_gaps_exhausted(content_type='movie', object_id=self.movie.pk)
+        self.assertEqual(marked, 1)
+        cache.clear()
+        return PlaybackSubtitleGap.objects.get(content_type='movie', object_id=self.movie.pk)
+
+    def test_worker_marks_gap_exhausted_when_nothing_found(self):
+        from apps.catalog.tasks import extract_movie_softsub_task
+
+        self._ensure(sync=False)
+        with patch('apps.catalog.subtitle_extract.attach_extracted_subtitle', return_value=False):
+            extract_movie_softsub_task.apply(args=(self.movie.pk,))
+        gap = PlaybackSubtitleGap.objects.get(content_type='movie', object_id=self.movie.pk)
+        self.assertEqual(gap.status, PlaybackSubtitleGap.Status.UNAVAILABLE)
+        self.assertEqual(gap.last_result, 'exhausted')
+        self.assertTrue(gap.meta.get('exhausted_at'))
+
+    def test_ensure_answers_exhausted_without_requeue(self):
+        self._report_and_exhaust()
+        with patch('apps.catalog.tasks.enqueue_movie_softsub_urgent') as enqueue:
+            response = self._ensure()
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data.get('status'), 'exhausted')
+        self.assertFalse(response.data.get('queued'))
+        enqueue.assert_not_called()
+
+    def test_status_poll_reports_exhausted(self):
+        gap = self._report_and_exhaust()
+        result = read_playback_subtitle_status(
+            report_id=gap.pk, content_type='movie', slug=self.movie.slug,
+        )
+        self.assertEqual(result['status'], 'exhausted')
+        self.assertFalse(result['queued'])
+
+    def test_different_source_file_is_searched_again(self):
+        self._report_and_exhaust()
+        with (
+            patch('apps.catalog.tasks.enqueue_movie_softsub_urgent', return_value=True) as enqueue,
+            patch('apps.catalog.subtitle_extract._attach_subtitlestar_subtitle', return_value=False),
+            patch('apps.catalog.subtitle_extract._attach_subzone_subtitle', return_value=False),
+        ):
+            response = self._ensure(source_url='https://cdn.example/Soft/movie.Farsi.Sub.1080p.mkv')
+        self.assertNotEqual(response.data.get('status'), 'exhausted')
+        enqueue.assert_called_once()
+
+    def test_verdict_expires_after_cooldown(self):
+        from datetime import timedelta
+
+        from django.utils import timezone
+
+        gap = self._report_and_exhaust()
+        gap.meta = {**gap.meta, 'exhausted_at': (timezone.now() - timedelta(hours=2)).isoformat()}
+        gap.save(update_fields=['meta'])
+        with (
+            patch('apps.catalog.tasks.enqueue_movie_softsub_urgent', return_value=True) as enqueue,
+            patch('apps.catalog.subtitle_extract._attach_subtitlestar_subtitle', return_value=False),
+            patch('apps.catalog.subtitle_extract._attach_subzone_subtitle', return_value=False),
+        ):
+            response = self._ensure()
+        self.assertNotEqual(response.data.get('status'), 'exhausted')
+        enqueue.assert_called_once()
+
+    def test_drain_skips_exhausted_rows(self):
+        from datetime import timedelta
+
+        from django.utils import timezone
+
+        from apps.catalog.tasks import drain_playback_subtitle_gaps
+
+        gap = self._report_and_exhaust()
+        PlaybackSubtitleGap.objects.filter(pk=gap.pk).update(
+            updated_at=timezone.now() - timedelta(hours=3),
+        )
+        with patch('apps.catalog.tasks.enqueue_movie_softsub_urgent') as enqueue:
+            stats = drain_playback_subtitle_gaps(max_batch=10)
+        self.assertEqual(stats['processed'], 0)
+        enqueue.assert_not_called()
+
+    def _stale_gap(self, **meta):
+        from datetime import timedelta
+
+        from django.utils import timezone
+
+        gap = PlaybackSubtitleGap.objects.create(
+            content_type='movie',
+            object_id=self.movie.pk,
+            slug=self.movie.slug,
+            status=PlaybackSubtitleGap.Status.QUEUED,
+            playback_version='softsub',
+            meta={'source_path': '/Soft/movie.Farsi.Sub.720p.mkv', **meta},
+        )
+        PlaybackSubtitleGap.objects.filter(pk=gap.pk).update(
+            updated_at=timezone.now() - timedelta(hours=3),
+        )
+        return gap
+
+    def test_drain_retires_capped_gap_instead_of_touching_it_forever(self):
+        from apps.catalog.playback_subtitle import gap_is_exhausted
+        from apps.catalog.tasks import drain_playback_subtitle_gaps
+
+        gap = self._stale_gap(drain_count=3)
+        with patch('apps.catalog.tasks.enqueue_movie_softsub_urgent') as enqueue:
+            stats = drain_playback_subtitle_gaps(max_batch=10, max_attempts=3)
+            again = drain_playback_subtitle_gaps(max_batch=10, max_attempts=3)
+        enqueue.assert_not_called()
+        self.assertEqual(stats['exhausted'], 1)
+        gap.refresh_from_db()
+        self.assertEqual(gap.status, PlaybackSubtitleGap.Status.UNAVAILABLE)
+        self.assertEqual(gap.last_result, 'exhausted')
+        self.assertTrue(gap_is_exhausted(gap))
+        # Out of the rotation: the next tick no longer spends a slot on it.
+        self.assertEqual(again['processed'], 0)
+
+    def test_drain_closes_gap_for_unpublished_title(self):
+        from apps.catalog.tasks import drain_playback_subtitle_gaps
+
+        gap = self._stale_gap()
+        Movie.objects.filter(pk=self.movie.pk).update(is_published=False)
+        with patch('apps.catalog.tasks.enqueue_movie_softsub_urgent') as enqueue:
+            stats = drain_playback_subtitle_gaps(max_batch=10)
+        enqueue.assert_not_called()
+        self.assertEqual(stats['closed'], 1)
+        gap.refresh_from_db()
+        self.assertEqual(gap.status, PlaybackSubtitleGap.Status.UNAVAILABLE)
+        self.assertEqual(gap.last_result, 'object_missing')
+        self.assertTrue(PlaybackSubtitleGap.objects.filter(pk=gap.pk).exists())
+
+    def test_drain_still_retries_gap_under_the_cap(self):
+        from apps.catalog.tasks import drain_playback_subtitle_gaps
+
+        gap = self._stale_gap(drain_count=1)
+        with patch('apps.catalog.tasks.enqueue_movie_softsub_urgent', return_value=True) as enqueue:
+            stats = drain_playback_subtitle_gaps(max_batch=10, max_attempts=3)
+        enqueue.assert_called_once()
+        self.assertEqual(stats['re_enqueued'], 1)
+        gap.refresh_from_db()
+        self.assertEqual(gap.meta.get('drain_count'), 2)
+
+    def _burned_in_only_links(self):
+        Movie.objects.filter(pk=self.movie.pk).update(download_links=[
+            {'url': 'https://cdn.example/Cukur/Cukur.E021.1080p.Farsi.Dubbed.Film2Media.mkv', 'label': 'دوبله فارسی'},
+            {'url': 'https://cdn.example/Cukur/Cukur.E021.HardSub.720p.Farsi.Sub.Film2Media.mkv', 'label': 'x'},
+        ])
+
+    def test_drain_retires_burned_in_only_title_after_one_probe_for_a_week(self):
+        from datetime import timedelta
+
+        from django.utils import timezone
+
+        from apps.catalog.playback_subtitle import gap_is_exhausted
+        from apps.catalog.tasks import drain_playback_subtitle_gaps
+
+        self._burned_in_only_links()
+        gap = self._stale_gap(drain_count=1)
+        with patch('apps.catalog.tasks.enqueue_movie_softsub_urgent') as enqueue:
+            stats = drain_playback_subtitle_gaps(max_batch=10, max_attempts=3)
+        enqueue.assert_not_called()
+        self.assertEqual(stats['exhausted'], 1)
+        gap.refresh_from_db()
+        self.assertEqual(gap.meta.get('exhausted_reason'), 'burned_in_only')
+        # Still answered at once two days later (a plain exhausted verdict lasts 6h).
+        meta = dict(gap.meta)
+        meta['exhausted_at'] = (timezone.now() - timedelta(days=2)).isoformat()
+        gap.meta = meta
+        self.assertTrue(gap_is_exhausted(gap))
+        # A viewer on a new encode (different file) reopens the hunt.
+        gap.meta = {**meta, 'source_path': '/Soft/Cukur.E021.SoftSub.mkv'}
+        self.assertFalse(gap_is_exhausted(gap))
+
+    def test_burned_in_only_title_still_gets_its_first_probe(self):
+        from apps.catalog.tasks import drain_playback_subtitle_gaps
+
+        self._burned_in_only_links()
+        self._stale_gap(drain_count=0)
+        with patch('apps.catalog.tasks.enqueue_movie_softsub_urgent', return_value=True) as enqueue:
+            stats = drain_playback_subtitle_gaps(max_batch=10, max_attempts=3)
+        enqueue.assert_called_once()  # embedded-track probe runs before any verdict
+        self.assertEqual(stats['re_enqueued'], 1)
+
+    def test_one_soft_file_keeps_title_out_of_burned_in_only(self):
+        from apps.catalog.playback_subtitle import title_is_burned_in_only
+
+        self._burned_in_only_links()
+        self.movie.refresh_from_db()
+        self.assertTrue(title_is_burned_in_only(self.movie))
+        self.movie.download_links = [*self.movie.download_links, {
+            'url': 'https://cdn.example/Cukur/Cukur.E021.1080p.WEB-DL.mkv', 'label': '',
+        }]
+        self.assertFalse(title_is_burned_in_only(self.movie))

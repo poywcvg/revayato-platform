@@ -74,7 +74,7 @@ class AdminDashboardApiTests(TestCase):
 
     def test_non_staff_is_denied(self):
         self.client.force_authenticate(self.member)
-        response = self.client.get('/api/admin/dashboard/')
+        response = self.client.get('/api/analytics/insights/')
         self.assertEqual(response.status_code, 403)
 
     def test_dashboard_returns_exact_database_aggregates(self):
@@ -127,7 +127,7 @@ class AdminDashboardApiTests(TestCase):
         )
 
         self.client.force_authenticate(self.staff)
-        response = self.client.get('/api/admin/dashboard/', {'days': 30})
+        response = self.client.get('/api/analytics/insights/', {'days': 30})
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response['Cache-Control'], 'private, no-store')
@@ -164,6 +164,6 @@ class AdminDashboardApiTests(TestCase):
 
     def test_invalid_period_falls_back_to_thirty_days(self):
         self.client.force_authenticate(self.staff)
-        response = self.client.get('/api/admin/dashboard/', {'days': '12'})
+        response = self.client.get('/api/analytics/insights/', {'days': '12'})
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.data['period']['days'], 30)

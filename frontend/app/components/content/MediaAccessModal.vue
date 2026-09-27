@@ -14,6 +14,7 @@ const props = defineProps<{
 const emit = defineEmits<{
   close: []
   play: [request: DownloadPlayRequest]
+  download: [quality: string]
 }>()
 
 const panel = useTemplateRef<HTMLElement>('panel')
@@ -136,6 +137,7 @@ onBeforeUnmount(() => {
               :slug="slug"
               :mode="mode"
               @play="emit('play', $event)"
+              @download="emit('download', $event)"
             />
           </div>
         </section>
@@ -236,7 +238,7 @@ onBeforeUnmount(() => {
     -webkit-line-clamp: 2;
     -webkit-box-orient: vertical;
     overflow: hidden;
-    font-size: .65rem;
+    font-size: 0.75rem;
   }
 
   .media-access-modal__body {
@@ -301,7 +303,7 @@ onBeforeUnmount(() => {
 .media-access-modal__description {
   margin-top: .3rem;
   color: var(--text-muted);
-  font-size: .7rem;
+  font-size: 0.75rem;
   line-height: 1.55;
 }
 

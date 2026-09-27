@@ -14,9 +14,10 @@ never blank.
 from __future__ import annotations
 
 import time
+from datetime import timedelta
 
 from django.core.management.base import BaseCommand
-from django.db.models import Q
+from django.db.models import Count, F, Q
 from django.utils import timezone
 
 from apps.catalog.ingestion import (
@@ -37,11 +38,28 @@ def _missing_art_q(field):
     return (Q(**{f'{field}': ''}) | Q(**{f'{field}__isnull': True}) | Q(**{f'{field}__exact': None}))
 
 
+# Relation-count annotations. Emptiness is tested on these aggregates instead of
+# ``~Q(relation__isnull=False)`` because Django mis-joins several negated m2m Q
+# objects inside one big OR — that silently drops most incomplete rows from the
+# result (e.g. it returned fewer titles than ``age_rating=''`` alone). Filtering on
+# Count() annotations evaluates in HAVING and composes correctly under OR.
+_MOVIE_REL_ANNOTATIONS = {
+    '_ngenres': Count('genres', distinct=True),
+    '_nactors': Count('movie_actors', distinct=True),
+    '_ndirectors': Count('directors', distinct=True),
+    '_ncountries': Count('countries', distinct=True),
+}
+_SERIES_REL_ANNOTATIONS = {
+    '_ngenres': Count('genres', distinct=True),
+    '_nactors': Count('series_actors', distinct=True),
+    '_ndirectors': Count('directors', distinct=True),
+    '_ncountries': Count('countries', distinct=True),
+}
+
+
 def _movie_incomplete_q():
-    genres_empty = ~Q(genres__isnull=False)
-    actors_empty = ~Q(movie_actors__isnull=False)
-    directors_empty = ~Q(directors__isnull=False)
-    countries_empty = ~Q(countries__isnull=False)
+    # A trailer is missing only when neither the hosted key nor the external URL is set.
+    trailer_empty = Q(trailer_external_url='') & Q(trailer_url='')
     return (
         Q(description='')
         | Q(release_date__isnull=True)
@@ -50,19 +68,19 @@ def _movie_incomplete_q():
         | _missing_art_q('poster_external_url')
         | _missing_art_q('backdrop_external_url')
         | _missing_art_q('poster_path')
-        | genres_empty
-        | actors_empty
-        | directors_empty
-        | countries_empty
+        | Q(_ngenres=0)
+        | Q(_nactors=0)
+        | Q(_ndirectors=0)
+        | Q(_ncountries=0)
         | Q(original_title='')
+        | Q(age_rating='')
+        | trailer_empty
+        | Q(writers=[])
     )
 
 
 def _series_incomplete_q():
-    genres_empty = ~Q(genres__isnull=False)
-    actors_empty = ~Q(series_actors__isnull=False)
-    directors_empty = ~Q(directors__isnull=False)
-    countries_empty = ~Q(countries__isnull=False)
+    trailer_empty = Q(trailer_external_url='') & Q(trailer_url='')
     return (
         Q(description='')
         | Q(start_year__isnull=True)
@@ -70,11 +88,13 @@ def _series_incomplete_q():
         | _missing_art_q('backdrop')
         | _missing_art_q('poster_external_url')
         | _missing_art_q('backdrop_external_url')
-        | genres_empty
-        | actors_empty
-        | directors_empty
-        | countries_empty
+        | Q(_ngenres=0)
+        | Q(_nactors=0)
+        | Q(_ndirectors=0)
+        | Q(_ncountries=0)
         | Q(original_title='')
+        | Q(age_rating='')
+        | trailer_empty
     )
 
 
@@ -96,8 +116,24 @@ class Command(BaseCommand):
         parser.add_argument('--movies-only', action='store_true')
         parser.add_argument('--series-only', action='store_true')
         parser.add_argument('--include-unpublished', action='store_true')
+        parser.add_argument(
+            '--include-sourced-drafts', action='store_true',
+            help=(
+                'Also fill unpublished titles that already have download links. '
+                'They are one metadata pass away from the publish gate; a '
+                'published-only pass never reached them.'
+            ),
+        )
         parser.add_argument('--dry-run', action='store_true', help='Report only; write nothing.')
         parser.add_argument('--no-poster-fallback', action='store_true')
+        parser.add_argument(
+            '--stale-days', type=int, default=0,
+            help=(
+                'Only re-sync titles last synced more than N days ago (or never). '
+                'Rotates coverage and avoids re-hitting titles TMDB cannot fill '
+                '(0 = disabled, uses popularity order).'
+            ),
+        )
 
     def handle(self, *args, **options):
         client = configured_tmdb_client()
@@ -107,8 +143,11 @@ class Command(BaseCommand):
         do_movies = not options['series_only']
         do_series = not options['movies_only']
         published_only = not bool(options['include_unpublished'])
+        sourced_drafts = bool(options['include_sourced_drafts'])
         dry_run = bool(options['dry_run'])
         allow_poster_fallback = not bool(options['no_poster_fallback'])
+        stale_days = max(0, int(options['stale_days'] or 0))
+        stale_cutoff = timezone.now() - timedelta(days=stale_days) if stale_days else None
 
         stats = {
             'movies_fixed': 0,
@@ -116,6 +155,8 @@ class Command(BaseCommand):
             'resolved_search': 0,
             'poster_fallback': 0,
             'skipped_no_match': 0,
+            'tmdb_repointed': 0,
+            'tmdb_gone': 0,
             'errors': 0,
         }
         processed = 0
@@ -154,7 +195,44 @@ class Command(BaseCommand):
                 return int(results[0]['id'])
             return None
 
-        def fill_movie(movie: Movie) -> bool:
+        def recover_deleted_tmdb(content_type: str, obj, exc: TMDBError) -> bool:
+            """TMDB deleted this id (404). Repoint via IMDb, or rest the row.
+
+            A deleted/merged TMDB id failed the same way every round — 13 movies
+            and 3 series of each 80/40 budget, forever — because a failure
+            never stamped the row and the stale order put it first again.
+            IMDb ids are stable, so TMDB's own IMDb lookup usually names the
+            surviving record; repoint only when no other row already owns it
+            (that row *is* the title, and merging is a human decision).
+            Otherwise stamp ``last_tmdb_sync_at`` so ``--stale-days`` rotates
+            the row out instead of retrying it next round. Returns True when
+            the row was repointed and is worth one more try.
+            """
+            if getattr(exc, 'status_code', None) != 404 or dry_run or not getattr(obj, 'tmdb_id', None):
+                return False
+            model = type(obj)
+            imdb_id = str(getattr(obj, 'imdb_id', None) or '').strip()
+            new_id = None
+            if imdb_id:
+                try:
+                    summary = client.resolve_imdb_to_tmdb(imdb_id, content_type=content_type)
+                except TMDBError:
+                    summary = None
+                if summary and summary.get('id'):
+                    new_id = int(summary['id'])
+            if (new_id and new_id != int(obj.tmdb_id)
+                    and not model.objects.filter(tmdb_id=new_id).exclude(pk=obj.pk).exists()):
+                self.stdout.write(f'{content_type}#{obj.pk} tmdb {obj.tmdb_id} deleted upstream → {new_id} via {imdb_id}')
+                obj.tmdb_id = new_id
+                obj.save(update_fields=['tmdb_id', 'updated_at'])
+                stats['tmdb_repointed'] += 1
+                return True
+            obj.last_tmdb_sync_at = timezone.now()
+            obj.save(update_fields=['last_tmdb_sync_at'])
+            stats['tmdb_gone'] += 1
+            return False
+
+        def fill_movie(movie: Movie, *, retried: bool = False) -> bool:
             nonlocal processed
             processed += 1
             try:
@@ -186,15 +264,19 @@ class Command(BaseCommand):
                 )
                 return True
             except TMDBError as exc:
+                stale_id = getattr(movie, 'tmdb_id', None)
+                if not retried and recover_deleted_tmdb('movie', movie, exc):
+                    processed -= 1  # the retry is the same title, not a new one
+                    return fill_movie(movie, retried=True)
                 stats['errors'] += 1
-                self.stderr.write(f'movie#{movie.pk} tmdb={getattr(movie, "tmdb_id", None)}: {exc}')
+                self.stderr.write(f'movie#{movie.pk} tmdb={stale_id}: {exc}')
                 return False
             except Exception as exc:  # noqa: BLE001 - defensive, keep going
                 stats['errors'] += 1
                 self.stderr.write(f'movie#{movie.pk}: {type(exc).__name__}: {exc}')
                 return False
 
-        def fill_series(series: Series) -> bool:
+        def fill_series(series: Series, *, retried: bool = False) -> bool:
             nonlocal processed
             processed += 1
             try:
@@ -226,8 +308,12 @@ class Command(BaseCommand):
                 )
                 return True
             except TMDBError as exc:
+                stale_id = getattr(series, 'tmdb_id', None)
+                if not retried and recover_deleted_tmdb('series', series, exc):
+                    processed -= 1
+                    return fill_series(series, retried=True)
                 stats['errors'] += 1
-                self.stderr.write(f'series#{series.pk} tmdb={getattr(series, "tmdb_id", None)}: {exc}')
+                self.stderr.write(f'series#{series.pk} tmdb={stale_id}: {exc}')
                 return False
             except Exception as exc:  # noqa: BLE001
                 stats['errors'] += 1
@@ -235,12 +321,23 @@ class Command(BaseCommand):
                 return False
 
         if do_movies:
-            qs = Movie.objects.filter(_movie_incomplete_q())
+            qs = Movie.objects.annotate(**_MOVIE_REL_ANNOTATIONS).filter(_movie_incomplete_q())
             if year:
                 qs = qs.filter(release_year=year)
-            qs = qs.order_by('-popularity', 'id').distinct()
+            if stale_cutoff is not None:
+                qs = qs.filter(Q(last_tmdb_sync_at__isnull=True) | Q(last_tmdb_sync_at__lt=stale_cutoff))
+                qs = qs.order_by(F('last_tmdb_sync_at').asc(nulls_first=True), '-popularity', 'id').distinct()
+            else:
+                qs = qs.order_by('-popularity', 'id').distinct()
             if published_only:
-                qs = qs.filter(is_published=True)
+                visible = Q(is_published=True)
+                if sourced_drafts:
+                    visible |= Q(is_published=False) & (
+                        ~Q(download_links=[]) & Q(download_links__isnull=False)
+                        | ~Q(video_url='') & Q(video_url__isnull=False)
+                    )
+                    visible &= ~Q(publication_status=Movie.PublicationStatus.ARCHIVED)
+                qs = qs.filter(visible)
             for movie in qs.iterator(chunk_size=50):
                 if not budget_ok():
                     break
@@ -249,12 +346,19 @@ class Command(BaseCommand):
                     time.sleep(sleep)
 
         if do_series:
-            qs = Series.objects.filter(_series_incomplete_q())
+            qs = Series.objects.annotate(**_SERIES_REL_ANNOTATIONS).filter(_series_incomplete_q())
             if year:
                 qs = qs.filter(start_year=year)
-            qs = qs.order_by('-popularity', 'id').distinct()
+            if stale_cutoff is not None:
+                qs = qs.filter(Q(last_tmdb_sync_at__isnull=True) | Q(last_tmdb_sync_at__lt=stale_cutoff))
+                qs = qs.order_by(F('last_tmdb_sync_at').asc(nulls_first=True), '-popularity', 'id').distinct()
+            else:
+                qs = qs.order_by('-popularity', 'id').distinct()
             if published_only:
-                qs = qs.filter(is_published=True)
+                visible = Q(is_published=True)
+                if sourced_drafts:
+                    visible |= Q(is_published=False) & ~Q(download_links=[]) & Q(download_links__isnull=False)
+                qs = qs.filter(visible)
             for series in qs.iterator(chunk_size=50):
                 if not budget_ok():
                     break
@@ -266,5 +370,6 @@ class Command(BaseCommand):
             'complete_catalog_metadata done: '
             f'movies_fixed={stats["movies_fixed"]} series_fixed={stats["series_fixed"]} '
             f'resolved_search={stats["resolved_search"]} poster_fallback={stats["poster_fallback"]} '
-            f'skipped_no_match={stats["skipped_no_match"]} errors={stats["errors"]}'
+            f'skipped_no_match={stats["skipped_no_match"]} tmdb_repointed={stats["tmdb_repointed"]} '
+            f'tmdb_gone={stats["tmdb_gone"]} errors={stats["errors"]}'
         ))

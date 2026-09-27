@@ -148,6 +148,10 @@ def _ingest_embedded_subtitle_tracks(obj, tracks: list[dict]) -> bool:
     """
     if not tracks:
         return False
+    # Series keep subtitles on their episodes; without a concrete field here the
+    # save below raises only after every .vtt was downloaded (up to 90 s each).
+    if not any(f.name == 'subtitle_tracks' and f.concrete for f in obj._meta.get_fields()):
+        return False
     try:
         from apps.catalog.subtitle_contract import normalize_subtitle_tracks
         from apps.catalog.subtitle_extract import _store_webvtt, extract_webvtt_from_url

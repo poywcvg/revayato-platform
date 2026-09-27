@@ -497,6 +497,7 @@ class TMDBClient:
                 # Prefer English image pack when localized append is thin.
                 if not ((details.get('images') or {}).get('posters') or []) and fallback.get('images'):
                     details['images'] = fallback['images']
+        self._fill_original_language_trailer(details, f'movie/{int(movie_id)}')
         from .localization import ensure_persian_metadata
         return ensure_persian_metadata(
             details,
@@ -539,12 +540,96 @@ class TMDBClient:
                     details['videos'] = fallback['videos']
                 if not ((details.get('images') or {}).get('posters') or []) and fallback.get('images'):
                     details['images'] = fallback['images']
+        self._fill_original_language_trailer(details, f'tv/{int(series_id)}')
+        if language is None:
+            self._fill_episode_directors(details, int(series_id))
         from .localization import ensure_persian_metadata
         return ensure_persian_metadata(
             details,
             content_type='tv',
             english_details=fallback,
         )
+
+    def _fill_original_language_trailer(self, details, path):
+        """A Korean or Turkish title often has its trailer only in its own language.
+
+        The details request returns videos in the request language (plus the
+        English fallback); ask once more in the original language, only when no
+        trailer was found — a real trailer beats none.
+        """
+        from .ingestion import _trailer_key_from_details
+
+        original_language = (details.get('original_language') or '').strip().lower()
+        if not original_language or original_language in {'fa', 'en'} or _trailer_key_from_details(details):
+            return
+        try:
+            videos = self._request(
+                f'{path}/videos', {'include_video_language': f'{original_language},null'},
+                language=original_language,
+            )
+        except TMDBError:
+            return
+        if (videos or {}).get('results'):
+            details['videos'] = {'results': [
+                *((details.get('videos') or {}).get('results') or []), *videos['results'],
+            ]}
+
+    def _fill_episode_directors(self, details, series_id):
+        """Series with no creator and no show-level director: fetch per-episode crew."""
+        crew = (details.get('credits') or {}).get('crew') or []
+        if details.get('created_by') or any(item.get('job') == 'Director' for item in crew):
+            return
+        try:
+            details['aggregate_credits'] = self._request(f'tv/{series_id}/aggregate_credits', {})
+        except TMDBError:
+            return
+
+    def tv_season_details(self, series_id, season_number, *, language=None):
+        """Season detail with its full episode list.
+
+        Persian localisation of episode names/overviews is patchy on TMDB, so the
+        English payload is merged in per episode: a Persian name is kept when it
+        exists and the English one fills the blank. Episodes are matched by
+        ``episode_number`` because index order is not guaranteed to line up.
+        """
+        path = f'tv/{int(series_id)}/season/{int(season_number)}'
+        details = self._request(path, {}, language=language)
+        if language is not None or not self.fallback_language or self.fallback_language == self.language:
+            return details
+        episodes = details.get('episodes') or []
+        needs_fallback = (
+            not (details.get('overview') or '').strip()
+            or not (details.get('name') or '').strip()
+            or any(
+                not (str(episode.get('name') or '').strip())
+                or not (str(episode.get('overview') or '').strip())
+                for episode in episodes
+                if isinstance(episode, dict)
+            )
+        )
+        if not needs_fallback:
+            return details
+        try:
+            fallback = self._request(path, {}, language=self.fallback_language)
+        except TMDBError:
+            return details
+        for key in ('name', 'overview'):
+            if not (details.get(key) or '').strip() and (fallback.get(key) or '').strip():
+                details[key] = fallback[key]
+        by_number = {}
+        for episode in fallback.get('episodes') or []:
+            if isinstance(episode, dict) and episode.get('episode_number') is not None:
+                by_number[int(episode['episode_number'])] = episode
+        for episode in episodes:
+            if not isinstance(episode, dict) or episode.get('episode_number') is None:
+                continue
+            english = by_number.get(int(episode['episode_number']))
+            if not english:
+                continue
+            for key in ('name', 'overview', 'still_path', 'air_date', 'runtime'):
+                if not episode.get(key) and english.get(key):
+                    episode[key] = english[key]
+        return details
 
     def genre_list(self, *, language=None):
         return self._request('genre/movie/list', language=language)

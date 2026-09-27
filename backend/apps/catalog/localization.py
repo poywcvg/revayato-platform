@@ -4,10 +4,12 @@ Public movie/series titles:
 - ``title`` — Persian (required for catalog presentation)
 - ``original_title`` — English/Latin
 
-Persian title resolution order:
+Persian title resolution order (most trustworthy first):
 1. Official TMDB ``fa`` translation title/name
-2. Machine translation of the English title
-3. Existing Persian text already present on the payload
+2. Persian Wikipedia / Wikidata name, matched by IMDb (or TMDB) id
+3. The Persian title the catalog row already has (a re-sync never downgrades it)
+4. Persian text already on the payload (provider import)
+5. Machine translation of the English title — last resort, recorded as such
 
 Overviews and taglines prefer Persian when available (same order as titles).
 Non-Latin original titles (CJK, Cyrillic, …) are latinized to English when an
@@ -217,6 +219,7 @@ def _resolve_english_title(
     candidates.extend([
         (details.get(title_key) or '').strip(),
         (details.get(orig_key) or '').strip(),
+        (details.get('_stored_english_title') or '').strip(),
     ])
     for candidate in candidates:
         if candidate and is_latin_text(candidate) and not contains_disallowed_catalog_script(candidate):
@@ -257,24 +260,157 @@ def _resolve_persian_title(
     """Return (persian_title, source_label)."""
     title_key = 'name' if content_type == 'tv' else 'title'
     fa = _translation_data(details, 'fa')
+    for candidate in ((fa.get('title') or '').strip(), (fa.get('name') or '').strip()):
+        if candidate and contains_persian(candidate):
+            return candidate[:255], 'tmdb_translation'
+
+    wiki = _wikidata_title_for(details, content_type=content_type)
+    if wiki:
+        return wiki[:255], 'wikidata'
+
+    stored = (details.get('_stored_persian_title') or '').strip()
+    if stored and contains_persian(stored):
+        return stored[:255], details.get('_stored_persian_title_source') or 'existing'
+
     for candidate in (
-        (fa.get('title') or '').strip(),
-        (fa.get('name') or '').strip(),
         (details.get('_persian_title') or '').strip(),
         (details.get(title_key) or '').strip(),
     ):
         if candidate and contains_persian(candidate):
-            source = 'tmdb_translation' if candidate in {
-                (fa.get('title') or '').strip(),
-                (fa.get('name') or '').strip(),
-            } else 'existing'
-            return candidate[:255], source
+            return candidate[:255], details.get('_persian_title_source') or 'existing'
 
     if english_title:
         translated = translate_to_persian(english_title)
         if translated and contains_persian(translated):
             return translated[:255], 'machine_translation'
     return '', ''
+
+
+# --- Persian names from Wikidata / Persian Wikipedia ------------------------
+# TMDB's Persian translations cover a minority of titles. Wikidata links each
+# film/series to its IMDb id (P345) and TMDB id (P4947 movie, P4983 tv), and its
+# Persian Wikipedia article carries the name Persian readers actually know —
+# human-written, unlike a machine translation of the English title.
+_WIKIDATA_API = 'https://www.wikidata.org/w/api.php'
+_WIKIDATA_DOWN_KEY = 'catalog:wikidata:down'
+_TRAILING_QUALIFIER_RE = re.compile(r'\s*[(\[][^()\[\]]*[)\]]\s*$')
+
+
+def _wikidata_get(params: dict) -> dict:
+    query = urllib.parse.urlencode({**params, 'format': 'json'})
+    request = urllib.request.Request(f'{_WIKIDATA_API}?{query}', headers={
+        'Accept': 'application/json',
+        # Wikimedia asks automated clients to identify themselves.
+        'User-Agent': 'RevayatoCatalog/1.0 (https://revayato.com)',
+    })
+    timeout = max(3, int(getattr(settings, 'CATALOG_WIKIDATA_TIMEOUT_SECONDS', 8)))
+    with _opener().open(request, timeout=timeout) as response:  # noqa: S310
+        return json.loads(response.read().decode('utf-8'))
+
+
+def clean_wikipedia_title(value: str) -> str:
+    """``تلقین (فیلم)`` → ``تلقین``; disambiguation qualifiers are not part of the name."""
+    text = (value or '').strip()
+    while True:
+        stripped = _TRAILING_QUALIFIER_RE.sub('', text).strip()
+        if stripped == text or not stripped:
+            return text
+        text = stripped
+
+
+def wikidata_persian_title(*, imdb_id: str = '', tmdb_id=None, content_type: str = 'movie') -> str:
+    """Persian name of a film/series on Wikidata, or ``''``.
+
+    Matched only by an exact external id and only when exactly one item carries
+    it, so a name is never borrowed from a different work. Results (including
+    "none") are cached; an unreachable Wikidata trips a 10-minute breaker so
+    imports never stall on it.
+    """
+    if not getattr(settings, 'CATALOG_WIKIDATA_TITLES_ENABLED', True):
+        return ''
+    from django.core.cache import cache
+
+    imdb_id = (imdb_id or '').strip().lower()
+    statements = []
+    if imdb_id.startswith('tt'):
+        statements.append(f'P345={imdb_id}')
+    if tmdb_id:
+        statements.append(f"{'P4983' if content_type == 'tv' else 'P4947'}={int(tmdb_id)}")
+    if not statements:
+        return ''
+    cache_key = f'catalog:wikidata:fa:{content_type}:{statements[0]}'
+    cached = cache.get(cache_key)
+    if cached is not None:
+        return cached
+    if cache.get(_WIKIDATA_DOWN_KEY):
+        return ''
+    try:
+        entity_id = ''
+        for statement in statements:
+            hits = (_wikidata_get({
+                'action': 'query', 'list': 'search', 'srlimit': 2,
+                'srsearch': f'haswbstatement:{statement}',
+            }).get('query') or {}).get('search') or []
+            if len(hits) == 1:
+                entity_id = hits[0].get('title') or ''
+                break
+            if len(hits) > 1:
+                break  # ambiguous id: trust nothing
+        title = ''
+        if entity_id:
+            entity = ((_wikidata_get({
+                'action': 'wbgetentities', 'ids': entity_id, 'props': 'labels|sitelinks',
+                'languages': 'fa', 'sitefilter': 'fawiki',
+            }).get('entities') or {}).get(entity_id)) or {}
+            for candidate in (
+                ((entity.get('sitelinks') or {}).get('fawiki') or {}).get('title') or '',
+                ((entity.get('labels') or {}).get('fa') or {}).get('value') or '',
+            ):
+                candidate = clean_wikipedia_title(candidate)
+                if candidate and contains_persian(candidate):
+                    title = candidate[:255]
+                    break
+    except (urllib.error.URLError, TimeoutError, OSError, json.JSONDecodeError, TypeError, ValueError, AttributeError) as exc:
+        logger.warning('wikidata_title_lookup_failed error=%s', exc.__class__.__name__)
+        cache.set(_WIKIDATA_DOWN_KEY, 1, timeout=600)
+        return ''
+    cache.set(cache_key, title, timeout=(30 if title else 7) * 24 * 60 * 60)
+    return title
+
+
+def _wikidata_title_for(details: dict, *, content_type: str) -> str:
+    # Memoized on the payload: ``ensure_persian_metadata`` runs twice per import.
+    if '_wikidata_persian_title' not in details:
+        external_ids = details.get('external_ids') or {}
+        details['_wikidata_persian_title'] = wikidata_persian_title(
+            imdb_id=external_ids.get('imdb_id') or details.get('imdb_id') or '',
+            tmdb_id=details.get('id'),
+            content_type=content_type,
+        )
+    return details['_wikidata_persian_title']
+
+
+def seed_stored_localization(details: dict, obj) -> dict:
+    """Hand the catalog row's current good text to ``ensure_persian_metadata``.
+
+    Without this a re-sync on a day TMDB has no Persian and translation fails
+    wrote the English title into ``title`` and blanked the Persian plot of a
+    title that already had both.
+    """
+    if obj is None:
+        return details
+    title = (getattr(obj, 'title', '') or '').strip()
+    if contains_persian(title):
+        source = ((getattr(obj, 'source_metadata', None) or {}).get('title_source') or '').strip()
+        details['_stored_persian_title'] = title
+        details['_stored_persian_title_source'] = source if source and source != 'english_fallback' else 'existing'
+    original = (getattr(obj, 'original_title', '') or '').strip()
+    if original and is_latin_text(original) and not contains_disallowed_catalog_script(original):
+        details['_stored_english_title'] = original
+    description = (getattr(obj, 'description', '') or '').strip()
+    if contains_persian(description):
+        details['_stored_persian_overview'] = description
+    return details
 
 
 def normalize_title_pair(
@@ -419,9 +555,15 @@ def ensure_persian_metadata(
     fa = _translation_data(details, 'fa')
 
     fa_overview = (fa.get('overview') or '').strip()
+    stored_overview = (details.get('_stored_persian_overview') or '').strip()
     if fa_overview and contains_persian(fa_overview):
         details['overview'] = fa_overview
         details['_persian_overview_source'] = 'tmdb_translation'
+    elif stored_overview and contains_persian(stored_overview):
+        # Never trade a Persian plot the row already has for a fresh machine
+        # translation, or for nothing when translation is down.
+        details['overview'] = stored_overview
+        details['_persian_overview_source'] = 'existing'
     elif not contains_persian((details.get('overview') or '').strip()):
         english_overview = (details.get('overview') or '').strip()
         translated_overview = translate_to_persian(english_overview) if english_overview else ''

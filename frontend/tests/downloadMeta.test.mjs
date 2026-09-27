@@ -66,3 +66,14 @@ test('series links remain strictly scoped to the selected season and episode', (
   assert.equal(linkMatchesEpisode(otherEpisode, 2, 3), false)
   assert.equal(linkMatchesEpisode(otherSeason, 2, 3), false)
 })
+
+test('only progressive MKV/WebM over http(s) is handed to the in-page remuxer', async () => {
+  const { isRemuxCandidate, remuxSupported } = await import('../app/utils/downloadMeta.ts')
+  assert.equal(isRemuxCandidate('https://s8.parsdl.top/Movies/Film.720p.mkv?md5=x&expires=1'), true)
+  assert.equal(isRemuxCandidate('https://cdn.example/a.webm'), true)
+  assert.equal(isRemuxCandidate('https://cdn.example/a.mp4'), false)
+  assert.equal(isRemuxCandidate('https://cdn.example/a.m3u8'), false)
+  assert.equal(isRemuxCandidate('/relative/a.mkv'), false)
+  // No window (SSR, Node): never claims support.
+  assert.equal(remuxSupported(), false)
+})

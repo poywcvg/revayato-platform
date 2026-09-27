@@ -186,7 +186,7 @@ useSeoMeta({
         <NuxtLink
           v-for="country in featuredCountries"
           :key="`featured-${country.code}`"
-          :to="{ path: '/movies', query: { country: country.code } }"
+          :to="`/movies/country/${country.code.toLowerCase()}`"
           class="countries-featured__card"
         >
           <div class="countries-featured__top">
@@ -249,7 +249,7 @@ useSeoMeta({
 
           <div class="countries-card__actions">
             <NuxtLink
-              :to="{ path: '/movies', query: { country: country.code } }"
+              :to="`/movies/country/${country.code.toLowerCase()}`"
               class="countries-card__link"
               :class="!(country.movie_count) && 'countries-card__link--disabled'"
               :aria-disabled="!(country.movie_count) ? 'true' : undefined"
@@ -260,7 +260,7 @@ useSeoMeta({
               <span class="tabular-nums opacity-70">{{ (country.movie_count || 0).toLocaleString('fa-IR') }}</span>
             </NuxtLink>
             <NuxtLink
-              :to="{ path: '/series', query: { country: country.code } }"
+              :to="`/series/country/${country.code.toLowerCase()}`"
               class="countries-card__link countries-card__link--ghost"
               :class="!(country.series_count) && 'countries-card__link--disabled'"
               :aria-disabled="!(country.series_count) ? 'true' : undefined"
@@ -344,7 +344,7 @@ useSeoMeta({
 
 .countries-hero__eyebrow {
   color: var(--countries-muted);
-  font-size: 0.7rem;
+  font-size: 0.75rem;
   font-weight: 800;
   letter-spacing: 0.04em;
 }
@@ -380,7 +380,7 @@ useSeoMeta({
   background: var(--countries-fill);
   padding: 0.45rem 0.8rem;
   color: var(--countries-ink);
-  font-size: 0.7rem;
+  font-size: 0.75rem;
   font-weight: 800;
   box-shadow: inset 0 0 0 1px var(--countries-line);
 }
@@ -458,7 +458,7 @@ useSeoMeta({
   background: transparent;
   padding: 0.35rem 0.75rem;
   color: var(--countries-soft);
-  font-size: 0.6875rem;
+  font-size: 0.75rem;
   font-weight: 800;
   box-shadow: inset 0 0 0 1px var(--countries-line);
   transition: color 140ms ease, background-color 140ms ease, box-shadow 140ms ease;
@@ -496,7 +496,7 @@ useSeoMeta({
 
 .countries-section-head p {
   color: var(--countries-muted);
-  font-size: 0.7rem;
+  font-size: 0.75rem;
   font-weight: 700;
 }
 
@@ -536,7 +536,7 @@ useSeoMeta({
 
 .countries-featured__total {
   color: var(--countries-muted);
-  font-size: 0.6875rem;
+  font-size: 0.75rem;
   font-weight: 800;
 }
 
@@ -549,7 +549,7 @@ useSeoMeta({
 
 .countries-featured__meta {
   color: var(--countries-muted);
-  font-size: 0.625rem;
+  font-size: 0.75rem;
   font-weight: 700;
 }
 
@@ -595,7 +595,7 @@ useSeoMeta({
 .countries-card__stats {
   margin-top: 0.2rem;
   color: var(--countries-muted);
-  font-size: 0.6875rem;
+  font-size: 0.75rem;
   font-weight: 700;
 }
 
@@ -614,7 +614,7 @@ useSeoMeta({
   border-radius: 0.7rem;
   background: color-mix(in srgb, var(--theme-text-primary) 90%, transparent);
   color: var(--theme-bg-main);
-  font-size: 0.6875rem;
+  font-size: 0.75rem;
   font-weight: 800;
   transition: opacity 140ms ease, background-color 140ms ease;
 }

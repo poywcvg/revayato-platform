@@ -528,10 +528,38 @@ def _content_disposition_filename(value: str) -> str:
     return PurePosixPath(match.group(1).strip()).name if match else ''
 
 
+CIRCUIT_OPEN_KEY = 'catalog:subtitlestar:circuit-open'
+
+
+def _circuit_open() -> bool:
+    return bool(cache.get(CIRCUIT_OPEN_KEY))
+
+
+def _circuit_half_open() -> bool:
+    """A single probe passes through an open breaker so a recovered provider is
+    re-armed automatically instead of being locked out forever by a 403 loop.
+
+    While the breaker is open we only let ONE probe through (then immediately
+    close the breaker again). If that probe succeeds the caller clears the key
+    and normal traffic resumes; if it fails the caller re-opens it for another
+    full cooldown. Locking out everyone during the probe keeps a storm of
+    workers from stampeding a provider that is genuinely still down.
+    """
+    if not _circuit_open():
+        return False
+    probe_key = 'catalog:subtitlestar:circuit-probe'
+    if cache.get(probe_key):
+        return False
+    cache.set(probe_key, True, timeout=20)
+    # Re-close so concurrent workers fall straight back to the paused path.
+    cache.set(CIRCUIT_OPEN_KEY, True, timeout=30)
+    return True
+
+
 def _fetch(url: str, *, max_bytes: int, timeout_seconds: int, urgent: bool = False) -> _Response:
     if not _safe_external_url(url):
         raise SubtitleStarError('Subtitle URL host is not allowlisted.')
-    if _provider_host(url) and cache.get('catalog:subtitlestar:circuit-open'):
+    if _provider_host(url) and _circuit_open() and not _circuit_half_open():
         raise SubtitleStarBlocked('SubtitleStar circuit breaker is open.')
 
     _throttle(url, urgent=urgent)
@@ -581,6 +609,11 @@ def _fetch(url: str, *, max_bytes: int, timeout_seconds: int, urgent: bool = Fal
     except (URLError, TimeoutError, OSError) as exc:
         raise SubtitleStarError(f'Subtitle provider request failed: {exc}.') from exc
 
+    # A probe that actually reached a 200 clears the open breaker so normal
+    # traffic resumes instead of the provider being locked out forever.
+    if _provider_host(url):
+        cache.delete(CIRCUIT_OPEN_KEY)
+
     challenge_markers = (
         b'cf-mitigated',
         b'challenges.cloudflare.com',
@@ -591,7 +624,7 @@ def _fetch(url: str, *, max_bytes: int, timeout_seconds: int, urgent: bool = Fal
     head = body[:12000]
     if any(marker in head for marker in challenge_markers):
         cooldown = max(300, int(getattr(settings, 'SUBTITLESTAR_BLOCKED_COOLDOWN_SECONDS', 20 * 60)))
-        cache.set('catalog:subtitlestar:circuit-open', True, timeout=cooldown)
+        cache.set(CIRCUIT_OPEN_KEY, True, timeout=cooldown)
         raise SubtitleStarBlocked('SubtitleStar returned a browser challenge.')
     return _Response(body=body, url=final_url, content_type=content_type, filename=filename)
 

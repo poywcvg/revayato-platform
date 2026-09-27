@@ -190,7 +190,11 @@ export function useCatalog() {
           ...popularSeriesItems,
           ...newestSeriesItems,
         ])
-        catalogState.value = [...movies, ...series]
+        // A list refresh must not undo a detail load that landed first: the
+        // detail copy carries the links and subtitles an open /watch page is
+        // playing from, and the list copy carries neither.
+        const detailed = catalogState.value.filter(item => (item.download_links?.length || 0) > 0)
+        catalogState.value = mergeByKey([...movies, ...series, ...detailed])
         recentlyAddedState.value = mergeByKey([
           ...newestMovieItems,
           ...newestSeriesItems,
@@ -237,7 +241,9 @@ export function useCatalog() {
           : {},
       )
       const adapted = adaptApiCatalogItem(item, type, String(config.public.mediaCdnBaseUrl))
-      const existingIndex = catalogState.value.findIndex(candidate => candidate.slug === slug && candidate.type === type)
+      // Match on the slug the API answered with: an old (Persian) address resolves to
+      // the row's current English slug, and the page then redirects to it.
+      const existingIndex = catalogState.value.findIndex(candidate => candidate.slug === adapted.slug && candidate.type === type)
       if (existingIndex === -1) catalogState.value = [...catalogState.value, adapted]
       else catalogState.value = catalogState.value.map((candidate, index) => index === existingIndex ? adapted : candidate)
       source.value = 'api'
@@ -293,12 +299,11 @@ export function useTrending(limit = 8) {
 export function useMovieBySlug(slug: MaybeRefOrGetter<string>, expectedType?: ContentType) {
   const { catalog, pending, error, loadItemFromApi } = useCatalog()
   const movie = computed(() => catalog.value.find(item => item.slug === toValue(slug) && (!expectedType || item.type === expectedType)) ?? null)
-  // The catalog state is serialized into the SSR payload, so on hydration the
-  // item is already present (with full cast/episode metadata) — do not refetch.
-  // Only hit the API when the item is genuinely missing (client-only navigation
-  // without a catalog entry yet).
+  // List/rail entries deliberately omit download links, episodes and cast. A
+  // matching cached card therefore cannot satisfy a detail page: always replace
+  // it with the detail DTO when the caller knows the expected content type.
   const refresh = () => expectedType
-    ? (movie.value ? Promise.resolve(movie.value) : loadItemFromApi(toValue(slug), expectedType))
+    ? loadItemFromApi(toValue(slug), expectedType)
     : Promise.resolve(movie.value)
   return { data: movie, movie, pending, error, refresh }
 }
@@ -490,7 +495,7 @@ export function useRelatedMovies(item: MaybeRefOrGetter<Movie | null>, limit = 6
         if (!current) return
         try {
           const data = await api<ApiListResponse<ApiCatalogItem> | ApiCatalogItem[]>(
-            `/${current.type}/${current.slug}/similar/`,
+            `/${current.type === 'movie' ? 'movies' : 'series'}/${encodeURIComponent(current.slug)}/similar/`,
             { query: { limit } },
           )
           const items = unwrapApiList(data)

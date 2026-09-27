@@ -11,3 +11,13 @@ class CatalogConfig(AppConfig):
         from apps.catalog.cache import connect_cache_signals
 
         connect_cache_signals()
+
+        from apps.catalog.slugs import connect_slug_signals
+
+        connect_slug_signals()
+
+        # Only ever true in the stream-gateway container, which is the one
+        # process namespace where abandoned ffmpeg sessions are visible.
+        from apps.catalog.stream_gateway import start_reaper
+
+        start_reaper()

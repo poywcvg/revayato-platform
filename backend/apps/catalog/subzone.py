@@ -1,7 +1,11 @@
 """Subzone.ir (Subf2m mirror) Persian sidecar subtitle crawler.
 
 Used as a fast fallback after SubtitleStar misses during online playback ensure.
-Search is title/IMDb based; downloads are ZIP/SRT packs from allowlisted hosts.
+Subzone's robots.txt disallows ``/subtitles/searchbytitle``, so title pages are
+reached by their canonical slug (``/subtitles/the-batman-2022``,
+``/subtitles/from-first-season``) and then verified against year/IMDb/cast —
+never through the search endpoint. Every request passes a robots.txt gate.
+Downloads are ZIP/SRT packs from allowlisted hosts.
 """
 
 from __future__ import annotations
@@ -11,12 +15,14 @@ import logging
 import re
 import ssl
 import time
+import unicodedata
 from dataclasses import dataclass
 from html import unescape
 from pathlib import PurePosixPath
 from urllib.error import HTTPError, URLError
-from urllib.parse import quote_plus, unquote, urljoin, urlsplit
+from urllib.parse import unquote, urljoin, urlsplit
 from urllib.request import HTTPRedirectHandler, HTTPSHandler, Request, build_opener
+from urllib.robotparser import RobotFileParser
 
 from django.conf import settings
 from django.core.cache import cache
@@ -45,22 +51,16 @@ _ITEM_RE_DQ = re.compile(
     re.I | re.S,
 )
 _RELEASE_LI_RE = re.compile(r'<li>([^<]{3,240})</li>', re.I)
-_SEARCH_HIT_RE = re.compile(
-    r'href="(/subtitles/[^"/?]+)"[^>]*>\s*([^<]{2,160})',
-    re.I,
+# Subzone/Subf2m season pages are ``/subtitles/{title}-{ordinal}-season``.
+_SEASON_WORDS = (
+    'first', 'second', 'third', 'fourth', 'fifth', 'sixth', 'seventh', 'eighth', 'ninth', 'tenth',
+    'eleventh', 'twelfth', 'thirteenth', 'fourteenth', 'fifteenth', 'sixteenth', 'seventeenth',
+    'eighteenth', 'nineteenth', 'twentieth',
 )
-_SEASON_ORDINAL = {
-    1: ('first', '1st', 'season-1', 'season1', 's01', 's1'),
-    2: ('second', '2nd', 'season-2', 'season2', 's02', 's2'),
-    3: ('third', '3rd', 'season-3', 'season3', 's03', 's3'),
-    4: ('fourth', '4th', 'season-4', 'season4', 's04', 's4'),
-    5: ('fifth', '5th', 'season-5', 'season5', 's05', 's5'),
-    6: ('sixth', '6th', 'season-6', 'season6', 's06', 's6'),
-    7: ('seventh', '7th', 'season-7', 'season7', 's07', 's7'),
-    8: ('eighth', '8th', 'season-8', 'season8', 's08', 's8'),
-    9: ('ninth', '9th', 'season-9', 'season9', 's09', 's9'),
-    10: ('tenth', '10th', 'season-10', 'season10', 's10'),
-}
+# Paths Subzone's robots.txt disallowed when this was written; used whenever the
+# live robots.txt cannot be read so a network blip never re-enables them.
+_ROBOTS_FALLBACK_DISALLOW = ('/subtitles/searchbytitle',)
+_ROBOTS_CACHE_KEY = 'catalog:subzone:robots-txt'
 
 
 class SubzoneError(RuntimeError):
@@ -166,10 +166,64 @@ def _throttle(*, urgent: bool = False) -> None:
     cache.set(key, time.time() + interval, timeout=max(8, int(interval * 4)))
 
 
+CIRCUIT_OPEN_KEY = 'catalog:subzone:circuit-open'
+
+
+def _circuit_open() -> bool:
+    return bool(cache.get(CIRCUIT_OPEN_KEY))
+
+
+def _circuit_half_open() -> bool:
+    """Single probe through an open breaker so a recovered provider re-arms."""
+    if not _circuit_open():
+        return False
+    if cache.get('catalog:subzone:circuit-probe'):
+        return False
+    cache.set('catalog:subzone:circuit-probe', True, timeout=20)
+    cache.set(CIRCUIT_OPEN_KEY, True, timeout=30)
+    return True
+
+
+def _robots_text() -> str | None:
+    """Subzone's robots.txt, cached 12h; ``None`` when it cannot be read."""
+    cached = cache.get(_ROBOTS_CACHE_KEY)
+    if isinstance(cached, str):
+        return cached or None
+    text = ''
+    try:
+        request = Request(f'{_base_url()}/robots.txt', headers={'User-Agent': 'Mozilla/5.0'})
+        with build_opener(_SafeRedirectHandler()).open(request, timeout=6) as response:
+            if 200 <= int(getattr(response, 'status', 200) or 200) < 300:
+                text = response.read(64 * 1024).decode('utf-8', 'replace')
+    except (HTTPError, URLError, OSError, ValueError, SubzoneError):
+        text = ''
+    # A failed read is cached briefly so a flaky host is not hammered.
+    cache.set(_ROBOTS_CACHE_KEY, text, timeout=12 * 60 * 60 if text else 10 * 60)
+    return text or None
+
+
+def _robots_allows(url: str) -> bool:
+    parsed = urlsplit(url)
+    base_host = (urlsplit(_base_url()).hostname or '').lower()
+    if (parsed.hostname or '').lower() != base_host:
+        return True  # robots.txt governs the crawled site, not its download CDN
+    path = parsed.path or '/'
+    if any(path.startswith(prefix) for prefix in _ROBOTS_FALLBACK_DISALLOW):
+        return False
+    text = _robots_text()
+    if not text:
+        return True
+    parser = RobotFileParser()
+    parser.parse(text.splitlines())
+    return parser.can_fetch('*', url)
+
+
 def _fetch(url: str, *, max_bytes: int, timeout_seconds: int, urgent: bool = False) -> _Response:
     if not _safe_external_url(url):
         raise SubzoneError('Subzone URL host is not allowlisted.')
-    if cache.get('catalog:subzone:circuit-open'):
+    if not _robots_allows(url):
+        raise SubzoneError('Subzone robots.txt disallows this path.')
+    if _circuit_open() and not _circuit_half_open():
         raise SubzoneBlocked('Subzone circuit breaker is open.')
 
     _throttle(urgent=urgent)
@@ -242,33 +296,49 @@ def _response_members(response: _Response) -> list[tuple[str, bytes]]:
 
 
 def _slugify_title(title: str) -> str:
-    text = re.sub(r'[^a-z0-9]+', '-', str(title or '').casefold())
-    return text.strip('-')
+    """Subzone slug: accents folded (Çukur → cukur), apostrophes dropped
+    (Queen's → queens), ``&`` spelled out, everything else hyphenated."""
+    text = unicodedata.normalize('NFKD', str(title or ''))
+    text = ''.join(ch for ch in text if not unicodedata.combining(ch))
+    text = text.replace('ı', 'i').replace('ß', 'ss').casefold()
+    text = re.sub(r"['’`]", '', text).replace('&', ' and ')
+    return re.sub(r'[^a-z0-9]+', '-', text).strip('-')
 
 
 def _title_tokens(value: str) -> set[str]:
     return {tok for tok in re.findall(r'[a-z0-9]+', str(value or '').casefold()) if len(tok) > 1}
 
 
-def _score_search_hit(path: str, label: str, *, title: str, year: int | None) -> int:
-    wanted = _title_tokens(title) - {'the', 'a', 'an', 'and'}
-    blob = f'{path} {label}'.casefold()
-    actual = _title_tokens(blob)
-    if not wanted:
-        return 0
-    overlap = len(wanted & actual)
-    if overlap <= 0:
-        return -100
-    score = overlap * 10
-    # Prefer exact-ish slug length (avoid "Interstellar Wars").
-    extra = len(actual - wanted - {str(year or ''), 'season', 'complete'})
-    score -= min(20, extra * 3)
-    if year:
-        if str(year) in blob:
-            score += 25
-        elif re.search(r'(?:19|20)\d{2}', blob) and str(year) not in blob:
-            score -= 15
-    return score
+def _title_slugs(titles) -> list[str]:
+    slugs: list[str] = []
+    for title in titles:
+        slug = _slugify_title(title)
+        if slug and slug not in slugs:
+            slugs.append(slug)
+    return slugs
+
+
+def _movie_page_candidates(titles, year: int | None, *, limit: int = 4) -> list[str]:
+    """Title pages to try, most specific first (``the-batman-2022`` before the
+    bare ``the-batman``, which on Subzone is the 1943 serial)."""
+    urls: list[str] = []
+    for slug in _title_slugs(titles):
+        if year:
+            urls.append(f'{_base_url()}/subtitles/{slug}-{int(year)}')
+        urls.append(f'{_base_url()}/subtitles/{slug}')
+    return list(dict.fromkeys(urls))[:limit]
+
+
+def _season_page_candidates(titles, season: int, year: int | None, *, limit: int = 4) -> list[str]:
+    if not 1 <= int(season) <= len(_SEASON_WORDS):
+        return []
+    word = _SEASON_WORDS[int(season) - 1]
+    urls: list[str] = []
+    for slug in _title_slugs(titles):
+        urls.append(f'{_base_url()}/subtitles/{slug}-{word}-season')
+        if year:
+            urls.append(f'{_base_url()}/subtitles/{slug}-{int(year)}-{word}-season')
+    return list(dict.fromkeys(urls))[:limit]
 
 
 def _parse_farsi_items(html: str) -> list[tuple[str, tuple[str, ...]]]:
@@ -340,64 +410,6 @@ def _download_pack(detail_url: str, *, timeout_seconds: int, urgent: bool) -> tu
     return response, response.url
 
 
-def _search_title_pages(
-    *,
-    title: str,
-    year: int | None,
-    imdb_id: str,
-    timeout_seconds: int,
-    urgent: bool,
-) -> list[str]:
-    html_limit = max(256 * 1024, int(getattr(settings, 'SUBZONE_MAX_HTML_BYTES', 2 * 1024 * 1024)))
-    queries: list[str] = []
-    if imdb_id:
-        queries.append(imdb_id)
-    if title and year:
-        queries.append(f'{title} {year}')
-    if title:
-        queries.append(title)
-
-    pages: list[tuple[int, str]] = []
-    seen: set[str] = set()
-    for query in queries:
-        if not query.strip():
-            continue
-        search_url = f'{_base_url()}/subtitles/searchbytitle?query={quote_plus(query.strip())}'
-        try:
-            search = _fetch(search_url, max_bytes=html_limit, timeout_seconds=timeout_seconds, urgent=urgent)
-        except SubzoneBlocked:
-            raise
-        except SubzoneError as exc:
-            logger.info('Subzone search failed for %s: %s', query, exc)
-            continue
-        html = _decode_html(search.body)
-        for path, label in _SEARCH_HIT_RE.findall(html):
-            if 'searchbytitle' in path:
-                continue
-            score = _score_search_hit(path, label, title=title, year=year)
-            if score < 8:
-                continue
-            absolute = urljoin(_base_url() + '/', path)
-            if absolute in seen:
-                continue
-            seen.add(absolute)
-            pages.append((score, absolute))
-        # Weak hits (score < 30) must not stop the search — the exact page only
-        # shows up under the IMDb query or a later title term.
-        if pages and max(score for score, _ in pages) >= 30:
-            break
-
-    # Direct slug guess as last resort (common Subf2m pattern).
-    slug = _slugify_title(title)
-    if slug:
-        guess = f'{_base_url()}/subtitles/{slug}'
-        if guess not in seen:
-            pages.append((5, guess))
-
-    pages.sort(key=lambda row: row[0], reverse=True)
-    return [url for _, url in pages]
-
-
 def find_movie_subtitle(
     movie,
     *,
@@ -431,10 +443,15 @@ def find_movie_subtitle(
     snappy = timeout <= 16
     deadline = time.monotonic() + timeout
     html_limit = max(256 * 1024, int(getattr(settings, 'SUBZONE_MAX_HTML_BYTES', 2 * 1024 * 1024)))
-    # Snappy playback ensure historically stopped after 2 pages/downloads;
-    # one more of each keeps the exact page from being hidden by weak hits.
-    max_pages = 3
+    # Slug guesses are cheap (a wrong one is a fast 404), so try all of them;
+    # the metadata verdict below rejects same-slug films from other years.
+    max_pages = 4
     max_downloads = 3 if snappy else 4
+
+    from apps.catalog.subtitle_metadata import build_title_identity, evaluate_subtitle_page
+    identity = build_title_identity(
+        movie, title=title, year=int(year) if year else None, imdb_id=imdb_id,
+    )
 
     def _remaining() -> int:
         return max(3, int(deadline - time.monotonic()))
@@ -444,32 +461,13 @@ def find_movie_subtitle(
 
     lookup_incomplete = False
     try:
-        pages = _search_title_pages(
-            title=title,
-            year=int(year) if year else None,
-            imdb_id=imdb_id,
-            timeout_seconds=_remaining(),
-            urgent=snappy,
+        pages = _movie_page_candidates(
+            [title, str(getattr(movie, 'original_title', '') or '')],
+            int(year) if year else None,
         )
-        for page_url in pages[:max_pages]:
-            if _timed_out():
-                lookup_incomplete = True
-                break
-            try:
-                page = _fetch(page_url, max_bytes=html_limit, timeout_seconds=_remaining(), urgent=snappy)
-            except SubzoneBlocked:
-                raise
-            except SubzoneError as exc:
-                logger.info('Subzone title page failed for %s: %s', page_url, exc)
-                continue
-            html = _decode_html(page.body)
-            page_imdb = _page_imdb_id(html)
-            if imdb_id and page_imdb and page_imdb != imdb_id:
-                continue
-            page_year = _page_year(html)
-            if year and page_year and abs(int(year) - page_year) > 1 and not (imdb_id and page_imdb == imdb_id):
-                continue
-
+        def _harvest_page(page, page_imdb: str) -> SubzoneMatch | None:
+            """Download the best Farsi release from a verified title page."""
+            nonlocal lookup_incomplete
             farsi_url = page.url.rstrip('/') + '/farsi_persian'
             try:
                 farsi = _fetch(farsi_url, max_bytes=html_limit, timeout_seconds=_remaining(), urgent=snappy)
@@ -477,11 +475,11 @@ def find_movie_subtitle(
                 raise
             except SubzoneError as exc:
                 logger.info('Subzone Farsi list failed for %s: %s', farsi_url, exc)
-                continue
+                return None
 
             items = _parse_farsi_items(_decode_html(farsi.body))
             if not items:
-                continue
+                return None
             ranked = _rank_candidates(items, video_urls=videos)
             for candidate in ranked[:max_downloads]:
                 if _timed_out():
@@ -531,8 +529,50 @@ def find_movie_subtitle(
                     source_urls=source_urls,
                     imdb_id=imdb_id or page_imdb,
                 )
-            if lookup_incomplete:
+            return None
+
+        # Fetch + verify each candidate against title/year/imdb/cast/genre, then
+        # harvest the *confirmed* pages first and only fall back to unconfirmed
+        # ones (title-only matches) if no confirmed page yields a subtitle.
+        deferred: list = []
+        for page_url in pages[:max_pages]:
+            if _timed_out():
+                lookup_incomplete = True
                 break
+            try:
+                page = _fetch(page_url, max_bytes=html_limit, timeout_seconds=_remaining(), urgent=snappy)
+            except SubzoneBlocked:
+                raise
+            except SubzoneError as exc:
+                logger.info('Subzone title page failed for %s: %s', page_url, exc)
+                continue
+            html = _decode_html(page.body)
+            page_imdb = _page_imdb_id(html)
+            verdict = evaluate_subtitle_page(
+                identity, html, page_imdb=page_imdb, page_year=_page_year(html),
+            )
+            if verdict.reject:
+                logger.info('Subzone page rejected for %s: %s', page_url, ','.join(verdict.reasons))
+                continue
+            if verdict.confirmed:
+                match = _harvest_page(page, page_imdb)
+                if match is not None:
+                    return match
+                if lookup_incomplete:
+                    break
+            else:
+                deferred.append((verdict.score, page, page_imdb))
+
+        if not lookup_incomplete:
+            for _score, page, page_imdb in sorted(deferred, key=lambda row: row[0], reverse=True):
+                if _timed_out():
+                    lookup_incomplete = True
+                    break
+                match = _harvest_page(page, page_imdb)
+                if match is not None:
+                    return match
+                if lookup_incomplete:
+                    break
     except SubzoneBlocked as exc:
         logger.warning('Subzone lookup paused: %s', exc)
         return None
@@ -547,35 +587,6 @@ def find_movie_subtitle(
         negative_ttl = max(300, int(getattr(settings, 'SUBZONE_NEGATIVE_CACHE_SECONDS', 12 * 60 * 60)))
         cache.set(miss_key, True, timeout=negative_ttl)
     return None
-
-
-def _season_search_queries(title: str, season: int) -> list[str]:
-    queries = [
-        f'{title} Season {season}',
-        f'{title} S{season:02d}',
-    ]
-    for token in _SEASON_ORDINAL.get(int(season), ()):
-        if token.startswith('season'):
-            queries.append(f'{title} {token.replace("-", " ")}')
-        elif token.endswith(('st', 'nd', 'rd', 'th')) or token in {
-            'first', 'second', 'third', 'fourth', 'fifth',
-            'sixth', 'seventh', 'eighth', 'ninth', 'tenth',
-        }:
-            queries.append(f'{title} {token} season')
-    return list(dict.fromkeys(queries))
-
-
-def _season_slug_matches(path: str, *, title: str, season: int) -> bool:
-    blob = unquote(path).casefold()
-    wanted = _title_tokens(title) - {'the', 'a', 'an', 'and'}
-    if wanted and len(wanted & _title_tokens(blob)) < max(1, len(wanted) // 2):
-        return False
-    markers = {
-        f'season-{season}', f'season{season}', f's{season:02d}', f's{season}',
-        f'-{season}-season', f'season-{season:02d}',
-        *_SEASON_ORDINAL.get(int(season), ()),
-    }
-    return any(marker in blob for marker in markers)
 
 
 def find_series_episode_subtitles(
@@ -620,39 +631,30 @@ def find_series_episode_subtitles(
     results: list[SubzoneEpisodeMatch] = []
     remaining_keys = set(needed.keys())
 
+    from apps.catalog.subtitle_metadata import build_title_identity, evaluate_subtitle_page
+    identity = build_title_identity(
+        series, title=title, year=int(year) if year else None, imdb_id=imdb_id,
+    )
+
     def _remaining() -> int:
         return max(3, int(deadline - time.monotonic()))
 
     def _timed_out() -> bool:
         return time.monotonic() >= deadline
 
-    seasons = sorted({season for season, _episode in remaining_keys})
+    # Callers put the episode open in the player first; search its season first.
+    seasons = list(dict.fromkeys(season for season, _episode in needed))
     lookup_incomplete = False
     try:
         for season in seasons:
             if _timed_out() or not remaining_keys:
                 lookup_incomplete = _timed_out()
                 break
-            season_pages: list[str] = []
-            for query in _season_search_queries(title, season)[:3]:
-                if _timed_out():
-                    lookup_incomplete = True
-                    break
-                search_url = f'{_base_url()}/subtitles/searchbytitle?query={quote_plus(query)}'
-                try:
-                    search = _fetch(search_url, max_bytes=html_limit, timeout_seconds=_remaining(), urgent=snappy)
-                except SubzoneBlocked:
-                    raise
-                except SubzoneError:
-                    continue
-                for path, _label in _SEARCH_HIT_RE.findall(_decode_html(search.body)):
-                    if 'searchbytitle' in path:
-                        continue
-                    if _season_slug_matches(path, title=title, season=season):
-                        season_pages.append(urljoin(_base_url() + '/', path))
-                if season_pages:
-                    break
-            season_pages = list(dict.fromkeys(season_pages))[:3]
+            season_pages = _season_page_candidates(
+                [title, str(getattr(series, 'original_title', '') or '')],
+                season,
+                int(year) if year else None,
+            )
             for page_url in season_pages:
                 if _timed_out() or not remaining_keys:
                     break
@@ -667,8 +669,18 @@ def find_series_episode_subtitles(
                     raise
                 except SubzoneError:
                     continue
-                items = _parse_farsi_items(_decode_html(farsi.body))
+                farsi_html = _decode_html(farsi.body)
+                items = _parse_farsi_items(farsi_html)
                 if not items:
+                    continue
+                # Verify this really is our title (year/imdb/cast/genre), not just
+                # a season-slug collision, before spending downloads on its packs.
+                verdict = evaluate_subtitle_page(
+                    identity, farsi_html,
+                    page_imdb=_page_imdb_id(farsi_html), page_year=_page_year(farsi_html),
+                )
+                if verdict.reject:
+                    logger.info('Subzone season page rejected for %s: %s', page_url, ','.join(verdict.reasons))
                     continue
                 # Prefer packs that mention this season's remaining episodes.
                 season_videos = {

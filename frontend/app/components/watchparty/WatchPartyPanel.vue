@@ -90,16 +90,16 @@ function requestEnd() {
 
     <div class="mb-3 flex items-start justify-between gap-3">
       <div class="min-w-0">
-        <p class="text-[10px] font-black uppercase tracking-[0.16em] text-crimson-hover">Watch Party</p>
+        <p class="text-[11px] font-black uppercase tracking-[0.16em] text-crimson-hover">Watch Party</p>
         <h2 class="mt-1 truncate text-sm font-black text-white">اتاق خصوصی</h2>
-        <p class="mt-0.5 text-[10px] text-white/40">
+        <p class="mt-0.5 text-[11px] text-white/40">
           {{ onlineCount.toLocaleString('fa-IR') }} آنلاین · تاخیر
           <span class="font-latin" :class="latencyTone">{{ latencyLabel }}</span>
         </p>
       </div>
       <div class="flex items-center gap-2">
         <span
-          class="inline-flex shrink-0 items-center gap-1.5 rounded-full bg-white/5 px-2 py-1 text-[10px] font-bold"
+          class="inline-flex shrink-0 items-center gap-1.5 rounded-full bg-white/5 px-2 py-1 text-[11px] font-bold"
           :class="statusTone"
         >
           <span class="size-1.5 rounded-full" :class="statusDotTone" />{{ statusLabel }}
@@ -115,7 +115,7 @@ function requestEnd() {
       </div>
     </div>
 
-    <div v-if="connectionStatus === 'reconnecting' || connectionStatus === 'error'" class="mb-3 flex items-center justify-between gap-3 rounded-xl border border-warning/25 bg-warning/10 p-2.5 text-[11px] text-white/75">
+    <div v-if="connectionStatus === 'reconnecting' || connectionStatus === 'error'" class="mb-3 flex items-center justify-between gap-3 rounded-xl border border-warning/25 bg-warning/10 p-2.5 text-xs text-white/75">
       <span>{{ errorMessage || 'ارتباط اتاق موقتاً قطع شده است.' }}</span>
       <button type="button" class="min-h-11 shrink-0 rounded-lg bg-warning px-3 py-1.5 font-black text-[#201500] transition hover:brightness-110" @click="$emit('retry')">تلاش دوباره</button>
     </div>
@@ -127,7 +127,7 @@ function requestEnd() {
         :key="tab.id"
         type="button"
         role="tab"
-        class="inline-flex min-h-11 items-center justify-center gap-1.5 rounded-lg text-[11px] font-black transition"
+        class="inline-flex min-h-11 items-center justify-center gap-1.5 rounded-lg text-xs font-black transition"
         :class="activeTab === tab.id
           ? tab.id === 'invite'
             ? 'bg-info/15 text-info ring-1 ring-info/15'
@@ -141,7 +141,7 @@ function requestEnd() {
       >
         <CinematicIcon :name="tab.icon" class="size-3.5" />
         {{ tab.label }}
-        <span v-if="tab.id === 'members'" class="font-latin text-[9px] opacity-70">{{ onlineCount }}</span>
+        <span v-if="tab.id === 'members'" class="font-latin text-[11px] opacity-70">{{ onlineCount }}</span>
       </button>
     </div>
 

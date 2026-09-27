@@ -88,7 +88,7 @@ const wrapperClasses = computed(() => [
 .breadcrumbs-b__icon { width: 1em; height: 1em; flex: none; }
 .breadcrumbs-b__separator { display: grid; flex: none; place-items: center; color: var(--theme-text-disabled); }
 .breadcrumbs-b__separator svg { width: 1em; height: 1em; }
-.breadcrumbs-b--small { font-size: .68rem; font-weight: 700; }
+.breadcrumbs-b--small { font-size: 0.75rem; font-weight: 700; }
 .breadcrumbs-b--medium { font-size: .75rem; font-weight: 700; }
 .breadcrumbs-b--large { font-size: .875rem; font-weight: 700; }
 .breadcrumbs-b--highlight-last .breadcrumbs-b__item:last-child,

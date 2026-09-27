@@ -154,6 +154,57 @@ class DiscoverImportRequestSerializer(serializers.Serializer):
     )
 
 
+class CatalogYearImportRequestSerializer(serializers.Serializer):
+    content_type = serializers.ChoiceField(
+        choices=ProviderImportJob.ContentType.choices,
+        default=ProviderImportJob.ContentType.BOTH,
+    )
+    # Discovery runs against every provider listed here. Film2Media carries titles
+    # Dornatv never publishes, so the default covers both instead of Dornatv alone.
+    providers = serializers.MultipleChoiceField(
+        choices=[('dornatv', 'Dornatv'), ('myf2m', 'Film2Media')],
+        required=False,
+        default=lambda: {'dornatv', 'myf2m'},
+    )
+    # ``year`` is the legacy single-year field the admin panel used to post; it is
+    # accepted as a shorthand for an equal start/end window. Leave all three unset
+    # to work the whole catalog.
+    year = serializers.IntegerField(required=False, allow_null=True, min_value=1900, max_value=2100)
+    year_start = serializers.IntegerField(required=False, allow_null=True, min_value=1900, max_value=2100)
+    year_end = serializers.IntegerField(required=False, allow_null=True, min_value=1900, max_value=2100)
+    discover = serializers.BooleanField(default=True)
+    enrich = serializers.BooleanField(default=True)
+    softsub = serializers.BooleanField(default=True)
+    dornatv_rounds = serializers.IntegerField(min_value=1, max_value=50, default=8)
+    movies_per_round = serializers.IntegerField(min_value=1, max_value=500, default=40)
+    series_per_round = serializers.IntegerField(min_value=1, max_value=250, default=20)
+    myf2m_rounds = serializers.IntegerField(min_value=1, max_value=50, default=6)
+    myf2m_movies_per_round = serializers.IntegerField(min_value=1, max_value=500, default=25)
+    myf2m_series_per_round = serializers.IntegerField(min_value=1, max_value=250, default=12)
+    myf2m_pages_per_round = serializers.IntegerField(min_value=1, max_value=200, default=12)
+    enrich_limit = serializers.IntegerField(min_value=0, max_value=5000, default=0)
+    delay = serializers.FloatField(min_value=0.1, max_value=10, default=0.35)
+
+    def validate(self, attrs):
+        providers = sorted(attrs.get('providers') or [])
+        if not providers:
+            raise serializers.ValidationError({'providers': 'حداقل یک منبع باید انتخاب شود.'})
+        attrs['providers'] = providers
+        legacy_year = attrs.pop('year', None)
+        start = attrs.get('year_start') if attrs.get('year_start') is not None else legacy_year
+        end = attrs.get('year_end') if attrs.get('year_end') is not None else legacy_year
+        # One supplied bound means a single year, not an open-ended range.
+        if start is None and end is not None:
+            start = end
+        if end is None and start is not None:
+            end = start
+        if start is not None and end is not None and start > end:
+            start, end = end, start
+        attrs['year_start'] = start
+        attrs['year_end'] = end
+        return attrs
+
+
 class CatalogDiscoverRequestSerializer(serializers.Serializer):
     mode = serializers.ChoiceField(
         choices=[ProviderImportJob.Mode.DISCOVER_ONLY],

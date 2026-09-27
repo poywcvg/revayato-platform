@@ -21,7 +21,7 @@ export default defineNuxtConfig({
     }],
   ],
 
-  css: ['vue-sonner/style.css', '~/assets/css/main.css'],
+  css: ['vue-sonner/style.css', '~/assets/css/main.css', '~/assets/css/admin.css'],
 
   components: [{ path: '~/components', pathPrefix: false }],
 
@@ -56,18 +56,11 @@ export default defineNuxtConfig({
       },
     },
     families: [
+      // Persian UI faces are self-hosted from public/fonts (see main.css @font-face).
+      { name: 'Yekan Plus', provider: 'none' },
+      { name: 'Yekan Boom', provider: 'none' },
       {
-        name: 'Vazirmatn',
-        provider: 'npm',
-        weights: [400, 700],
-        styles: ['normal'],
-        global: true,
-        // Preload body weight only — bold swaps in after first paint.
-        preload: true,
-        display: 'swap',
-      },
-      {
-        // English / Latin UI — sits ahead of Vazirmatn for Latin glyphs site-wide.
+        // English / Latin UI — Yekan has no Latin glyphs, so Latin text lands here.
         name: 'Plus Jakarta Sans',
         provider: 'npm',
         weights: [500, 700],
@@ -101,7 +94,8 @@ export default defineNuxtConfig({
   },
 
   app: {
-    // Brief out-in fade: leave finishes before enter so layout never stacks.
+    // A very short out-in hand-off avoids layout stacking without making route
+    // changes feel blocked. The richer motion is painted by PageTransitionMotion.
     pageTransition: {
       name: 'cinema-page',
       mode: 'out-in',
@@ -117,10 +111,13 @@ export default defineNuxtConfig({
       title: 'روایتو',
       titleTemplate: '%s | روایتو',
       link: [
-        { rel: 'icon', type: 'image/svg+xml', href: '/favicon.svg' },
-        { rel: 'icon', type: 'image/png', sizes: '32x32', href: '/favicon-32.png' },
-        { rel: 'apple-touch-icon', sizes: '180x180', href: '/apple-touch-icon.png' },
-        { rel: 'manifest', href: '/site.webmanifest' },
+        { rel: 'preload', href: '/fonts/yekan-plus-regular.woff', as: 'font', type: 'font/woff', crossorigin: '' },
+        { rel: 'preload', href: '/fonts/yekan-plus-medium.woff', as: 'font', type: 'font/woff', crossorigin: '' },
+        { rel: 'preload', href: '/fonts/yekan-plus.woff', as: 'font', type: 'font/woff', crossorigin: '' },
+        { rel: 'icon', type: 'image/svg+xml', href: '/favicon.svg?v=2' },
+        { rel: 'icon', type: 'image/png', sizes: '32x32', href: '/favicon-32.png?v=2' },
+        { rel: 'apple-touch-icon', sizes: '180x180', href: '/apple-touch-icon.png?v=2' },
+        { rel: 'manifest', href: '/site.webmanifest?v=2' },
       ],
       meta: [
         { name: 'application-name', content: 'روایتو' },
@@ -150,12 +147,14 @@ export default defineNuxtConfig({
     storage: {
       'data:swr': {
         driver: 'memory',
-        // Sized against the container's 1Gi limit / 768M heap. The hot set is
+        // Sized against the container's 1.5Gi limit / 1Gi heap. The hot set is
         // home + 4 list pages + the power-law head of 4 detail namespaces. A
         // 220-slot LRU could evict /, /movies, /series under long-tail detail
         // traffic, defeating the whole optimization on the highest-traffic routes.
-        // 500 leaves enough headroom for the long tail without crowding the heap.
-        max: 500 /* max number of cached entries */,
+        // 150 keeps the head cached (bot long-tail must re-render, not crowd
+        // the heap): each rendered detail page carries its full catalog payload,
+        // and the process previously OOMed with a larger cache under crawler traffic.
+        max: 150 /* max number of cached entries */,
         ttl: 600 /* seconds; overridden per-route by swr below */,
       },
     },
@@ -165,6 +164,10 @@ export default defineNuxtConfig({
     '/movies': { swr: 180 },
     '/series': { swr: 180 },
     '/new': { swr: 120 },
+    // Weekly airing schedule is day-bucketed and identical for everyone, so it
+    // caches like the list routes; SWR revalidation keeps today's row fresh
+    // while a new day's episodes flow in from the metadata pipeline.
+    '/schedule': { swr: 300 },
     // Detail pages are the deepest render in the app (full cast, seasons, links)
     // and their API payloads are built without a request user, so the HTML is the
     // same for everyone. Only the header's profile icon differs, and hydration
@@ -173,9 +176,16 @@ export default defineNuxtConfig({
     // of it.
     '/movies/**': { swr: 300 },
     '/series/**': { swr: 300 },
+    // `/actors/**` matches detail routes but not the bare index, which is an
+    // everyone-identical list — cache it on the same TTL.
+    '/actors': { swr: 600 },
     '/actors/**': { swr: 600 },
     '/collections/**': { swr: 600 },
     '/countries': { swr: 600 },
+    // Sitemaps are read by crawlers on their own schedule; the backend feed is
+    // itself cached for hours, so an hour here keeps origin work negligible.
+    '/sitemap.xml': { swr: 3600 },
+    '/sitemaps/**': { swr: 3600 },
     // Content-free pages: no API call, no store read, so a build-time render is
     // byte-identical to a per-request one. Baking them means these routes never
     // occupy a Nitro worker and are served straight off disk/CDN.
@@ -190,7 +200,9 @@ export default defineNuxtConfig({
     // artwork for a month after a re-encode. Cap at 1 day with SWR so updated
     // posters/backdrops propagate quickly.
     '/media/**': { headers: { 'cache-control': 'public, max-age=86400, stale-while-revalidate=86400' } },
-    // Staff panel is auth-gated; skip SSR to free Nuxt workers for public pages.
+    // The admin panel is authenticated and rendered client-side only — never
+    // SSR/CDN cache it, and never leak it into a build-time render.
+    '/admin': { ssr: false },
     '/admin/**': { ssr: false },
   },
 })

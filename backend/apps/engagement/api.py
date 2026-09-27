@@ -118,7 +118,15 @@ def watchlist_toggle(request):
 def likes_list(request):
     likes = selectors.get_user_likes(request.user)
     return Response([
-        {'content_type': like.content_type, 'object_id': like.object_id}
+        {
+            'content_type': like.content_type,
+            'object_id': like.object_id,
+            # Embed the poster/title/slug so the library's «پسندیده‌ها» tab can
+            # render cards. Without this, clients only knew *what* was liked, not
+            # how to show it, so the favorites tab always came up empty.
+            'content': selectors.resolve_content_summary(like.content_type, like.object_id),
+            'created_at': like.created_at,
+        }
         for like in likes
     ])
 

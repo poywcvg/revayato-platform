@@ -49,7 +49,7 @@ const syncLabel = computed(() => {
           >
           <span
             v-else
-            class="grid size-7 place-items-center rounded-full bg-primary-500/20 text-[10px] font-black text-primary-300 ring-2 ring-black/80"
+            class="grid size-7 place-items-center rounded-full bg-primary-500/20 text-[11px] font-black text-primary-300 ring-2 ring-black/80"
           >{{ initial(member.user.display_name) }}</span>
           <span
             v-if="member.role === 'host'"
@@ -58,22 +58,22 @@ const syncLabel = computed(() => {
         </div>
         <span
           v-if="onlineMembers.length > 5"
-          class="grid size-7 place-items-center rounded-full bg-white/10 text-[9px] font-black text-white/80 ring-2 ring-black/80"
+          class="grid size-7 place-items-center rounded-full bg-white/10 text-[11px] font-black text-white/80 ring-2 ring-black/80"
         >+{{ onlineMembers.length - 5 }}</span>
       </div>
       <div class="min-w-0">
-        <p class="truncate text-[11px] font-black text-white/90">
+        <p class="truncate text-xs font-black text-white/90">
           {{ onlineMembers.length.toLocaleString('fa-IR') }} آنلاین
           <span v-if="host" class="text-white/40"> · {{ host.user.display_name }}</span>
         </p>
-        <p class="mt-0.5 flex items-center gap-1.5 text-[10px] font-bold" :class="playing ? 'text-primary-300' : 'text-white/45'">
+        <p class="mt-0.5 flex items-center gap-1.5 text-[11px] font-bold" :class="playing ? 'text-primary-300' : 'text-white/45'">
           <span class="size-1.5 rounded-full" :class="playing ? 'animate-pulse bg-primary-400' : 'bg-white/35'" />
           {{ syncLabel }}
           <span v-if="playbackState" class="font-latin text-white/30">{{ formatTime(playbackState.position_seconds) }}</span>
         </p>
       </div>
     </div>
-    <div class="flex items-center gap-1.5 text-[10px] font-bold">
+    <div class="flex items-center gap-1.5 text-[11px] font-bold">
       <span
         v-if="isHost"
         class="rounded-md bg-primary-500/20 px-2 py-1 text-primary-300"

@@ -36,6 +36,9 @@ if (!hasSearchOrFilter && String(route.query.sort || '') === 'newest') {
 useSeoMeta({
   title: 'جستجوی پیشرفته',
   description: 'فیلم و سریال را با نام، ژانر، سال، امتیاز و فیلترهای دقیق پیدا کن.',
+  // Result pages are infinite, thin and query-shaped — Google asks sites not to
+  // index them. Links on them are still followed to the real title pages.
+  robots: 'noindex, follow',
 })
 </script>
 

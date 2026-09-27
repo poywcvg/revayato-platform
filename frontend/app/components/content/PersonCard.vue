@@ -139,7 +139,7 @@ const fallbackTone = computed(() => props.kind === 'director'
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font-size: .6875rem;
+  font-size: 0.75rem;
   font-weight: 600;
   color: rgb(148 163 184);
 }

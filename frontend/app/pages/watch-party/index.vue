@@ -60,7 +60,7 @@ let routeSyncVersion = 0
 const pickerFocusable = 'button:not([disabled]), a[href], input:not([disabled]), [tabindex]:not([tabindex="-1"])'
 
 const catalogReady = computed(() => source.value === 'api')
-const debouncedQuery = refDebounced(pickerQuery, 280)
+const debouncedQuery = refDebounced(pickerQuery, 120)
 
 const partySteps = [
   { step: '۱', title: 'عنوان را انتخاب کن', hint: 'فیلم یا قسمت سریال' },
@@ -201,7 +201,7 @@ async function searchFullCatalog() {
   const term = debouncedQuery.value.trim()
   const requestId = ++searchRequestId
   searchError.value = ''
-  if (normalizeSearchText(term).length < 2) {
+  if (!normalizeSearchText(term)) {
     remoteResults.value = []
     searchPending.value = false
     return
@@ -209,7 +209,7 @@ async function searchFullCatalog() {
 
   searchPending.value = true
   try {
-    const response = await api<ApiCatalogSearchResponse>('/search/', {
+    const response = await api<ApiCatalogSearchResponse>('/search/suggest/', {
       query: {
         q: term,
         type: contentFilter.value,
@@ -468,7 +468,7 @@ useSeoMeta({
             <CinematicIcon name="login" class="size-4" />
             ورود
           </button>
-          <span class="col-span-2 inline-flex min-h-10 items-center justify-center gap-2 px-2 text-[11px] font-bold text-muted sm:col-auto sm:mr-auto">
+          <span class="col-span-2 inline-flex min-h-10 items-center justify-center gap-2 px-2 text-xs font-bold text-muted sm:col-auto sm:mr-auto">
             <CinematicIcon name="shield-check" class="size-3.5 text-success" />
             فقط با دعوت
           </span>
@@ -479,12 +479,12 @@ useSeoMeta({
             :key="item.step"
             class="flex items-start gap-2.5 rounded-xl bg-elevated/70 px-3 py-2.5 ring-1 ring-line"
           >
-            <span class="grid size-7 shrink-0 place-items-center rounded-lg bg-primary-500/15 text-[11px] font-black text-brand">
+            <span class="grid size-7 shrink-0 place-items-center rounded-lg bg-primary-500/15 text-xs font-black text-brand">
               {{ item.step }}
             </span>
             <span class="min-w-0">
               <span class="block text-xs font-black text-ink">{{ item.title }}</span>
-              <span class="mt-0.5 block text-[11px] text-muted">{{ item.hint }}</span>
+              <span class="mt-0.5 block text-xs text-muted">{{ item.hint }}</span>
             </span>
           </li>
         </ol>
@@ -496,7 +496,7 @@ useSeoMeta({
         <div class="pointer-events-none absolute -left-12 -top-16 size-40 rounded-full bg-info/10 blur-3xl" aria-hidden="true" />
         <div class="flex flex-wrap items-end justify-between gap-3">
           <div>
-            <p class="inline-flex items-center gap-1.5 text-[11px] font-black text-info">
+            <p class="inline-flex items-center gap-1.5 text-xs font-black text-info">
               <CinematicIcon name="login" class="size-3.5" />
               لینک داری؟
             </p>
@@ -529,7 +529,7 @@ useSeoMeta({
             ورود
           </button>
         </form>
-        <p v-if="joinError" id="party-join-error" class="mt-2 text-[11px] font-bold text-error" role="alert">{{ joinError }}</p>
+        <p v-if="joinError" id="party-join-error" class="mt-2 text-xs font-bold text-error" role="alert">{{ joinError }}</p>
       </div>
     </section>
 
@@ -560,7 +560,7 @@ useSeoMeta({
               </div>
             </div>
             <div class="min-w-0 flex-1">
-              <p class="text-[11px] font-black text-brand">آماده ساخت اتاق</p>
+              <p class="text-xs font-black text-brand">آماده ساخت اتاق</p>
               <h2 id="party-prefill-title" class="mt-1 truncate text-lg font-black" dir="auto">
                 {{ prefilledItem.title }}
               </h2>
@@ -616,7 +616,7 @@ useSeoMeta({
           </div>
           <div class="p-3">
             <p class="truncate text-sm font-black">{{ item.title }}</p>
-            <p class="mt-1 text-[11px] text-muted">ساخت اتاق · {{ item.progress_percent }}٪</p>
+            <p class="mt-1 text-xs text-muted">ساخت اتاق · {{ item.progress_percent }}٪</p>
           </div>
         </button>
       </div>
@@ -674,7 +674,7 @@ useSeoMeta({
           <CinematicIcon name="x" class="size-4" />
         </button>
       </label>
-      <div class="mb-6 flex min-h-6 items-center justify-between gap-3 px-1 text-[11px]" aria-live="polite">
+      <div class="mb-6 flex min-h-6 items-center justify-between gap-3 px-1 text-xs" aria-live="polite">
         <p :class="searchError ? 'text-warning' : 'text-muted'">{{ searchError || searchStatus }}</p>
         <span v-if="searchPending" class="size-3.5 shrink-0 animate-spin rounded-full border border-line border-t-primary-500" />
       </div>
@@ -738,7 +738,7 @@ useSeoMeta({
             />
           </NuxtLink>
           <div class="flex flex-1 flex-col p-3">
-            <p class="text-[10px] font-black text-primary-400">
+            <p class="text-[11px] font-black text-primary-400">
               {{ item.type === 'movie'
                 ? 'فیلم'
                 : item.episodes?.length
@@ -746,11 +746,11 @@ useSeoMeta({
                   : 'سریال · انتخاب قسمت' }}
             </p>
             <h3 class="mt-1 truncate text-sm font-black">{{ item.title }}</h3>
-            <p class="mt-1 text-[11px] text-muted">{{ item.year }} · {{ item.age_rating }}</p>
+            <p class="mt-1 text-xs text-muted">{{ item.year }} · {{ item.age_rating }}</p>
             <button
               type="button"
               :disabled="creatingId !== null && creatingId !== item.id"
-              class="party-hub-btn party-hub-btn--create mt-3 w-full text-[11px]"
+              class="party-hub-btn party-hub-btn--create mt-3 w-full text-xs"
               @click="handleSelect(item)"
             >
               <span
@@ -794,7 +794,7 @@ useSeoMeta({
         >
           <header class="flex items-center justify-between gap-3 border-b border-line p-4">
             <div class="min-w-0">
-              <p class="text-[11px] font-bold text-muted">انتخاب قسمت</p>
+              <p class="text-xs font-bold text-muted">انتخاب قسمت</p>
               <h3 class="truncate text-base font-black">{{ selectedSeries.title }}</h3>
             </div>
             <button type="button" class="grid size-11 place-items-center rounded-xl hover:bg-elevated" aria-label="بستن" @click="closeSeriesPicker">
@@ -812,7 +812,7 @@ useSeoMeta({
             >
               <span class="min-w-0">
                 <span class="block text-sm font-black">قسمت {{ episode.episode_number }} · فصل {{ episode.season_number || 1 }}</span>
-                <span class="mt-0.5 block truncate text-[11px] text-muted">{{ episode.title }}</span>
+                <span class="mt-0.5 block truncate text-xs text-muted">{{ episode.title }}</span>
               </span>
               <span class="inline-flex shrink-0 items-center gap-1 text-xs font-black text-primary-300">
                 ساخت اتاق

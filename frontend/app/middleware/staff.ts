@@ -7,7 +7,8 @@ export default defineNuxtRouteMiddleware(async (to) => {
   if (!authStore.user) {
     try {
       await authStore.fetchMe()
-    } catch {
+    }
+    catch {
       throw createError({ statusCode: 503, message: 'بررسی دسترسی ادمین ممکن نشد.' })
     }
   }

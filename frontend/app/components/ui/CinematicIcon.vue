@@ -17,6 +17,7 @@ import Brain from '~icons/lucide/brain'
 import BrainCircuit from '~icons/lucide/brain-circuit'
 import Calendar from '~icons/lucide/calendar-days'
 import Captions from '~icons/lucide/captions'
+import CaptionsOff from '~icons/lucide/captions-off'
 import Check from '~icons/lucide/check'
 import CheckCircle from '~icons/lucide/circle-check'
 import ChevronDown from '~icons/lucide/chevron-down'
@@ -34,7 +35,9 @@ import Eye from '~icons/lucide/eye'
 import EyeOff from '~icons/lucide/eye-off'
 import FastForward from '~icons/lucide/fast-forward'
 import Feather from '~icons/lucide/feather'
+import FileWarning from '~icons/lucide/file-warning'
 import Film from '~icons/lucide/film'
+import Flag from '~icons/lucide/flag'
 import Gauge from '~icons/lucide/gauge'
 import Maximize from '~icons/lucide/maximize'
 import Minimize from '~icons/lucide/minimize'
@@ -51,6 +54,7 @@ import History from '~icons/lucide/history'
 import Home from '~icons/lucide/house'
 import ImageOff from '~icons/lucide/image-off'
 import Info from '~icons/lucide/info'
+import Loader from '~icons/lucide/loader'
 import Language from '~icons/lucide/languages'
 import Layers from '~icons/lucide/layers-3'
 import Leaf from '~icons/lucide/leaf'
@@ -69,6 +73,7 @@ import Puzzle from '~icons/lucide/puzzle'
 import Refresh from '~icons/lucide/rotate-cw'
 import Rocket from '~icons/lucide/rocket'
 import Search from '~icons/lucide/search'
+import Send from '~icons/lucide/send'
 import Investigate from '~icons/lucide/scan-search'
 import Settings from '~icons/lucide/settings-2'
 import Share from '~icons/lucide/share-2'
@@ -81,12 +86,14 @@ import Sparkles from '~icons/lucide/sparkles'
 import Star from '~icons/lucide/star'
 import Tag from '~icons/lucide/tag'
 import TrendingUp from '~icons/lucide/trending-up'
+import Trophy from '~icons/lucide/trophy'
 import Trash from '~icons/lucide/trash-2'
 import User from '~icons/lucide/user-round'
 import UserPlus from '~icons/lucide/user-round-plus'
 import Users from '~icons/lucide/users-round'
 import Volume1 from '~icons/lucide/volume-1'
 import Volume2 from '~icons/lucide/volume-2'
+import VolumeOff from '~icons/lucide/volume-off'
 import VolumeX from '~icons/lucide/volume-x'
 import Wand from '~icons/lucide/wand-sparkles'
 import X from '~icons/lucide/x'
@@ -120,6 +127,7 @@ const iconComponents: Record<CinematicIconName, Component> = {
   'calendar': Calendar,
   'calm': Leaf,
   'captions': Captions,
+  'captions-off': CaptionsOff,
   'check': Check,
   'check-circle': CheckCircle,
   'chevron-down': ChevronDown,
@@ -138,7 +146,9 @@ const iconComponents: Record<CinematicIconName, Component> = {
   'eye-off': EyeOff,
   'family': Users,
   'fast-forward': FastForward,
+  'file-warning': FileWarning,
   'film': Film,
+  'flag': Flag,
   'gauge': Gauge,
   'globe': Globe,
   'grid': Grid,
@@ -152,6 +162,7 @@ const iconComponents: Record<CinematicIconName, Component> = {
   'layers': Layers,
   'light': Feather,
   'list-video': ListVideo,
+  'loader': Loader,
   'lock': Lock,
   'login': Login,
   'logout': Logout,
@@ -178,6 +189,7 @@ const iconComponents: Record<CinematicIconName, Component> = {
   'rocket': Rocket,
   'scary': Ghost,
   'search': Search,
+  'send': Send,
   'series': ListVideo,
   'settings': Settings,
   'share': Share,
@@ -194,12 +206,14 @@ const iconComponents: Record<CinematicIconName, Component> = {
   'thoughtful': Brain,
   'trailer': Clapperboard,
   'trash': Trash,
+  'trophy': Trophy,
   'trend': TrendingUp,
   'user': User,
   'user-plus': UserPlus,
   'users': Users,
   'volume': Volume2,
   'volume-1': Volume1,
+  'volume-off': VolumeOff,
   'volume-x': VolumeX,
   'wand': Wand,
   'x': X,

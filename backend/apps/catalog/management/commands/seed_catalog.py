@@ -17,6 +17,28 @@ class Command(BaseCommand):
         # Persist only an object key.  The configured media CDN is applied by
         # serializers and playback payloads at response time.
         stream_url = 'movies/demo/hls/master.m3u8'
+
+        # ``Movie.save``/``Series.save`` derive ``has_subtitle``/``is_dubbed``
+        # from download links + subtitle tracks, so seeded titles must carry
+        # matching links or the badges they declare are silently dropped.
+        def demo_links(*, dubbed=False):
+            links = [{
+                'kind': 'softsub',
+                'quality': '1080p WEB-DL',
+                'label': 'زیرنویس نرم',
+                'url': 'https://cdn.example.test/demo/1080p.SoftSub.mkv',
+                'source': 'seed',
+            }]
+            if dubbed:
+                links.append({
+                    'kind': 'dubbed',
+                    'quality': '720p WEB-DL',
+                    'label': 'دوبله فارسی',
+                    'url': 'https://cdn.example.test/demo/720p.Dubbed.mkv',
+                    'source': 'seed',
+                })
+            return links
+
         genres = {
             slug: Genre.objects.update_or_create(
                 slug=slug,
@@ -55,6 +77,7 @@ class Command(BaseCommand):
                 'video_url': stream_url,
                 'trailer_url': stream_url,
                 'has_subtitle': True,
+                'download_links': demo_links(),
                 'is_uncensored': True,
                 'content_warnings': ['Strong violence', 'Intense situations'],
                 'is_published': True,
@@ -73,6 +96,7 @@ class Command(BaseCommand):
                 'trailer_url': stream_url,
                 'is_dubbed': True,
                 'has_subtitle': True,
+                'download_links': demo_links(dubbed=True),
                 'content_warnings': ['Flashing lights'],
                 'is_published': True,
                 'is_featured': True,
@@ -89,6 +113,7 @@ class Command(BaseCommand):
                 'video_url': stream_url,
                 'trailer_url': stream_url,
                 'has_subtitle': True,
+                'download_links': demo_links(),
                 'is_uncensored': True,
                 'content_warnings': ['Strong violence', 'Substance use'],
                 'is_published': True,
@@ -119,6 +144,7 @@ class Command(BaseCommand):
                 'imdb_rating': 8.4,
                 'trailer_url': stream_url,
                 'has_subtitle': True,
+                'download_links': demo_links(),
                 'is_uncensored': True,
                 'content_warnings': ['Strong violence', 'Cybercrime themes'],
                 'is_published': True,
@@ -142,6 +168,7 @@ class Command(BaseCommand):
                 'trailer_url': stream_url,
                 'is_dubbed': True,
                 'has_subtitle': True,
+                'download_links': demo_links(dubbed=True),
                 'content_warnings': ['Strong violence', 'Post-disaster themes'],
                 'is_published': True,
                 'genres': [sci_fi, drama, action],

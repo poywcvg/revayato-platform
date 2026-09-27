@@ -19,6 +19,17 @@ export interface PlaybackTextTrack {
   source_priority?: number
   /** exact-source, release-match, or title-fallback. */
   sync_confidence?: string
+  /** Signature of this exact VTT version; echoed with a crowd sync vote. */
+  sync_sig?: string
+  /** Timing correction already baked into the served file (informational). */
+  sync_offset?: number
+}
+
+/** A viewer-settled subtitle timing offset reported for crowd convergence. */
+export interface SubtitleSyncFeedback {
+  trackId: string
+  offset: number
+  sig: string
 }
 
 export interface PlaybackAudioTrack {

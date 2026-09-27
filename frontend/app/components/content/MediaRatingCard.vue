@@ -97,14 +97,14 @@ a.media-rating-card:hover {
 }
 
 .media-rating-card__scale {
-  font-size: .7rem;
+  font-size: 0.75rem;
   font-weight: 700;
   color: var(--text-muted, var(--theme-text-muted));
 }
 
 .media-rating-card__meta {
   margin: 0;
-  font-size: .68rem;
+  font-size: 0.75rem;
   font-weight: 700;
   color: var(--text-secondary, var(--theme-text-secondary));
 }

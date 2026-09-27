@@ -33,6 +33,8 @@ const browseLinks = [
   { label: 'فیلم‌ها', href: '/movies', icon: 'movie' as const },
   { label: 'سریال‌ها', href: '/series', icon: 'series' as const },
   { label: 'تازه‌ها', href: '/new', icon: 'sparkles' as const },
+  { label: '۲۵۰ برتر IMDb', href: '/top250', icon: 'trophy' as const },
+  { label: 'جدول پخش', href: '/schedule', icon: 'calendar' as const },
   { label: 'کشورها', href: '/countries', icon: 'globe' as const },
 ]
 
@@ -117,7 +119,7 @@ function closeFromKeyboard() {
 
 function onNavigate(href?: string) {
   if (href) {
-    const genreMatch = href.match(/[?&]genre=([^&]+)/)
+    const genreMatch = href.match(/(?:[?&]genre=|\/genre\/)([^&/?#]+)/)
     if (genreMatch?.[1]) trackGenreClick(decodeURIComponent(genreMatch[1]))
   }
   closeMenu()
@@ -209,7 +211,7 @@ onBeforeUnmount(() => {
             <div class="header-categories__sheet-row">
               <div class="header-categories__sheet-title">
                 <span class="text-sm font-bold text-ink">دسته‌بندی‌ها</span>
-                <span class="text-[11px] text-muted">همه ژانرها، میانبر و مرور</span>
+                <span class="text-xs text-muted">همه ژانرها، میانبر و مرور</span>
               </div>
               <button
                 type="button"
@@ -279,11 +281,11 @@ onBeforeUnmount(() => {
                 <NuxtLink
                   v-for="genre in filteredGenres"
                   :key="genre.slug"
-                  :to="`/movies?genre=${encodeURIComponent(genre.slug)}`"
+                  :to="`/movies/genre/${encodeURIComponent(genre.slug)}`"
                   class="header-categories__genre"
                   :class="{ 'header-categories__genre--featured': genre.is_featured }"
                   :aria-label="`${genre.title}، ${formatGenreCount(genreTitleCount(genre))} عنوان`"
-                  @click="onNavigate(`/movies?genre=${encodeURIComponent(genre.slug)}`)"
+                  @click="onNavigate(`/movies/genre/${encodeURIComponent(genre.slug)}`)"
                 >
                   <CinematicIcon :name="genreIcon(genre.slug)" class="size-4 shrink-0 opacity-75" />
                   <span class="header-categories__genre-title truncate">{{ genre.title }}</span>
@@ -322,8 +324,8 @@ onBeforeUnmount(() => {
   border: 1px solid color-mix(in srgb, var(--theme-border) 70%, transparent);
   background: color-mix(in srgb, var(--theme-bg-elevated) 94%, #0a0a0b);
   box-shadow: 0 18px 48px rgb(0 0 0 / 38%);
-  -webkit-backdrop-filter: blur(18px) saturate(130%);
-  backdrop-filter: blur(18px) saturate(130%);
+  -webkit-backdrop-filter: blur(10px) saturate(130%);
+  backdrop-filter: blur(10px) saturate(130%);
 }
 
 .header-categories__panel--mobile {
@@ -436,7 +438,7 @@ onBeforeUnmount(() => {
   align-items: center;
   gap: 0.4rem;
   margin: 0;
-  font-size: 0.7rem;
+  font-size: 0.75rem;
   font-weight: 800;
   letter-spacing: 0.02em;
   color: var(--theme-text-muted);
@@ -449,7 +451,7 @@ onBeforeUnmount(() => {
   border-radius: 999px;
   background: rgb(255 255 255 / 7%);
   padding: 0.05rem 0.4rem;
-  font-size: 0.65rem;
+  font-size: 0.75rem;
   font-weight: 700;
   color: var(--theme-text-secondary);
 }
@@ -590,7 +592,7 @@ onBeforeUnmount(() => {
   border-radius: 999px;
   background: rgb(255 255 255 / 8%);
   padding: 0.12rem 0.45rem;
-  font-size: 0.68rem;
+  font-size: 0.75rem;
   font-weight: 700;
   color: var(--theme-text-muted);
   line-height: 1.2;

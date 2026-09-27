@@ -45,6 +45,17 @@ class Command(BaseCommand):
             action='store_true',
             help='Enqueue Celery extract tasks instead of running inline',
         )
+        parser.add_argument(
+            '--order',
+            choices=('hot', 'popularity', 'random', 'stale'),
+            default='hot',
+            help=(
+                'Sweep order: hot (default, trending this week then newest), '
+                'popularity (stored TMDB popularity), '
+                'random (fair rotation for an always-on crawler), or '
+                'stale (least-recently-updated first)'
+            ),
+        )
 
     def handle(self, *args, **options):
         limit = max(1, int(options['limit'] or 20))
@@ -56,8 +67,23 @@ class Command(BaseCommand):
         missing_only = bool(options['missing_only'])
         soft_only = bool(options.get('soft_only'))
         queue = bool(options['queue'])
+        order = str(options.get('order') or 'hot')
         do_movies = not options['series_only']
         do_series = not options['movies_only']
+
+        # Ordering strategy. ``random`` lets a permanent crawler rotate fairly
+        # across the whole catalog instead of re-probing the same popular head
+        # every round; ``stale`` favours the least-recently-touched titles.
+        def _ordered(qs):
+            if order == 'random':
+                return qs.order_by('?')
+            if order == 'stale':
+                return qs.order_by('updated_at', 'id')
+            if order == 'hot':
+                from apps.catalog.hot_titles import hot_order
+
+                return hot_order(qs)
+            return qs.order_by('-popularity', '-updated_at', '-id')
 
         def _is_soft_only(links) -> bool:
             rows = [item for item in (links or []) if isinstance(item, dict)]
@@ -72,7 +98,7 @@ class Command(BaseCommand):
         series_stats = {'processed': 0, 'extracted': 0, 'queued': 0}
 
         if do_movies:
-            qs = Movie.objects.filter(is_published=True).order_by('-popularity', '-updated_at', '-id')
+            qs = _ordered(Movie.objects.filter(is_published=True))
             for movie in qs.iterator(chunk_size=50):
                 if movie_stats['processed'] >= movie_limit:
                     break
@@ -116,6 +142,7 @@ class Command(BaseCommand):
                     timeout_seconds=timeout,
                     allow_ffmpeg=True,
                     prefer_embedded=_is_soft_only(links),
+                    snappy=False,
                 )
                 movie.refresh_from_db(fields=['subtitle_tracks', 'has_subtitle', 'is_dubbed'])
                 if changed:
@@ -128,7 +155,7 @@ class Command(BaseCommand):
                     self.stdout.write(f'skipped movie={movie.pk} {movie.title}')
 
         if do_series:
-            qs = Series.objects.filter(is_published=True).order_by('-popularity', '-updated_at', '-id')
+            qs = _ordered(Series.objects.filter(is_published=True))
             for series in qs.iterator(chunk_size=25):
                 if series_stats['processed'] >= series_limit:
                     break
@@ -181,6 +208,7 @@ class Command(BaseCommand):
                     limit=episode_limit,
                     allow_ffmpeg=True,
                     prefer_embedded=_is_soft_only(links),
+                    snappy=False,
                 )
                 series_stats['extracted'] += int(result.get('extracted') or 0)
                 self.stdout.write(

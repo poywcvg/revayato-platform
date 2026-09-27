@@ -601,7 +601,7 @@ onBeforeUnmount(() => window.clearTimeout(focusTimer))
   display: block;
   margin-bottom: 4px;
   color: var(--auth-accent);
-  font-size: .69rem;
+  font-size: 0.75rem;
   font-weight: 800;
 }
 
@@ -726,7 +726,7 @@ onBeforeUnmount(() => window.clearTimeout(focusTimer))
   justify-content: space-between;
   gap: 10px;
   color: var(--theme-text-secondary);
-  font-size: .69rem;
+  font-size: 0.75rem;
 }
 
 .auth-options a {
@@ -744,7 +744,7 @@ onBeforeUnmount(() => window.clearTimeout(focusTimer))
   gap: 8px;
   color: var(--theme-text-secondary);
   cursor: pointer;
-  font-size: .69rem;
+  font-size: 0.75rem;
   line-height: 1.6;
   user-select: none;
 }
@@ -813,7 +813,7 @@ onBeforeUnmount(() => window.clearTimeout(focusTimer))
   min-height: 19px;
   margin: -3px 0 7px;
   color: var(--theme-error);
-  font-size: .65rem;
+  font-size: 0.75rem;
   font-weight: 600;
   line-height: 1.65;
   text-align: center;
@@ -896,7 +896,7 @@ onBeforeUnmount(() => window.clearTimeout(focusTimer))
   align-items: center;
   gap: 10px;
   color: var(--theme-text-disabled);
-  font-size: .65rem;
+  font-size: 0.75rem;
 }
 
 .auth-divider::before,
@@ -953,7 +953,7 @@ onBeforeUnmount(() => window.clearTimeout(focusTimer))
   display: none;
   margin: 13px 0 0;
   color: var(--theme-text-muted);
-  font-size: .7rem;
+  font-size: 0.75rem;
   text-align: center;
 }
 
@@ -1131,7 +1131,7 @@ onBeforeUnmount(() => window.clearTimeout(focusTimer))
   display: inline-block;
   margin-bottom: 8px;
   color: rgb(255 255 255 / 66%);
-  font-size: .66rem;
+  font-size: 0.75rem;
   font-weight: 700;
 }
 
@@ -1337,7 +1337,7 @@ onBeforeUnmount(() => window.clearTimeout(focusTimer))
 
   .auth-panel-copy small {
     margin-bottom: 3px;
-    font-size: .6rem;
+    font-size: 0.75rem;
   }
 
   .auth-panel-copy h2 {
@@ -1348,7 +1348,7 @@ onBeforeUnmount(() => window.clearTimeout(focusTimer))
   .auth-panel-copy p {
     min-height: auto;
     margin: 0;
-    font-size: .67rem;
+    font-size: 0.75rem;
     line-height: 1.7;
   }
 
@@ -1361,7 +1361,7 @@ onBeforeUnmount(() => window.clearTimeout(focusTimer))
     border: 0;
     background: transparent;
     box-shadow: none;
-    font-size: .68rem;
+    font-size: 0.75rem;
     backdrop-filter: none;
   }
 
@@ -1454,7 +1454,7 @@ onBeforeUnmount(() => window.clearTimeout(focusTimer))
   }
 
   .auth-panel-copy p {
-    font-size: .62rem;
+    font-size: 0.75rem;
   }
 
   .auth-form__inner,
@@ -1464,7 +1464,7 @@ onBeforeUnmount(() => window.clearTimeout(focusTimer))
 
   .auth-options,
   .auth-check {
-    font-size: .63rem;
+    font-size: 0.75rem;
   }
 }
 

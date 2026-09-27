@@ -4,8 +4,10 @@ import type { DownloadPlayRequest } from '~/components/content/DownloadBox.vue'
 import '~/assets/css/media-detail.css'
 
 const props = defineProps<{ item: Movie }>()
+const route = useRoute()
 const modalOpen = ref(false)
-const accessModal = ref<'play' | 'download' | null>(null)
+const collectionOpen = ref(false)
+const accessModal = ref<'play' | 'download' | null>(route.query.access === 'download' ? 'download' : null)
 const requestedMode = ref<'full' | 'trailer'>('full')
 const pendingSource = ref('')
 const pendingVersion = ref('')
@@ -14,7 +16,7 @@ const { catalog } = useCatalog()
 const authStore = useAuthStore()
 const related = useRelatedMovies(() => props.item, 10)
 const { isLiked, toggleLike } = useLibrary()
-const { trackGenreClick, trackLikeAction, trackTitleView, trackPersonClick, trackTrailerPlay } = useAnalyticsEvent()
+const { trackGenreClick, trackLikeAction, trackTitleView, trackPersonClick, trackTrailerPlay, trackDownload } = useAnalyticsEvent()
 const notifications = useNotifications()
 const liked = computed(() => isLiked(props.item.id, props.item.type))
 const restricted = computed(() => props.item.age_rating === '18+')
@@ -72,7 +74,7 @@ const metaBits = computed(() => {
     bits.push({
       key: `genre-${genre.id}`,
       label: genre.title,
-      to: `${props.item.type === 'movie' ? '/movies' : '/series'}?genre=${genre.slug}`,
+      to: `${props.item.type === 'movie' ? '/movies' : '/series'}/genre/${genre.slug}`,
       onClick: () => trackGenreClick(genre.slug),
     })
   })
@@ -92,13 +94,35 @@ const detailTabs = computed(() => [
 let sectionObserver: IntersectionObserver | undefined
 
 const { api } = useApi()
-const reviews = ref<Array<{ id?: number; name: string; score: number; text: string; isSpoiler?: boolean; createdAt?: string }>>([])
+const reviews = ref<Array<{
+  id?: number
+  name: string
+  score: number
+  text: string
+  isSpoiler?: boolean
+  createdAt?: string
+  adminReply?: string
+  adminReplyBy?: string
+  adminReplyAt?: string
+  isFeatured?: boolean
+}>>([])
 const myRating = ref<import('~/types').Rating | null>(null)
 
 async function loadReviews() {
   try {
     const summary = await api<{
-      reviews?: Array<{ id: number; username: string; score: string; review: string; is_spoiler?: boolean; created_at?: string }>
+      reviews?: Array<{
+        id: number
+        username: string
+        score: string
+        review: string
+        is_spoiler?: boolean
+        created_at?: string
+        admin_reply?: string
+        admin_reply_by_name?: string
+        admin_reply_at?: string
+        is_featured?: boolean
+      }>
       my_rating?: import('~/types').Rating | null
     }>('/engagement/ratings/summary/', {
       query: { content_type: props.item.type, object_id: props.item.id },
@@ -113,6 +137,10 @@ async function loadReviews() {
         text: item.review,
         isSpoiler: Boolean(item.is_spoiler),
         createdAt: item.created_at,
+        adminReply: item.admin_reply || '',
+        adminReplyBy: item.admin_reply_by_name || '',
+        adminReplyAt: item.admin_reply_at || '',
+        isFeatured: Boolean(item.is_featured),
       }))
   } catch {
     reviews.value = []
@@ -212,6 +240,14 @@ async function shareTitle() {
   } catch {
     // User cancelled share sheet — ignore.
   }
+}
+
+function openCollectionModal() {
+  if (!authStore.isAuthenticated) {
+    void navigateTo({ path: '/auth/login', query: { redirect: route.fullPath } })
+    return
+  }
+  collectionOpen.value = true
 }
 
 function startWatchParty() {
@@ -333,6 +369,7 @@ onBeforeUnmount(() => sectionObserver?.disconnect())
             @share="shareTitle"
             @downloads="openDownloadOptions"
             @party="startWatchParty"
+            @collection="openCollectionModal"
           />
         </div>
 
@@ -410,10 +447,16 @@ onBeforeUnmount(() => sectionObserver?.disconnect())
         </div>
 
         <aside class="media-aside">
+          <RatingWidget
+            :object-id="item.id"
+            :slug="item.slug"
+            :content-type="item.type"
+          />
+
           <div class="media-panel">
             <div class="flex items-center justify-between gap-3">
               <h2 class="text-sm font-black text-[color:var(--text-primary)]">در یک نگاه</h2>
-              <span class="inline-flex items-center gap-1 text-[10px] font-black text-[color:var(--accent-success)]">
+              <span class="inline-flex items-center gap-1 text-[11px] font-black text-[color:var(--accent-success)]">
                 <span class="h-1.5 w-1.5 rounded-full bg-[color:var(--accent-success)]" />
                 منتشر شده
               </span>
@@ -451,7 +494,7 @@ onBeforeUnmount(() => sectionObserver?.disconnect())
                   </button>
                 </dd>
               </div>
-              <div class="flex items-start justify-between gap-4 py-3">
+              <div v-if="item.age_rating" class="flex items-start justify-between gap-4 py-3">
                 <dt class="text-[color:var(--text-muted)]">رده سنی</dt>
                 <dd><AgeRatingBadge :rating="item.age_rating" /></dd>
               </div>
@@ -476,14 +519,6 @@ onBeforeUnmount(() => sectionObserver?.disconnect())
             </dl>
           </div>
 
-          <div class="media-panel">
-            <RatingWidget
-              :object-id="item.id"
-              :slug="item.slug"
-              :content-type="item.type"
-            />
-          </div>
-
           <div v-if="canWatchOnline" class="media-aside__cta hidden lg:block">
             <CinematicIcon name="resume" class="size-8" />
             <h2>آماده تماشا هستی؟</h2>
@@ -503,7 +538,7 @@ onBeforeUnmount(() => sectionObserver?.disconnect())
           :title="`بیشتر از ژانر ${primaryGenre?.title}`"
           eyebrow="در همان حال‌وهوا"
           :items="sameGenreTitles"
-          :href="`/${item.type === 'movie' ? 'movies' : 'series'}?genre=${primaryGenre?.slug}`"
+          :href="`/${item.type === 'movie' ? 'movies' : 'series'}/genre/${primaryGenre?.slug}`"
         />
         <LazyMovieRow
           v-if="related.length"
@@ -512,6 +547,11 @@ onBeforeUnmount(() => sectionObserver?.disconnect())
           title="آثار مشابه"
           eyebrow="انتخاب‌های نزدیک به این عنوان"
           :items="related"
+        />
+        <CollectionInCollections
+          :content-type="item.type"
+          :object-id="item.id"
+          :title="item.title"
         />
       </div>
       <div class="h-10" />
@@ -527,6 +567,14 @@ onBeforeUnmount(() => sectionObserver?.disconnect())
     :accent-style="styleVars"
     @close="accessModal = null"
     @play="playSelectedVersion"
+    @download="quality => trackDownload(item, quality)"
   />
   <ConfirmAdultContentModal :open="modalOpen" :title="item.title" @close="modalOpen = false" @confirm="confirmPlay" />
+  <CollectionAddModal
+    :open="collectionOpen"
+    :content-type="item.type"
+    :object-id="item.id"
+    :title="item.title"
+    @close="collectionOpen = false"
+  />
 </template>

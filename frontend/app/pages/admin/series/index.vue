@@ -1,278 +1,220 @@
 <script setup lang="ts">
-import Plus from '~icons/lucide/plus'
-import Refresh from '~icons/lucide/rotate-cw'
-import Search from '~icons/lucide/search'
+import type { AdminSeries, AdminSeriesListResponse } from '~/types/admin'
 import Tv from '~icons/lucide/tv'
-import type { AdminGenre, AdminSeries, AdminSeriesFilters, AdminSeriesListResponse, AppErrorDetails, TMDBImportResponse } from '~/types'
+import Search from '~icons/lucide/search'
+import Star from '~icons/lucide/star'
+import Eye from '~icons/lucide/eye'
+import EyeOff from '~icons/lucide/eye-off'
+import Archive from '~icons/lucide/archive'
+import ExternalLink from '~icons/lucide/external-link'
+import Pencil from '~icons/lucide/pencil'
+import ChevronRight from '~icons/lucide/chevron-right'
+import ChevronLeft from '~icons/lucide/chevron-left'
 
-definePageMeta({ layout: 'admin', middleware: ['staff'] })
-useSeoMeta({ title: 'مدیریت سریال‌ها', robots: 'noindex, nofollow' })
+definePageMeta({ layout: 'admin', middleware: 'staff' })
+useSeoMeta({ title: 'مدیریت سریال‌ها — روایتو' })
 
-const route = useRoute()
-const adminApi = useAdminSeries()
-const notifications = useNotifications()
-const seriesList = ref<AdminSeries[]>([])
-const genres = ref<AdminGenre[]>([])
-const total = ref(0)
-const loading = ref(true)
-const actionLoading = ref(false)
-const error = ref<AppErrorDetails | null>(null)
-const pageSize = 20
-const {
-  filters,
-  page,
-  debouncedWatch,
-  syncQuery,
-  clearFilters,
-} = useDebouncedFilters<AdminSeriesFilters>({
-  q: String(route.query.q || ''),
-  status: (route.query.status as AdminSeriesFilters['status']) || '',
-  source: (route.query.source as AdminSeriesFilters['source']) || '',
-  genre: String(route.query.genre || ''),
-  year: String(route.query.year || ''),
-  ordering: String(route.query.ordering || '-updated_at'),
-  limit: pageSize,
-  offset: 0,
-}, {
-  urlKeys: ['q', 'status', 'source', 'genre', 'year', 'ordering'],
+const { api } = useApi()
+const notify = useNotifications()
+
+const PAGE_SIZE = 20
+const q = ref('')
+const qDebounced = ref('')
+const statusFilter = ref<'' | 'published' | 'draft'>('')
+const offset = ref(0)
+
+let searchTimer: ReturnType<typeof setTimeout> | null = null
+watch(q, (val) => {
+  if (searchTimer) clearTimeout(searchTimer)
+  searchTimer = setTimeout(() => { qDebounced.value = val.trim(); offset.value = 0 }, 350)
 })
-const filterDefaults: Partial<AdminSeriesFilters> = {
-  q: '', status: '', source: '', genre: '', year: '',
-  ordering: '-updated_at',
+watch(statusFilter, () => { offset.value = 0 })
+
+const STATUS_OPTIONS: { value: '' | 'published' | 'draft', label: string }[] = [
+  { value: '', label: 'همه وضعیت‌ها' },
+  { value: 'published', label: 'منتشر شده' },
+  { value: 'draft', label: 'پیش‌نویس' },
+]
+
+const { data, pending, error, refresh } = await useAsyncData(
+  'admin-series',
+  () => api<AdminSeriesListResponse>('/admin/series/', {
+    query: {
+      q: qDebounced.value || undefined,
+      status: statusFilter.value || undefined,
+      limit: PAGE_SIZE,
+      offset: offset.value,
+    },
+  }),
+  { watch: [qDebounced, statusFilter, offset] },
+)
+
+const rows = computed(() => data.value?.results ?? [])
+const total = computed(() => data.value?.count ?? 0)
+const from = computed(() => (total.value === 0 ? 0 : offset.value + 1))
+const to = computed(() => Math.min(offset.value + PAGE_SIZE, total.value))
+
+const busy = ref<Record<number, boolean>>({})
+const fa = (n: number | null | undefined) => (n ?? 0).toLocaleString('fa-IR')
+
+// ----- Bulk selection ----------------------------------------------------- //
+// Scoped to the visible page — see the note on the films list.
+const selected = ref<number[]>([])
+watch([qDebounced, statusFilter, offset], () => { selected.value = [] })
+
+const allSelected = computed(() => rows.value.length > 0 && selected.value.length === rows.value.length)
+function toggleAll() {
+  selected.value = allSelected.value ? [] : rows.value.map(series => series.id)
+}
+function toggleOne(id: number) {
+  selected.value = selected.value.includes(id)
+    ? selected.value.filter(value => value !== id)
+    : [...selected.value, id]
+}
+async function afterBulk() {
+  await refresh()
+  selected.value = []
 }
 
-const hasActiveFilters = computed(() => Boolean(filters.q || filters.status || filters.source || filters.genre || filters.year))
+const SERIES_STATUS_LABEL: Record<string, string> = {
+  ongoing: 'در حال پخش',
+  ended: 'پایان‌یافته',
+  upcoming: 'به‌زودی',
+  cancelled: 'لغو شده',
+  on_hold: 'متوقف',
+}
 
-const selectClass = 'admin-focus h-11 w-full min-w-0 rounded-xl border border-[var(--admin-border)] bg-white px-3 text-xs font-bold outline-none focus:border-[var(--admin-accent)]'
-
-async function loadSeries() {
-  loading.value = true
-  error.value = null
-  filters.offset = (page.value - 1) * pageSize
+async function patchSeries(series: AdminSeries, payload: Record<string, unknown>, okMsg: string) {
+  busy.value = { ...busy.value, [series.id]: true }
   try {
-    const response: AdminSeriesListResponse = await adminApi.list(filters)
-    seriesList.value = response.results
-    total.value = response.count
-  } catch (cause) {
-    error.value = getAppError(cause, 'فهرست سریال‌ها دریافت نشد.')
-  } finally {
-    loading.value = false
+    await api(`/admin/series/${series.id}/`, { method: 'PATCH', body: payload })
+    notify.success('انجام شد', okMsg)
+    await refresh()
   }
+  catch { notify.error('خطا', 'عملیات ناموفق بود') }
+  finally { busy.value = { ...busy.value, [series.id]: false } }
 }
 
-async function loadMeta() {
+function togglePublish(series: AdminSeries) {
+  patchSeries(series, { is_published: !series.is_published }, series.is_published ? 'به پیش‌نویس منتقل شد' : 'منتشر شد')
+}
+function toggleFeatured(series: AdminSeries) {
+  patchSeries(series, { is_featured: !series.is_featured }, series.is_featured ? 'از ویژه‌ها حذف شد' : 'به ویژه‌ها افزوده شد')
+}
+async function archiveSeries(series: AdminSeries) {
+  if (!window.confirm(`«${series.title}» بایگانی شود؟`)) return
+  busy.value = { ...busy.value, [series.id]: true }
   try {
-    genres.value = await adminApi.genres()
-  } catch {
-    genres.value = []
+    await api(`/admin/series/${series.id}/`, { method: 'DELETE' })
+    notify.success('انجام شد', 'بایگانی شد')
+    await refresh()
   }
+  catch { notify.error('خطا', 'عملیات ناموفق بود') }
+  finally { busy.value = { ...busy.value, [series.id]: false } }
 }
-
-debouncedWatch(() => {
-  syncQuery()
-  void loadSeries()
-}, [() => filters.status, () => filters.source, () => filters.genre, () => filters.year, () => filters.ordering])
-
-watch(page, () => {
-  syncQuery()
-  void loadSeries()
-})
-
-async function setPublished(item: AdminSeries, is_published: boolean) {
-  actionLoading.value = true
-  try {
-    const saved = await adminApi.setPublished(item.id, is_published)
-    seriesList.value = seriesList.value.map(row => row.id === item.id ? saved : row)
-    notifications.success(is_published ? 'منتشر شد' : 'از انتشار خارج شد', item.title)
-  } catch (cause) {
-    notifications.notifyError(cause, 'تغییر وضعیت انتشار انجام نشد.')
-  } finally {
-    actionLoading.value = false
-  }
-}
-
-async function archiveItem(item: AdminSeries) {
-  actionLoading.value = true
-  try {
-    await adminApi.archive(item.id)
-    seriesList.value = seriesList.value.map(row => row.id === item.id ? { ...row, is_published: false } : row)
-    notifications.success('از سایت عمومی برداشته شد', item.title)
-  } catch (cause) {
-    notifications.notifyError(cause, 'آرشیو سریال انجام نشد.')
-  } finally {
-    actionLoading.value = false
-  }
-}
-
-const syncTarget = ref<AdminSeries | null>(null)
-const syncDryRun = ref<TMDBImportResponse | null>(null)
-const syncOverwrite = ref(false)
-const syncLoading = ref(false)
-
-async function openSync(item: AdminSeries) {
-  syncTarget.value = item
-  syncDryRun.value = null
-  syncOverwrite.value = false
-  syncLoading.value = true
-  try {
-    syncDryRun.value = await adminApi.sync(item.id, { dry_run: true, overwrite_manual: false })
-  } catch (cause) {
-    notifications.notifyError(cause, 'پیش‌نمایش همگام‌سازی آماده نشد')
-    syncTarget.value = null
-  } finally {
-    syncLoading.value = false
-  }
-}
-
-async function confirmSync() {
-  if (!syncTarget.value) return
-  syncLoading.value = true
-  try {
-    await adminApi.sync(syncTarget.value.id, { overwrite_manual: syncOverwrite.value })
-    notifications.success('همگام‌سازی کامل شد', 'اطلاعات TMDB با موفقیت به‌روزرسانی شد.')
-    syncTarget.value = null
-    await loadSeries()
-  } catch (cause) {
-    notifications.notifyError(cause, 'همگام‌سازی انجام نشد')
-  } finally {
-    syncLoading.value = false
-  }
-}
-
-onMounted(async () => {
-  await Promise.all([loadMeta(), loadSeries()])
-})
 </script>
 
 <template>
-  <div class="space-y-5 px-4 py-5 sm:px-6 sm:py-7 lg:px-8 lg:py-9">
-    <header class="flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
-      <div>
-        <p class="text-xs font-bold text-[var(--admin-muted)]">کاتالوگ</p>
-        <h1 class="mt-1 flex items-center gap-2 text-2xl font-black">
-          <Tv class="size-6 text-[var(--admin-primary)]" />
-          مدیریت سریال‌ها
-        </h1>
-        <p class="mt-1 text-xs text-[var(--admin-muted)]">لینک دانلود، دوبله و زیرنویس سریال‌ها را با سایت عمومی همگام کنید.</p>
-      </div>
-      <div class="flex flex-wrap gap-2">
-        <AdminButton variant="secondary" :disabled="loading" @click="loadSeries">
-          <template #icon><Refresh class="size-4" :class="loading && 'animate-spin'" /></template>
-          نوسازی
-        </AdminButton>
-        <AdminButton to="/admin/series/new">
-          <template #icon><Plus class="size-4" /></template>
-          افزودن سریال
-        </AdminButton>
-      </div>
-    </header>
+  <div class="space-y-6">
+    <div>
+      <h1 class="text-xl font-black text-[var(--rv-text)] sm:text-2xl">سریال‌ها</h1>
+      <p class="mt-1 text-xs font-semibold text-[var(--rv-muted)]">{{ fa(total) }} عنوان در کتابخانه</p>
+    </div>
 
-    <AdminCard class="p-4">
-      <div class="grid gap-3 md:grid-cols-2 xl:grid-cols-5">
-        <div class="relative xl:col-span-2">
-          <Search class="pointer-events-none absolute top-1/2 right-3 size-4 -translate-y-1/2 text-[var(--admin-muted)]" />
-          <input v-model="filters.q" class="admin-focus h-11 w-full rounded-xl border border-[var(--admin-border)] bg-white pr-10 pl-3 text-sm" placeholder="عنوان، IMDb یا TMDB…">
-        </div>
-        <select v-model="filters.status" :class="selectClass">
-          <option value="">همه وضعیت‌ها</option>
-          <option value="published">منتشرشده</option>
-          <option value="draft">پیش‌نویس</option>
-        </select>
-        <select v-model="filters.source" :class="selectClass">
-          <option value="">همه منابع</option>
-          <option value="tmdb">TMDB</option>
-          <option value="manual">دستی</option>
-        </select>
-        <select v-model="filters.genre" :class="selectClass">
-          <option value="">همه ژانرها</option>
-          <option v-for="genre in genres" :key="genre.id" :value="genre.slug">{{ genre.title }}</option>
-        </select>
-        <button
-          v-if="hasActiveFilters"
-          type="button"
-          class="admin-focus inline-flex min-h-11 items-center self-end rounded-lg px-2 text-xs font-bold text-[var(--admin-accent)] hover:underline"
-          @click="clearFilters(filterDefaults)"
-        >
-          پاک کردن فیلترها
-        </button>
+    <div class="flex flex-wrap items-center gap-3">
+      <div class="relative min-w-[200px] flex-1">
+        <Search class="pointer-events-none absolute right-3 top-1/2 size-4 -translate-y-1/2 text-[var(--rv-faint)]" />
+        <input v-model="q" type="search" placeholder="جستجوی عنوان، IMDb یا TMDb…" class="rv-input !pr-9">
       </div>
-    </AdminCard>
+      <select v-model="statusFilter" class="rv-input !w-auto">
+        <option v-for="o in STATUS_OPTIONS" :key="o.value" :value="o.value">{{ o.label }}</option>
+      </select>
+    </div>
 
-    <UiErrorAlert v-if="error" :error="error" @close="error = null" />
+    <RvPanel :icon="Tv" :padded="false">
+      <template #actions>
+        <span v-if="total" class="text-xs font-bold text-[var(--rv-muted)]">{{ fa(from) }}–{{ fa(to) }} از {{ fa(total) }}</span>
+      </template>
 
-    <AdminCard class="overflow-hidden">
-      <div v-if="loading" class="space-y-3 p-4">
-        <div v-for="n in 6" :key="n" class="h-14 animate-pulse rounded-xl bg-[var(--admin-surface-muted)]" />
-      </div>
-      <AdminState
-        v-else-if="!seriesList.length"
-        kind="empty"
-        :title="hasActiveFilters ? 'سریالی با این فیلتر پیدا نشد' : 'هنوز سریالی ثبت نشده است'"
-        message="از TMDB یا فرم دستی سریال اضافه کنید."
-      />
-      <div v-else class="responsive-table">
-        <table class="min-w-[760px] text-sm">
-          <thead class="bg-[var(--admin-surface-muted)]/60 text-xs text-[var(--admin-muted)]">
+      <RvState v-if="error" kind="error" title="خطا در دریافت فهرست" @retry="refresh()" />
+      <RvState v-else-if="!pending && rows.length === 0" title="سریالی یافت نشد" message="با فیلترهای دیگری امتحان کنید." />
+
+      <div v-else class="overflow-x-auto">
+        <table class="rv-table">
+          <thead>
             <tr>
-              <th class="px-4 py-3 text-right font-bold">سریال</th>
-              <th class="px-4 py-3 text-right font-bold">سال</th>
-              <th class="px-4 py-3 text-right font-bold">نسخه</th>
-              <th class="px-4 py-3 text-right font-bold">وضعیت</th>
-              <th class="px-4 py-3 text-right font-bold">عملیات</th>
+              <th class="w-10">
+                <input
+                  type="checkbox" class="rv-focus size-4 accent-[var(--rv-accent)]"
+                  :checked="allSelected" aria-label="انتخاب همهٔ ردیف‌های این صفحه" @change="toggleAll"
+                >
+              </th>
+              <th>عنوان</th>
+              <th>سال</th>
+              <th>وضعیت پخش</th>
+              <th>انتشار</th>
+              <th class="text-center">اقدامات</th>
             </tr>
           </thead>
           <tbody>
-            <tr v-for="item in seriesList" :key="item.id" class="border-t border-[var(--admin-border)]">
-              <td class="px-4 py-3">
+            <template v-if="pending && rows.length === 0">
+              <tr v-for="i in 8" :key="`sk${i}`">
+                <td colspan="6"><div class="rv-skeleton h-9 w-full" /></td>
+              </tr>
+            </template>
+            <tr v-for="series in rows" :key="series.id">
+              <td>
+                <input
+                  type="checkbox" class="rv-focus size-4 accent-[var(--rv-accent)]"
+                  :checked="selected.includes(series.id)" :aria-label="`انتخاب ${series.title}`"
+                  @change="toggleOne(series.id)"
+                >
+              </td>
+              <td>
                 <div class="flex items-center gap-3">
-                  <img v-if="item.poster_url" :src="item.poster_url" alt="" class="h-14 w-10 rounded-lg object-cover">
+                  <div class="h-14 w-10 shrink-0 overflow-hidden rounded-md bg-[var(--rv-surface-3)]">
+                    <img v-if="series.poster_url" :src="series.poster_url" :alt="series.title" class="size-full object-cover" loading="lazy">
+                  </div>
                   <div class="min-w-0">
-                    <NuxtLink :to="`/admin/series/${item.id}/edit`" class="block truncate font-black hover:text-[var(--admin-primary)]">{{ item.title }}</NuxtLink>
-                    <p class="truncate text-xs text-[var(--admin-muted)]">{{ item.original_title || item.slug }}</p>
+                    <NuxtLink :to="`/admin/series/${series.id}`" class="rv-focus block truncate font-bold text-[var(--rv-text)] hover:text-[var(--rv-accent)]">
+                      {{ series.title }}
+                    </NuxtLink>
+                    <p v-if="series.original_title && series.original_title !== series.title" class="truncate text-xs text-[var(--rv-faint)]" dir="ltr">{{ series.original_title }}</p>
                   </div>
                 </div>
               </td>
-              <td class="px-4 py-3 tabular-nums">{{ item.start_year || '—' }}</td>
-              <td class="px-4 py-3">
-                <div class="flex flex-wrap gap-1">
-                  <span v-if="item.is_dubbed" class="rounded-md bg-emerald-50 px-1.5 py-0.5 text-[10px] font-black text-emerald-800">دوبله</span>
-                  <span v-if="item.has_subtitle" class="rounded-md bg-sky-50 px-1.5 py-0.5 text-[10px] font-black text-sky-800">زیرنویس</span>
-                  <span v-if="!item.is_dubbed && !item.has_subtitle" class="text-xs text-[var(--admin-muted)]">—</span>
-                </div>
-              </td>
-              <td class="px-4 py-3">
-                <span class="rounded-lg px-2 py-1 text-[10px] font-black" :class="item.is_published ? 'bg-emerald-50 text-emerald-800' : 'bg-amber-50 text-amber-800'">
-                  {{ item.is_published ? 'منتشرشده' : 'پیش‌نویس' }}
-                </span>
-              </td>
-              <td class="px-4 py-3">
-                <div class="flex flex-wrap gap-1.5">
-                  <NuxtLink :to="`/admin/series/${item.id}/edit`" class="admin-focus inline-flex min-h-11 items-center rounded-lg bg-[var(--admin-surface-muted)] px-2.5 py-1.5 text-[11px] font-bold">ویرایش</NuxtLink>
+              <td class="tabular-nums text-[var(--rv-muted)]">{{ series.start_year ? fa(series.start_year) : '—' }}</td>
+              <td><RvBadge tone="info">{{ SERIES_STATUS_LABEL[series.status] ?? series.status }}</RvBadge></td>
+              <td><RvBadge :tone="series.is_published ? 'success' : 'warning'" dot>{{ series.is_published ? 'منتشر شده' : 'پیش‌نویس' }}</RvBadge></td>
+              <td>
+                <div class="flex items-center justify-center gap-1">
                   <button
-                    v-if="item.tmdb_id"
-                    type="button"
-                    class="admin-focus min-h-11 rounded-lg bg-teal-50 px-2.5 py-1.5 text-[11px] font-bold text-teal-800 disabled:opacity-40"
-                    :disabled="actionLoading"
-                    @click="openSync(item)"
+                    type="button" class="rv-icon-btn rv-focus" :disabled="busy[series.id]"
+                    :title="series.is_featured ? 'حذف از ویژه‌ها' : 'افزودن به ویژه‌ها'"
+                    :style="series.is_featured ? { color: 'var(--rv-warning)' } : {}"
+                    @click="toggleFeatured(series)"
                   >
-                    همگام‌سازی
+                    <Star class="size-4" :fill="series.is_featured ? 'currentColor' : 'none'" />
                   </button>
                   <button
-                    type="button"
-                    class="admin-focus min-h-11 rounded-lg px-2.5 py-1.5 text-[11px] font-bold disabled:opacity-40"
-                    :class="item.is_published ? 'bg-amber-50 text-amber-800' : 'bg-emerald-50 text-emerald-800'"
-                    :disabled="actionLoading"
-                    @click="setPublished(item, !item.is_published)"
+                    type="button" class="rv-icon-btn rv-focus" :disabled="busy[series.id]"
+                    :title="series.is_published ? 'به پیش‌نویس' : 'انتشار'"
+                    @click="togglePublish(series)"
                   >
-                    {{ item.is_published ? 'لغو انتشار' : 'انتشار' }}
+                    <component :is="series.is_published ? EyeOff : Eye" class="size-4" />
                   </button>
+                  <NuxtLink :to="`/admin/series/${series.id}`" class="rv-icon-btn rv-focus" title="ویرایش">
+                    <Pencil class="size-4" />
+                  </NuxtLink>
+                  <NuxtLink :to="`/series/${series.slug}`" target="_blank" class="rv-icon-btn rv-focus" title="مشاهده در سایت">
+                    <ExternalLink class="size-4" />
+                  </NuxtLink>
                   <button
-                    type="button"
-                    class="admin-focus min-h-11 rounded-lg bg-red-50 px-2.5 py-1.5 text-[11px] font-bold text-[var(--admin-danger)] disabled:opacity-40"
-                    :disabled="actionLoading || !item.is_published"
-                    @click="archiveItem(item)"
+                    v-if="series.is_published"
+                    type="button" class="rv-icon-btn rv-icon-btn--danger rv-focus" :disabled="busy[series.id]"
+                    title="بایگانی" @click="archiveSeries(series)"
                   >
-                    حذف از سایت
+                    <Archive class="size-4" />
                   </button>
                 </div>
               </td>
@@ -281,45 +223,17 @@ onMounted(async () => {
         </table>
       </div>
 
-      <AdminPagination
-        :page="page"
-        :total="total"
-        :page-size="pageSize"
-        :loading="loading"
-        @update:page="page = $event"
-      />
-    </AdminCard>
-
-    <AdminModal
-      :open="Boolean(syncTarget)"
-      title="همگام‌سازی با TMDB"
-      :description="`اطلاعات «${syncTarget?.title || ''}» ابتدا به‌صورت dry-run بررسی شده است.`"
-      size="sm"
-      :closeable="!syncLoading"
-      @close="syncTarget = null"
-    >
-      <div class="p-6">
-        <div v-if="syncLoading && !syncDryRun" class="py-8 text-center text-sm text-[var(--admin-muted)]">در حال بررسی تغییرات…</div>
-        <template v-else>
-          <div class="rounded-2xl border border-emerald-200 bg-emerald-50 p-4 text-xs leading-6 text-emerald-900">
-            <strong class="block text-sm">اطلاعات دستی محافظت می‌شود</strong>
-            {{ (syncDryRun?.skipped_manual_fields.length || 0).toLocaleString('fa-IR') }} فیلد دستی در این همگام‌سازی بازنویسی نخواهد شد.
-          </div>
-          <label class="mt-4 flex cursor-pointer gap-3 rounded-2xl border border-red-200 bg-red-50/60 p-4">
-            <input v-model="syncOverwrite" type="checkbox" class="mt-1 accent-[var(--admin-danger)]">
-            <span class="text-xs leading-6 text-[var(--admin-danger)]">
-              <strong class="block text-sm">بازنویسی اطلاعات دستی</strong>
-              این گزینه ممکن است اصلاحات تیم محتوا را با داده TMDB جایگزین کند.
-            </span>
-          </label>
-        </template>
+      <div v-if="total > PAGE_SIZE" class="flex items-center justify-between gap-3 border-t border-[var(--rv-border)] px-4 py-3">
+        <button type="button" class="rv-btn rv-btn--subtle rv-focus !min-h-9" :disabled="offset === 0 || pending" @click="offset = Math.max(0, offset - PAGE_SIZE)">
+          <ChevronRight class="size-4" /> قبلی
+        </button>
+        <span class="text-xs font-bold text-[var(--rv-muted)]">{{ fa(from) }}–{{ fa(to) }} از {{ fa(total) }}</span>
+        <button type="button" class="rv-btn rv-btn--subtle rv-focus !min-h-9" :disabled="to >= total || pending" @click="offset = offset + PAGE_SIZE">
+          بعدی <ChevronLeft class="size-4" />
+        </button>
       </div>
-      <template #footer>
-        <div class="flex justify-end gap-2">
-          <AdminButton variant="ghost" :disabled="syncLoading" @click="syncTarget = null">انصراف</AdminButton>
-          <AdminButton :loading="syncLoading" @click="confirmSync">همگام‌سازی</AdminButton>
-        </div>
-      </template>
-    </AdminModal>
+    </RvPanel>
+
+    <RvBulkBar kind="series" :ids="selected" @done="afterBulk" @clear="selected = []" />
   </div>
 </template>

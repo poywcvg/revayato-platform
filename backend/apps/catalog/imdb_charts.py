@@ -1,8 +1,22 @@
-"""Build IMDb Top-250 movie/TV lists from the official IMDb non-commercial datasets.
+"""Build the IMDb Top-250 movie/TV charts from IMDb's own public datasets.
 
-IMDb's public chart HTML is bot-gated; the datasets at datasets.imdbws.com are the
-stable source. We apply the same Bayesian weighted-rating shape IMDb documents for
-the Top 250 (WR = (v/(v+m))*R + (m/(v+m))*C) so the ranking stays close to the chart.
+IMDb's chart HTML is bot-gated; the TSV dumps at ``datasets.imdbws.com`` are the
+stable source. We apply the Bayesian weighted rating IMDb documents for the Top
+250 (``WR = (v/(v+m))*R + (m/(v+m))*C``) so the ranking stays close to the chart.
+
+Two files are involved and they are very different sizes: ``title.ratings`` is
+~8 MB gzipped, ``title.basics`` is a couple of hundred. Both are therefore read
+as *streams* — decompressed row by row straight off the socket — and the ratings
+map is filtered down to the vote floor while it is being built. That keeps the
+whole build inside a few tens of MB, which matters because the container that
+runs it (``catalog-crawler``) has a 768 MB ceiling shared with everything else it
+does; buffering the raw downloads and keeping all 1.7 M rated titles in a dict
+put it within sight of that ceiling for no benefit — nothing under 25 000 votes
+can ever reach a Top-250 position.
+
+The built chart is written to :class:`~apps.catalog.models.ImdbChartEntry`, and
+every reader (the API, the apps, the completion lane) goes to that table. Nothing
+user-facing ever waits on this download.
 """
 
 from __future__ import annotations
@@ -28,6 +42,12 @@ TV_MIN_VOTES = 25_000
 MOVIE_TYPES = frozenset({'movie'})
 TV_TYPES = frozenset({'tvSeries'})
 
+#: Nothing below this can reach either chart, so it never enters the ratings map.
+CHART_MIN_VOTES = min(MOVIE_MIN_VOTES, TV_MIN_VOTES)
+
+#: How many chart positions each kind holds. The name of the feature, basically.
+TOP_LIMIT = 250
+
 
 @dataclass(frozen=True)
 class ImdbChartTitle:
@@ -42,7 +62,8 @@ class ImdbChartTitle:
     rank: int
 
 
-def _download(url: str, *, timeout: int = 120) -> bytes:
+def _stream_tsv_gz(url: str, *, timeout: int = 180):
+    """Yield decoded rows of a gzipped TSV without ever holding the file in RAM."""
     request = urllib.request.Request(
         url,
         headers={
@@ -51,14 +72,11 @@ def _download(url: str, *, timeout: int = 120) -> bytes:
         },
     )
     with urllib.request.urlopen(request, timeout=timeout) as response:  # noqa: S310
-        return response.read()
-
-
-def _open_tsv_gz(payload: bytes):
-    return csv.DictReader(
-        io.TextIOWrapper(gzip.GzipFile(fileobj=io.BytesIO(payload)), encoding='utf-8'),
-        delimiter='\t',
-    )
+        # GzipFile only needs ``read`` from the underlying object, so the HTTP
+        # response works directly as the source and nothing is buffered whole.
+        with gzip.GzipFile(fileobj=response) as decompressed:
+            text = io.TextIOWrapper(decompressed, encoding='utf-8', errors='replace')
+            yield from csv.DictReader(text, delimiter='\t')
 
 
 def _safe_int(value) -> int | None:
@@ -141,15 +159,17 @@ def _rank_chart(
 def _load_chart_payload(*, limit: int) -> tuple[ImdbChartTitle, ...]:
     """Download IMDb datasets once and rank both movie + TV Top charts."""
     started = time.monotonic()
-    ratings_blob = _download(IMDB_RATINGS_URL)
-    basics_blob = _download(IMDB_BASICS_URL)
 
     ratings: dict[str, tuple[float, int]] = {}
-    for row in _open_tsv_gz(ratings_blob):
+    for row in _stream_tsv_gz(IMDB_RATINGS_URL):
+        votes = _safe_int(row.get('numVotes')) or 0
+        # The vote floor is applied here, not later, so the map holds ~15 K rows
+        # instead of 1.7 M. Everything discarded is by definition unrankable.
+        if votes < CHART_MIN_VOTES:
+            continue
         imdb_id = str(row.get('tconst') or '').strip()
         rating = _safe_float(row.get('averageRating'))
-        votes = _safe_int(row.get('numVotes')) or 0
-        if not imdb_id or rating is None or votes <= 0:
+        if not imdb_id or rating is None:
             continue
         ratings[imdb_id] = (rating, votes)
 
@@ -157,7 +177,7 @@ def _load_chart_payload(*, limit: int) -> tuple[ImdbChartTitle, ...]:
     series_candidates: list[dict] = []
     wanted_types = MOVIE_TYPES | TV_TYPES
 
-    for row in _open_tsv_gz(basics_blob):
+    for row in _stream_tsv_gz(IMDB_BASICS_URL):
         title_type = str(row.get('titleType') or '').strip()
         if title_type not in wanted_types:
             continue
@@ -190,16 +210,17 @@ def _load_chart_payload(*, limit: int) -> tuple[ImdbChartTitle, ...]:
     ranked.extend(_rank_chart(series_candidates, limit=limit, min_votes=TV_MIN_VOTES))
 
     logger.info(
-        'imdb_chart loaded movies=%s series=%s rows=%s elapsed=%.1fs',
+        'imdb_chart loaded movies=%s series=%s rows=%s rated_pool=%s elapsed=%.1fs',
         sum(1 for item in ranked if item.title_type in MOVIE_TYPES),
         sum(1 for item in ranked if item.title_type in TV_TYPES),
         len(ranked),
+        len(ratings),
         time.monotonic() - started,
     )
     return tuple(ranked)
 
 
-def imdb_top_movies(*, limit: int = 250) -> list[ImdbChartTitle]:
+def imdb_top_movies(*, limit: int = TOP_LIMIT) -> list[ImdbChartTitle]:
     return [
         item
         for item in _load_chart_payload(limit=max(1, int(limit)))
@@ -207,7 +228,7 @@ def imdb_top_movies(*, limit: int = 250) -> list[ImdbChartTitle]:
     ]
 
 
-def imdb_top_series(*, limit: int = 250) -> list[ImdbChartTitle]:
+def imdb_top_series(*, limit: int = TOP_LIMIT) -> list[ImdbChartTitle]:
     return [
         item
         for item in _load_chart_payload(limit=max(1, int(limit)))
@@ -219,16 +240,18 @@ def clear_imdb_chart_cache() -> None:
     _load_chart_payload.cache_clear()
 
 
-def sync_imdb_top_ranks(*, limit: int = 250) -> dict:
-    """Stamp ``imdb_rank`` / ``imdb_rating`` on catalog rows that match Top 250 charts.
+def sync_imdb_top_ranks(*, limit: int = TOP_LIMIT) -> dict:
+    """Stamp ``imdb_rank`` / ``imdb_rating`` on catalog rows that match the charts.
 
-    Titles that fall off the chart get ``imdb_rank`` cleared so badges stay accurate.
+    Titles that fall off the chart get ``imdb_rank`` cleared so badges stay
+    accurate. Kept as the thin, dependency-free entry point; the snapshot table is
+    written by :func:`refresh_imdb_chart_snapshot`, which calls this.
     """
     from decimal import Decimal
 
     from apps.catalog.models import Movie, Series
 
-    limit = max(1, min(250, int(limit)))
+    limit = max(1, min(TOP_LIMIT, int(limit)))
     clear_imdb_chart_cache()
     movies = imdb_top_movies(limit=limit)
     series = imdb_top_series(limit=limit)
@@ -247,104 +270,27 @@ def sync_imdb_top_ranks(*, limit: int = 250) -> dict:
         'series_missing': [],
     }
 
-    cleared_m = Movie.objects.exclude(imdb_rank__isnull=True).update(imdb_rank=None)
-    cleared_s = Series.objects.exclude(imdb_rank__isnull=True).update(imdb_rank=None)
-    stats['movies_cleared'] = cleared_m
-    stats['series_cleared'] = cleared_s
+    # Clear stale ranks first, then apply the current chart.
+    stats['movies_cleared'] = Movie.objects.exclude(imdb_rank__isnull=True).update(imdb_rank=None)
+    stats['series_cleared'] = Series.objects.exclude(imdb_rank__isnull=True).update(imdb_rank=None)
 
-    for imdb_id, chart in movie_by_id.items():
-        updated = Movie.objects.filter(imdb_id__iexact=imdb_id).update(
-            imdb_rank=chart.rank,
-            imdb_rating=Decimal(str(round(chart.average_rating, 1))),
-        )
-        if updated:
-            stats['movies_ranked'] += updated
-        else:
-            stats['movies_missing'].append({
-                'rank': chart.rank,
-                'imdb_id': chart.imdb_id,
-                'title': chart.primary_title,
-            })
-
-    for imdb_id, chart in series_by_id.items():
-        updated = Series.objects.filter(imdb_id__iexact=imdb_id).update(
-            imdb_rank=chart.rank,
-            imdb_rating=Decimal(str(round(chart.average_rating, 1))),
-        )
-        if updated:
-            stats['series_ranked'] += updated
-        else:
-            stats['series_missing'].append({
-                'rank': chart.rank,
-                'imdb_id': chart.imdb_id,
-                'title': chart.primary_title,
-            })
-
-    return stats
-
-
-def sync_imdb_top_ranks(*, limit: int = 250) -> dict:
-    """Stamp ``imdb_rank`` / ``imdb_rating`` on catalog rows that match Top 250 charts.
-
-    Titles that fall off the chart get ``imdb_rank`` cleared so badges stay accurate.
-    """
-    from decimal import Decimal
-
-    from apps.catalog.models import Movie, Series
-
-    limit = max(1, min(250, int(limit)))
-    clear_imdb_chart_cache()
-    movies = imdb_top_movies(limit=limit)
-    series = imdb_top_series(limit=limit)
-
-    movie_by_id = {row.imdb_id.lower(): row for row in movies}
-    series_by_id = {row.imdb_id.lower(): row for row in series}
-
-    stats = {
-        'movies_chart': len(movies),
-        'series_chart': len(series),
-        'movies_ranked': 0,
-        'series_ranked': 0,
-        'movies_cleared': 0,
-        'series_cleared': 0,
-        'movies_missing': [],
-        'series_missing': [],
-    }
-
-    # Clear stale ranks first, then apply current chart.
-    cleared_m = Movie.objects.exclude(imdb_rank__isnull=True).update(imdb_rank=None)
-    cleared_s = Series.objects.exclude(imdb_rank__isnull=True).update(imdb_rank=None)
-    stats['movies_cleared'] = cleared_m
-    stats['series_cleared'] = cleared_s
-
-    for imdb_id, chart in movie_by_id.items():
-        qs = Movie.objects.filter(imdb_id__iexact=imdb_id)
-        updated = qs.update(
-            imdb_rank=chart.rank,
-            imdb_rating=Decimal(str(round(chart.average_rating, 1))),
-        )
-        if updated:
-            stats['movies_ranked'] += updated
-        else:
-            stats['movies_missing'].append({
-                'rank': chart.rank,
-                'imdb_id': chart.imdb_id,
-                'title': chart.primary_title,
-            })
-
-    for imdb_id, chart in series_by_id.items():
-        qs = Series.objects.filter(imdb_id__iexact=imdb_id)
-        updated = qs.update(
-            imdb_rank=chart.rank,
-            imdb_rating=Decimal(str(round(chart.average_rating, 1))),
-        )
-        if updated:
-            stats['series_ranked'] += updated
-        else:
-            stats['series_missing'].append({
-                'rank': chart.rank,
-                'imdb_id': chart.imdb_id,
-                'title': chart.primary_title,
-            })
+    for model, chart_map, ranked_key, missing_key, kind in (
+        (Movie, movie_by_id, 'movies_ranked', 'movies_missing', 'movie'),
+        (Series, series_by_id, 'series_ranked', 'series_missing', 'series'),
+    ):
+        for imdb_id, chart in chart_map.items():
+            updated = model.objects.filter(imdb_id__iexact=imdb_id).update(
+                imdb_rank=chart.rank,
+                imdb_rating=Decimal(str(round(chart.average_rating, 1))),
+            )
+            if updated:
+                stats[ranked_key] += updated
+            else:
+                stats[missing_key].append({
+                    'rank': chart.rank,
+                    'imdb_id': chart.imdb_id,
+                    'title': chart.primary_title,
+                    'kind': kind,
+                })
 
     return stats

@@ -3,7 +3,7 @@ import string
 
 from django.apps import apps
 from django.db import transaction
-from django.db.models import Avg
+from django.db.models import Avg, Count
 from django.shortcuts import get_object_or_404
 from django.utils import timezone
 
@@ -24,11 +24,18 @@ def _get_content_object(content_type, object_id):
 
 def _refresh_site_rating(content_type, object_id):
     obj = _get_content_object(content_type, object_id)
-    average = Rating.objects.filter(
+    stats = Rating.objects.filter(
         content_type=content_type, object_id=object_id,
-    ).aggregate(avg=Avg('score'))['avg']
+    ).aggregate(avg=Avg('score'), votes=Count('id'))
+    average = stats['avg']
     obj.site_rating = round(average, 1) if average is not None else None
-    obj.save(update_fields=['site_rating'])
+    # Denormalised vote count powers the confidence-weighted «محبوب‌ترین» sort
+    # so a single stray rating cannot rocket a title to the top of the list.
+    update_fields = ['site_rating']
+    if hasattr(obj, 'site_rating_count'):
+        obj.site_rating_count = int(stats['votes'] or 0)
+        update_fields.append('site_rating_count')
+    obj.save(update_fields=update_fields)
 
 
 def rate_content(user, content_type, object_id, score, review=None, is_spoiler=None):
@@ -105,6 +112,7 @@ def create_support_ticket(
     related_title='',
     related_year=None,
     related_url='',
+    auto_process=True,
 ):
     ticket = SupportTicket.objects.create(
         user=user,
@@ -125,11 +133,24 @@ def create_support_ticket(
         is_staff_reply=False,
         body=body.strip(),
     )
+    if auto_process:
+        _wake_support_automation(ticket.pk)
     return ticket
 
 
+def _wake_support_automation(ticket_id):
+    """Answer the ticket now instead of waiting for the next beat sweep.
+
+    Runs after the surrounding transaction commits; the periodic sweep remains the
+    safety net if the broker is down, so this can never fail a user's request.
+    """
+    from apps.engagement.tasks import enqueue_ticket_processing
+
+    enqueue_ticket_processing(ticket_id)
+
+
 @transaction.atomic
-def reply_support_ticket(*, ticket, author, body, is_staff_reply):
+def reply_support_ticket(*, ticket, author, body, is_staff_reply, auto_process=True):
     message = SupportMessage.objects.create(
         ticket=ticket,
         author=author,
@@ -154,6 +175,9 @@ def reply_support_ticket(*, ticket, author, body, is_staff_reply):
     ticket.save(update_fields=[
         'last_message_at', 'unread_by_user', 'unread_by_staff', 'status', 'updated_at',
     ])
+    if auto_process and not is_staff_reply:
+        # The user wrote back: let the engine re-enter right away.
+        _wake_support_automation(ticket.pk)
     return message
 
 
@@ -187,4 +211,30 @@ def mark_ticket_read_by_staff(ticket):
 def set_rating_hidden(rating, is_hidden):
     rating.is_hidden = bool(is_hidden)
     rating.save(update_fields=['is_hidden', 'updated_at'])
+    return rating
+
+
+def set_review_admin_reply(rating, *, author, body):
+    """Attach (or, on empty body, clear) the team's public reply to a review."""
+    body = (body or '').strip()
+    if body:
+        rating.admin_reply = body
+        rating.admin_reply_at = timezone.now()
+        rating.admin_reply_by = author
+    else:
+        rating.admin_reply = ''
+        rating.admin_reply_at = None
+        rating.admin_reply_by = None
+    rating.save(update_fields=[
+        'admin_reply', 'admin_reply_at', 'admin_reply_by', 'updated_at',
+    ])
+    return rating
+
+
+def set_review_featured(rating, is_featured):
+    """Toggle the editor's-pick flag that lifts a standout review to the top."""
+    is_featured = bool(is_featured)
+    rating.is_featured = is_featured
+    rating.featured_at = timezone.now() if is_featured else None
+    rating.save(update_fields=['is_featured', 'featured_at', 'updated_at'])
     return rating

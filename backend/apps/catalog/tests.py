@@ -134,6 +134,14 @@ class CatalogApiContractTests(TestCase):
             imdb_rating='8.7', is_featured=True, trailer_url='movies/animated/trailer.m3u8',
             content_format='animation', is_dubbed=True, has_subtitle=True,
             is_uncensored=True, content_warnings=['violence'],
+            # ``Movie.save`` derives is_dubbed/has_subtitle from download links,
+            # so the dub/subtitle badges only stay set with matching rows.
+            download_links=[
+                {'kind': 'dubbed', 'quality': '1080p WEB-DL', 'label': 'دوبله فارسی',
+                 'url': 'https://cdn.example.test/visible.1080p.Dubbed.mkv'},
+                {'kind': 'softsub', 'quality': '720p WEB-DL', 'label': 'زیرنویس نرم',
+                 'url': 'https://cdn.example.test/visible.720p.SoftSub.mkv'},
+            ],
         )
         movie.directors.add(director)
         movie.countries.add(country)
@@ -162,7 +170,7 @@ class CatalogApiContractTests(TestCase):
         self.assertTrue(results[0]['is_uncensored'])
         self.assertEqual(results[0]['content_format'], 'animation')
         self.assertIn('has_downloads', results[0])
-        self.assertFalse(results[0]['has_downloads'])
+        self.assertTrue(results[0]['has_downloads'])
         self.assertEqual(results[0]['trailer_url'], '/media/movies/animated/trailer.m3u8')
 
         detail_response = self.client.get('/api/movies/visible-movie/')

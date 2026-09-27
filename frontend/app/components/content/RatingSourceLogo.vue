@@ -52,7 +52,7 @@ watch(() => props.source, () => { failed.value = false })
 }
 
 .rating-source-logo__fallback {
-  font-size: .625rem;
+  font-size: 0.75rem;
   font-weight: 900;
   letter-spacing: .02em;
   color: var(--text-secondary, var(--theme-text-secondary));

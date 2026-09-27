@@ -476,7 +476,7 @@ export function rankRecommendations(
 
     if (includesPreference(item.country, preferences.preferred_countries)) score += 6
     if (includesLanguage(item.language, preferences.preferred_languages)) score += 5
-    if (preferences.preferred_age_ratings.includes(item.age_rating)) score += 4
+    if (item.age_rating && preferences.preferred_age_ratings.includes(item.age_rating)) score += 4
     else if (preferences.preferred_age_ratings.length) score -= 2
 
     let behavioralScore = mapScore(profile.directors, item.director, 0.95)

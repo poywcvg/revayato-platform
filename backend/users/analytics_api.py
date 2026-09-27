@@ -20,7 +20,7 @@ from datetime import timedelta
 from typing import Any
 
 from django.contrib.auth import get_user_model
-from django.db.models import Avg, Count, Max, Q, Sum
+from django.db.models import Avg, Count, Max, Min, Q, Sum
 from django.db.models.functions import ExtractHour, ExtractWeekDay, TruncDate, TruncMonth, TruncWeek
 from django.utils import timezone
 from rest_framework.decorators import api_view, permission_classes, throttle_classes
@@ -236,37 +236,47 @@ def _online_snapshot(now):
 
 
 def _watch_hours_from_db(start, end) -> float:
-    """Estimate watch hours from playback state + activity progress."""
+    """Real watch hours in the window.
+
+    Sourced from recorded playback progress × catalog runtime (the same honest
+    ``runtime × progress/100`` model used for per-user watch stats), plus the
+    watched playhead position advanced in watch-party rooms. No fabricated
+    per-play minutes — an empty tracker reads 0, never a guess.
+    """
+    from apps.engagement.watch_stats import total_watch_minutes
+
+    minutes = total_watch_minutes(start, end)
+
     _, _, Playback = _watchparty_models()
-    hours = 0.0
     if Playback is not None:
         agg = Playback.objects.filter(updated_at__gte=start, updated_at__lte=end).aggregate(
             total_pos=Sum('position_seconds'),
-            total_dur=Sum('duration_seconds'),
-            count=Count('id'),
         )
-        pos = float(agg['total_pos'] or 0)
-        dur = float(agg['total_dur'] or 0)
-        # Prefer watched position; fall back to a fraction of duration.
-        seconds = pos if pos > 0 else dur * 0.35
-        hours += seconds / 3600.0
+        minutes += float(agg['total_pos'] or 0) / 60.0
 
-    events = UserActivityEvent.objects.filter(
-        created_at__gte=start,
-        created_at__lte=end,
-        action__in=('play', 'complete_watch', 'watch_progress', 'pause'),
+    return round(minutes / 60.0, 1)
+
+
+def _active_user_ids(start, end) -> set[int]:
+    """Distinct users active in [start, end] — union of logins and tracked events.
+
+    A user active only through the SPA (activity events) and a user with only a
+    fresh ``last_login`` are disjoint populations; unioning them avoids
+    undercounting real activity.
+    """
+    ids = set(
+        User.objects.filter(is_active=True, last_login__gte=start, last_login__lte=end)
+        .values_list('id', flat=True)
     )
-    plays = events.filter(action='play').count()
-    completes = events.filter(action='complete_watch').count()
-    hours += (plays * 12 + completes * 35) / 60.0
-
-    WatchRoom, _, _ = _watchparty_models()
-    if WatchRoom is not None and hours < 0.1:
-        # Each room in period ≈ 40 minutes average session proxy.
-        rooms = WatchRoom.objects.filter(created_at__gte=start, created_at__lte=end).count()
-        hours += rooms * (40 / 60.0)
-
-    return round(hours, 1)
+    ids |= {
+        int(uid)
+        for uid in UserActivityEvent.objects.filter(
+            created_at__gte=start,
+            created_at__lte=end,
+            user_id__isnull=False,
+        ).values_list('user_id', flat=True).distinct()
+    }
+    return ids
 
 
 def _registrations_series(users_qs, *, start_date, days, tz, granularity: str):
@@ -412,17 +422,22 @@ def _normalize_device_breakdown(rows: list[dict]) -> list[dict]:
 
 
 def _top_active_users(start, end, limit=10):
-    # Prefer users with recent login; enrich with watch-party hosting & event counts.
+    """Leaderboard of the most active real users in the window.
+
+    Every signal is real DB data — no fabricated watch minutes:
+      - interaction count: UserActivityEvent rows the user produced
+      - plays / completes: real playback events
+      - rooms_hosted: watch-party rooms the user opened
+      - likes / ratings: engagement created in the window
+      - watch_time: recorded progress × catalog runtime (watch_stats model)
+
+    Candidates are anyone with *any* real signal in the window (events, hosted
+    rooms, likes, ratings, or a login), not just the 80 most-recent logins, so
+    a heavy watcher can never be missed by an arbitrary cutoff.
+    """
+    from apps.engagement.watch_stats import watch_minutes_by_user
+
     WatchRoom, _, _ = _watchparty_models()
-    host_counts = {}
-    if WatchRoom is not None:
-        for row in (
-            WatchRoom.objects.filter(created_at__gte=start, created_at__lte=end)
-            .values('host_user_id')
-            .annotate(count=Count('id'))
-        ):
-            if row['host_user_id']:
-                host_counts[row['host_user_id']] = row['count']
 
     event_rows = {
         row['user_id']: row
@@ -442,38 +457,74 @@ def _top_active_users(start, end, limit=10):
         )
     }
 
-    candidates = {}
-    for user in User.objects.filter(is_active=True).exclude(is_staff=True).order_by('-last_login', '-date_joined')[:80]:
-        events = event_rows.get(user.pk, {})
-        rooms = host_counts.get(user.pk, 0)
-        score = int(events.get('events') or 0) * 3 + rooms * 5
-        if user.last_login and start <= user.last_login <= end:
-            score += 2
-        candidates[user.pk] = {
-            'user': user,
-            'events': int(events.get('events') or 0),
-            'plays': int(events.get('plays') or 0),
-            'completes': int(events.get('completes') or 0),
-            'rooms': rooms,
-            'score': score,
-            'last_seen': events.get('last_seen') or user.last_login or user.date_joined,
-        }
+    host_counts: dict[int, int] = {}
+    if WatchRoom is not None:
+        for row in (
+            WatchRoom.objects.filter(created_at__gte=start, created_at__lte=end)
+            .exclude(host_user_id=None)
+            .values('host_user_id')
+            .annotate(count=Count('id'))
+        ):
+            host_counts[row['host_user_id']] = row['count']
 
-    ranked = sorted(candidates.values(), key=lambda item: (-item['score'], item['last_seen'] or timezone.now()), reverse=False)
-    ranked.sort(key=lambda item: item['score'], reverse=True)
+    like_counts = {
+        row['user_id']: row['count']
+        for row in (
+            Like.objects.filter(created_at__gte=start, created_at__lte=end, user_id__isnull=False)
+            .values('user_id')
+            .annotate(count=Count('id'))
+        )
+    }
+    rating_counts = {
+        row['user_id']: row['count']
+        for row in (
+            Rating.objects.filter(created_at__gte=start, created_at__lte=end, user_id__isnull=False)
+            .values('user_id')
+            .annotate(count=Count('id'))
+        )
+    }
+
+    candidate_ids = set(event_rows) | set(host_counts) | set(like_counts) | set(rating_counts)
+    candidate_ids |= set(
+        User.objects.filter(last_login__gte=start, last_login__lte=end, is_active=True)
+        .values_list('id', flat=True)
+    )
+    if not candidate_ids:
+        return []
+
+    watch_minutes = watch_minutes_by_user(start, end, user_ids=candidate_ids)
+    users = User.objects.filter(pk__in=candidate_ids).exclude(is_staff=True).in_bulk()
+
     result = []
-    for item in ranked[:limit]:
-        user = item['user']
-        watch_minutes = item['plays'] * 12 + item['completes'] * 35 + item['rooms'] * 40
+    for uid, user in users.items():
+        ev = event_rows.get(uid, {})
+        events = int(ev.get('events') or 0)
+        rooms = int(host_counts.get(uid, 0))
+        likes = int(like_counts.get(uid, 0))
+        ratings = int(rating_counts.get(uid, 0))
+        interactions = events + rooms + likes + ratings
+        logged_in_window = bool(user.last_login and start <= user.last_login <= end)
+        if interactions == 0 and not logged_in_window:
+            continue
+        minutes = float(watch_minutes.get(uid, 0.0))
+        last_seen = ev.get('last_seen') or user.last_login or user.date_joined
         result.append({
-            'user_id': user.pk,
+            'user_id': uid,
             'username': user.username,
-            'watch_time_minutes': watch_minutes,
-            'watch_time_hours': round(watch_minutes / 60.0, 1),
-            'events': item['events'] + item['rooms'],
-            'last_seen': item['last_seen'].isoformat() if item['last_seen'] else None,
+            'watch_time_minutes': round(minutes, 1),
+            'watch_time_hours': round(minutes / 60.0, 1),
+            'events': events,
+            'plays': int(ev.get('plays') or 0),
+            'completes': int(ev.get('completes') or 0),
+            'rooms_hosted': rooms,
+            'likes': likes,
+            'ratings': ratings,
+            'interactions': interactions,
+            'last_seen': last_seen.isoformat() if last_seen else None,
         })
-    return result
+
+    result.sort(key=lambda r: (r['interactions'], r['watch_time_minutes']), reverse=True)
+    return result[:limit]
 
 
 def _top_content_from_db(start, end, limit=10):
@@ -752,6 +803,117 @@ def _recent_content(limit=12):
     return merged[:limit]
 
 
+def _json_key_breakdown(queryset, key, *, fallback='نامشخص', limit=None):
+    """Aggregate a JSONField metadata key into label/value slices (real counts).
+
+    Empty strings are stripped at ingestion, so a missing key reads as NULL and
+    is folded into the fallback label rather than silently dropped.
+    """
+    tallies: dict[str, int] = {}
+    for row in queryset.values(f'metadata__{key}').annotate(count=Count('id')):
+        raw = row.get(f'metadata__{key}')
+        label = (str(raw).strip() if raw not in (None, '') else '') or fallback
+        tallies[label] = tallies.get(label, 0) + int(row['count'])
+    slices = [{'label': label, 'value': value} for label, value in tallies.items()]
+    slices.sort(key=lambda item: -item['value'])
+    return slices[:limit] if limit else slices
+
+
+def _downloads_analytics(win, *, days, limit=10):
+    """Real download analytics from `download_click` UserActivityEvents.
+
+    Every figure is a live DB count — no placeholders. Until clients emit the
+    new `download` signal these come back zero honestly rather than fabricated.
+    """
+    tz = win['tz']
+    base = UserActivityEvent.objects.filter(action='download_click')
+    period_qs = base.filter(created_at__gte=win['start'], created_at__lte=win['end'])
+    prev_qs = base.filter(created_at__gte=win['previous_start'], created_at__lt=win['previous_end'])
+
+    total_all = base.count()
+    total_period = period_qs.count()
+    total_prev = prev_qs.count()
+
+    unique_users_period = period_qs.filter(user_id__isnull=False).values('user_id').distinct().count()
+    unique_sessions_period = period_qs.exclude(session_key='').values('session_key').distinct().count()
+
+    # Downloads over time (one point per day across the window).
+    day_rows = {
+        row['day']: row['count']
+        for row in (
+            period_qs.annotate(day=TruncDate('created_at', tzinfo=tz))
+            .values('day')
+            .annotate(count=Count('id'))
+        )
+    }
+    over_time = []
+    for offset in range(days):
+        day = win['start_date'] + timedelta(days=offset)
+        over_time.append({
+            'date': day.isoformat(),
+            'label': day.isoformat(),
+            'value': int(day_rows.get(day, 0)),
+        })
+
+    # Top-downloaded titles (resolve movie/series titles from real event rows).
+    top_rows = list(
+        period_qs.filter(content_type__in=('movie', 'series'), object_id__isnull=False)
+        .values('content_type', 'object_id')
+        .annotate(count=Count('id'))
+        .order_by('-count')[:limit]
+    )
+    movie_ids = [r['object_id'] for r in top_rows if r['content_type'] == 'movie']
+    series_ids = [r['object_id'] for r in top_rows if r['content_type'] == 'series']
+    movies = Movie.objects.in_bulk(movie_ids)
+    series = Series.objects.in_bulk(series_ids)
+    top_titles = []
+    for row in top_rows:
+        item = movies.get(row['object_id']) if row['content_type'] == 'movie' else series.get(row['object_id'])
+        top_titles.append({
+            'id': row['object_id'],
+            'title': item.title if item else 'عنوان حذف‌شده',
+            'slug': item.slug if item else '',
+            'content_type': row['content_type'],
+            'downloads': int(row['count']),
+        })
+
+    ct_tallies = {'movie': 0, 'series': 0}
+    for row in period_qs.values('content_type').annotate(count=Count('id')):
+        if row['content_type'] in ct_tallies:
+            ct_tallies[row['content_type']] += int(row['count'])
+    by_type = [
+        {'label': 'فیلم', 'value': ct_tallies['movie']},
+        {'label': 'سریال', 'value': ct_tallies['series']},
+    ]
+
+    return {
+        'summary': {
+            'total_all_time': total_all,
+            'total_period': total_period,
+            'delta_percent': _comparison(total_period, total_prev)['change_percent'],
+            'unique_users': unique_users_period,
+            'unique_sessions': unique_sessions_period,
+            'per_user': round(total_period / unique_users_period, 1) if unique_users_period else 0.0,
+        },
+        'over_time': over_time,
+        'top_titles': top_titles,
+        'by_quality': _json_key_breakdown(period_qs, 'quality', limit=8),
+        'by_platform': _json_key_breakdown(period_qs, 'platform'),
+        'by_type': by_type,
+        'tracking_active': total_all > 0,
+    }
+
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated, IsStaffUser])
+@throttle_classes([StaffAdminThrottle])
+def analytics_downloads(request):
+    days = _parse_period(request)
+    win = _window(days)
+    data = _downloads_analytics(win, days=days, limit=12)
+    return Response(_envelope(data, days=days, now=win['now'], win=win))
+
+
 @api_view(['GET'])
 @permission_classes([IsAuthenticated, IsStaffUser])
 @throttle_classes([StaffAdminThrottle])
@@ -816,6 +978,18 @@ def analytics_overview(request):
 
     likes_period = Like.objects.filter(created_at__gte=win['start'], created_at__lte=win['end']).count()
 
+    downloads_all = UserActivityEvent.objects.filter(action='download_click').count()
+    downloads_period = UserActivityEvent.objects.filter(
+        action='download_click',
+        created_at__gte=win['start'],
+        created_at__lte=win['end'],
+    ).count()
+    downloads_prev = UserActivityEvent.objects.filter(
+        action='download_click',
+        created_at__gte=win['previous_start'],
+        created_at__lt=win['previous_end'],
+    ).count()
+
     dubbed = Movie.objects.filter(is_published=True, is_dubbed=True).count() + Series.objects.filter(
         is_published=True, is_dubbed=True,
     ).count()
@@ -872,6 +1046,14 @@ def analytics_overview(request):
                 'format': 'number',
                 'hint': f'{likes_period} لایک در بازه',
             },
+            {
+                'id': 'downloads_total',
+                'label': 'دانلودها',
+                'value': downloads_all,
+                'delta_percent': _comparison(downloads_period, downloads_prev)['change_percent'],
+                'format': 'number',
+                'hint': f'{downloads_period} دانلود در بازه',
+            },
         ],
         'realtime': _online_snapshot(win['now']),
         'catalog': {
@@ -905,6 +1087,33 @@ def analytics_users(request):
     users_qs = User.objects.filter(date_joined__gte=win['start'], date_joined__lte=win['end'])
     events = UserActivityEvent.objects.filter(created_at__gte=win['start'], created_at__lte=win['end'])
 
+    now = win['now']
+    breakdown = User.objects.aggregate(
+        total=Count('id'),
+        active=Count('id', filter=Q(is_active=True)),
+        inactive=Count('id', filter=Q(is_active=False)),
+        verified=Count('id', filter=Q(is_verified=True)),
+        staff=Count('id', filter=Q(is_staff=True)),
+    )
+    total_users = int(breakdown['total'] or 0)
+    verified_users = int(breakdown['verified'] or 0)
+
+    # Rolling stickiness windows (independent of the selected report period).
+    dau = len(_active_user_ids(now - timedelta(days=1), now))
+    wau = len(_active_user_ids(now - timedelta(days=7), now))
+    mau = len(_active_user_ids(now - timedelta(days=30), now))
+
+    period_active_ids = _active_user_ids(win['start'], win['end'])
+    active_in_period = len(period_active_ids)
+    # Returning = users active in the window who registered before it began.
+    returning_in_period = (
+        User.objects.filter(pk__in=period_active_ids, date_joined__lt=win['start']).count()
+        if period_active_ids else 0
+    )
+    today_start = win['local_now'].replace(hour=0, minute=0, second=0, microsecond=0)
+    new_today = User.objects.filter(date_joined__gte=today_start).count()
+    new_in_period = users_qs.count()
+
     data = {
         'registrations': {
             'granularity': granularity,
@@ -921,15 +1130,79 @@ def analytics_users(request):
         'devices': _normalize_device_breakdown(_device_breakdown(events)),
         'top_active_users': _top_active_users(win['start'], win['end'], limit=10),
         'totals': {
-            'users': User.objects.count(),
-            'active_in_period': User.objects.filter(
-                last_login__gte=win['start'],
-                last_login__lte=win['end'],
-            ).count(),
-            'new_in_period': users_qs.count(),
+            'users': total_users,
+            'active_in_period': active_in_period,
+            'new_in_period': new_in_period,
+            'new_today': new_today,
+            'returning_in_period': returning_in_period,
+            'dau': dau,
+            'wau': wau,
+            'mau': mau,
+            'active': int(breakdown['active'] or 0),
+            'inactive': int(breakdown['inactive'] or 0),
+            'verified': verified_users,
+            'unverified': total_users - verified_users,
+            'staff': int(breakdown['staff'] or 0),
+            'verified_rate': _rate(verified_users, total_users),
+            'stickiness': _rate(dau, mau),
         },
     }
     return Response(_envelope(data, days=days, now=win['now'], win=win))
+
+
+def _top_by_views(model, content_type, limit=8):
+    """Real most-viewed titles straight from the denormalised catalog counter."""
+    return [
+        {
+            'id': row['id'],
+            'title': row['title'],
+            'slug': row['slug'],
+            'content_type': content_type,
+            'view_count': int(row['view_count'] or 0),
+        }
+        for row in (
+            model.objects.filter(is_published=True, view_count__gt=0)
+            .order_by('-view_count')
+            .values('id', 'title', 'slug', 'view_count')[:limit]
+        )
+    ]
+
+
+def _content_view_stats(start, end):
+    """Real movie/series view aggregates for the content dashboard.
+
+    ``total_views`` is the lifetime denormalised counter (kept live by the
+    activity serializer + backfilled from tracked events); ``period_views`` is
+    tracked view events inside the selected window. Both are real, never seeded.
+    """
+    movie_total = Movie.objects.filter(is_published=True).aggregate(
+        total=Sum('view_count'), titles=Count('id', filter=Q(view_count__gt=0)),
+    )
+    series_total = Series.objects.filter(is_published=True).aggregate(
+        total=Sum('view_count'), titles=Count('id', filter=Q(view_count__gt=0)),
+    )
+    period = dict(
+        UserActivityEvent.objects.filter(
+            created_at__gte=start,
+            created_at__lte=end,
+            action__in=VIEW_ACTIONS,
+        )
+        .values_list('action')
+        .annotate(n=Count('id'))
+    )
+    movie_views = int(movie_total['total'] or 0)
+    series_views = int(series_total['total'] or 0)
+    return {
+        'movie_views': movie_views,
+        'series_views': series_views,
+        'total_views': movie_views + series_views,
+        'movie_titles_viewed': int(movie_total['titles'] or 0),
+        'series_titles_viewed': int(series_total['titles'] or 0),
+        'movie_views_in_period': int(period.get('view_movie', 0) or 0),
+        'series_views_in_period': int(period.get('view_series', 0) or 0),
+        'top_movies': _top_by_views(Movie, 'movie', limit=8),
+        'top_series': _top_by_views(Series, 'series', limit=8),
+    }
 
 
 @api_view(['GET'])
@@ -954,6 +1227,7 @@ def analytics_content_top(request):
             'series_published': Series.objects.filter(is_published=True).count(),
             'episodes_published': Episode.objects.filter(is_published=True).count(),
         },
+        'stats': _content_view_stats(win['start'], win['end']),
     }
     return Response(_envelope(data, days=days, now=win['now'], win=win))
 
@@ -1033,6 +1307,241 @@ def analytics_engagement(request):
             }
             for row in searches
         ],
+        'realtime': _online_snapshot(win['now']),
+    }
+    return Response(_envelope(data, days=days, now=win['now'], win=win))
+
+
+# ---------------------------------------------------------------------------
+# Behaviour analytics — cohesive real-data view of *how* people use the site.
+# Every figure below is a live count/aggregate over UserActivityEvent (and the
+# auth log for retention). Nothing is seeded; empty windows read as zero.
+# ---------------------------------------------------------------------------
+
+FUNNEL_VIEW_ACTIONS = ('view_movie', 'view_series', 'view_episode')
+CONTENT_TYPE_LABELS_FA = {
+    'movie': 'فیلم',
+    'series': 'سریال',
+    'episode': 'قسمت',
+    'actor': 'بازیگر',
+    'director': 'کارگردان',
+    'genre': 'ژانر',
+    'search': 'جستجو',
+}
+
+
+def _behavior_funnel(events):
+    """Consumption funnel: page view → play → in-progress → complete.
+
+    Each stage is a real event count in the window. ``step_conversion`` is the
+    drop-off from the previous stage; ``pct_of_top`` positions every stage
+    against the funnel entry so the shape is readable at a glance.
+    """
+    counts = events.aggregate(
+        page_views=Count('id', filter=Q(action__in=FUNNEL_VIEW_ACTIONS)),
+        plays=Count('id', filter=Q(action='play')),
+        progress=Count('id', filter=Q(action='watch_progress')),
+        completes=Count('id', filter=Q(action='complete_watch')),
+    )
+    stages = [
+        ('page_view', 'بازدید صفحه', int(counts['page_views'] or 0)),
+        ('play', 'شروع پخش', int(counts['plays'] or 0)),
+        ('watch_progress', 'در حال تماشا', int(counts['progress'] or 0)),
+        ('complete', 'تماشای کامل', int(counts['completes'] or 0)),
+    ]
+    top = stages[0][2]
+    result = []
+    prev = None
+    for key, label, value in stages:
+        result.append({
+            'id': key,
+            'label': label,
+            'value': value,
+            'pct_of_top': _rate(value, top),
+            'step_conversion': _rate(value, prev) if prev is not None else None,
+        })
+        prev = value
+    return {
+        'stages': result,
+        'play_through_rate': _rate(stages[1][2], stages[0][2]),
+        'completion_rate': _rate(stages[3][2], stages[1][2]),
+    }
+
+
+def _discovery_metrics(events):
+    """Search → click-through behaviour, all from real search events."""
+    searches = events.filter(action='search', content_type='search')
+    total_searches = searches.count()
+    zero_result = searches.filter(metadata__result_count=0).count()
+    clicks = events.filter(action='click_search_result').count()
+    unique_terms = searches.exclude(query='').values('query').distinct().count()
+    return {
+        'searches': total_searches,
+        'unique_terms': unique_terms,
+        'result_clicks': clicks,
+        'click_through_rate': _rate(clicks, total_searches),
+        'zero_result_searches': zero_result,
+        'zero_result_rate': _rate(zero_result, total_searches),
+        'top_terms': [
+            {
+                'term': row['query'],
+                'count': row['count'],
+                'zero_result_count': row.get('zero_result_count') or 0,
+            }
+            for row in _top_searches(events, limit=12)
+        ],
+    }
+
+
+def _session_depth(events):
+    """Per-session engagement depth from real session_key groupings.
+
+    A "session" is one ``session_key`` bucket (anonymous or logged-in). We read
+    event count and first/last timestamp per session, then summarise depth,
+    duration and the single-touch (bounce) share — no sampling, no estimates.
+    """
+    rows = list(
+        events.exclude(session_key='')
+        .values('session_key')
+        .annotate(n=Count('id'), first=Min('created_at'), last=Max('created_at'))
+    )
+    total = len(rows)
+    if not total:
+        return {
+            'sessions': 0,
+            'avg_events_per_session': 0.0,
+            'median_events_per_session': 0,
+            'avg_duration_minutes': 0.0,
+            'bounce_rate': None,
+            'depth_distribution': [
+                {'id': '1', 'label': '۱ رویداد', 'value': 0},
+                {'id': '2-3', 'label': '۲ تا ۳', 'value': 0},
+                {'id': '4-10', 'label': '۴ تا ۱۰', 'value': 0},
+                {'id': '11+', 'label': '۱۱ به بالا', 'value': 0},
+            ],
+        }
+    depths = sorted(int(r['n']) for r in rows)
+    total_events = sum(depths)
+    single = sum(1 for d in depths if d == 1)
+    mid = total // 2
+    median = depths[mid] if total % 2 else (depths[mid - 1] + depths[mid]) // 2
+
+    duration_seconds = 0.0
+    measured = 0
+    for r in rows:
+        first, last = r['first'], r['last']
+        if first and last:
+            duration_seconds += (last - first).total_seconds()
+            measured += 1
+    avg_duration_minutes = round((duration_seconds / measured) / 60.0, 1) if measured else 0.0
+
+    buckets = {'1': 0, '2-3': 0, '4-10': 0, '11+': 0}
+    for d in depths:
+        if d <= 1:
+            buckets['1'] += 1
+        elif d <= 3:
+            buckets['2-3'] += 1
+        elif d <= 10:
+            buckets['4-10'] += 1
+        else:
+            buckets['11+'] += 1
+    bucket_labels = {'1': '۱ رویداد', '2-3': '۲ تا ۳', '4-10': '۴ تا ۱۰', '11+': '۱۱ به بالا'}
+    return {
+        'sessions': total,
+        'avg_events_per_session': round(total_events / total, 1),
+        'median_events_per_session': median,
+        'avg_duration_minutes': avg_duration_minutes,
+        'bounce_rate': _rate(single, total),
+        'depth_distribution': [
+            {'id': key, 'label': bucket_labels[key], 'value': buckets[key]}
+            for key in ('1', '2-3', '4-10', '11+')
+        ],
+    }
+
+
+def _content_interest(events):
+    """Where attention goes — event volume split by content type (real counts)."""
+    rows = (
+        events.exclude(content_type='')
+        .values('content_type')
+        .annotate(count=Count('id'))
+        .order_by('-count')
+    )
+    return [
+        {
+            'id': row['content_type'],
+            'label': CONTENT_TYPE_LABELS_FA.get(row['content_type'], row['content_type']),
+            'value': int(row['count'] or 0),
+        }
+        for row in rows
+    ]
+
+
+def _retention_snapshot(now):
+    """Real stickiness + week-over-week retention from logins and events.
+
+    - DAU/WAU/MAU + stickiness (DAU/MAU) reuse ``_active_user_ids``.
+    - WoW retention: of users active in the week before last, how many came
+      back in the most recent 7 days. Pure set intersection over real activity.
+    """
+    dau = len(_active_user_ids(now - timedelta(days=1), now))
+    wau = len(_active_user_ids(now - timedelta(days=7), now))
+    mau = len(_active_user_ids(now - timedelta(days=30), now))
+
+    prev_week = _active_user_ids(now - timedelta(days=14), now - timedelta(days=7))
+    this_week = _active_user_ids(now - timedelta(days=7), now)
+    retained = len(prev_week & this_week)
+    return {
+        'dau': dau,
+        'wau': wau,
+        'mau': mau,
+        'stickiness': _rate(dau, mau),
+        'wow_retention_rate': _rate(retained, len(prev_week)) if prev_week else None,
+        'wow_prior_cohort': len(prev_week),
+        'wow_retained': retained,
+    }
+
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated, IsStaffUser])
+@throttle_classes([StaffAdminThrottle])
+def analytics_behavior(request):
+    """Cohesive user-behaviour analytics — one payload, all real DB signals."""
+    days = _parse_period(request)
+    win = _window(days)
+    events = UserActivityEvent.objects.filter(
+        created_at__gte=win['start'], created_at__lte=win['end'],
+    )
+
+    tracked_events = events.count()
+    active_users = events.filter(user_id__isnull=False).values('user_id').distinct().count()
+    anon_sessions = events.filter(user_id__isnull=True).exclude(session_key='').values('session_key').distinct().count()
+
+    engagement_actions = events.aggregate(
+        likes=Count('id', filter=Q(action='like')),
+        ratings=Count('id', filter=Q(action='rate')),
+        watchlist=Count('id', filter=Q(action='add_to_watchlist')),
+        shares=Count('id', filter=Q(action='share')),
+        downloads=Count('id', filter=Q(action='download_click')),
+        trailers=Count('id', filter=Q(action='trailer_watch')),
+    )
+
+    data = {
+        'summary': {
+            'tracked_events': tracked_events,
+            'active_users': active_users,
+            'anonymous_sessions': anon_sessions,
+            'events_per_active': round(tracked_events / active_users, 1) if active_users else None,
+            'engagement_actions': {k: int(v or 0) for k, v in engagement_actions.items()},
+        },
+        'funnel': _behavior_funnel(events),
+        'discovery': _discovery_metrics(events),
+        'sessions': _session_depth(events),
+        'action_mix': _action_breakdown(events, limit=14),
+        'content_interest': _content_interest(events),
+        'heatmap': _activity_heatmap(win['start'], win['end'], win['tz']),
+        'retention': _retention_snapshot(win['now']),
+        'top_active_users': _top_active_users(win['start'], win['end'], limit=10),
         'realtime': _online_snapshot(win['now']),
     }
     return Response(_envelope(data, days=days, now=win['now'], win=win))

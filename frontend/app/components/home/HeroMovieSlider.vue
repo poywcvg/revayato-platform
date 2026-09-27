@@ -94,6 +94,24 @@ const detailHref = computed(() => {
   return item.type === 'series' ? `/series/${item.slug}` : `/movies/${item.slug}`
 })
 
+const watchHref = computed(() => {
+  const item = currentItem.value
+  if (!item) return '/movies'
+  return {
+    path: `/watch/${item.slug}`,
+    query: { mode: 'full', type: item.type, player: '1' },
+  }
+})
+
+const downloadHref = computed(() => {
+  const item = currentItem.value
+  if (!item) return '/movies'
+  return {
+    path: item.type === 'series' ? `/series/${item.slug}` : `/movies/${item.slug}`,
+    query: { access: 'download' },
+  }
+})
+
 const router = useRouter()
 
 function announceSelection() {
@@ -332,9 +350,9 @@ onBeforeUnmount(() => {
       ><CinematicIcon name="chevron-right" /></button>
 
       <NuxtLink
-        :to="detailHref"
+        :to="watchHref"
         class="hero-movie-slider__play"
-        :aria-label="`پخش یا مشاهده ${slideTitle}`"
+        :aria-label="`پخش آنلاین ${slideTitle}`"
         @click.stop
       >
         <CinematicIcon name="play" filled />
@@ -385,6 +403,22 @@ onBeforeUnmount(() => {
               <span class="hero-movie-slider__imdb-score">
                 <strong>{{ imdbRating }}</strong><span>/10</span>
               </span>
+            </div>
+
+            <div class="hero-movie-slider__actions" aria-label="دسترسی به فیلم">
+              <NuxtLink :to="watchHref" class="hero-movie-slider__action hero-movie-slider__action--play" @click.stop>
+                <CinematicIcon name="play" filled />
+                <span>پخش آنلاین</span>
+              </NuxtLink>
+              <NuxtLink
+                v-if="currentItem.has_downloads"
+                :to="downloadHref"
+                class="hero-movie-slider__action hero-movie-slider__action--download"
+                @click.stop
+              >
+                <CinematicIcon name="download" />
+                <span>دانلود</span>
+              </NuxtLink>
             </div>
           </article>
         </Transition>
@@ -726,6 +760,42 @@ onBeforeUnmount(() => {
   color: #fff;
   font-weight: 800;
   font-variant-numeric: tabular-nums;
+}
+
+.hero-movie-slider__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: .6rem;
+  margin-top: .85rem;
+}
+
+.hero-movie-slider__action {
+  display: inline-flex;
+  min-height: 2.65rem;
+  align-items: center;
+  justify-content: center;
+  gap: .45rem;
+  border: 1px solid rgb(255 255 255 / 22%);
+  border-radius: .8rem;
+  padding: .55rem 1rem;
+  font-size: .78rem;
+  font-weight: 900;
+  line-height: 1;
+  color: #fff;
+  text-decoration: none;
+  backdrop-filter: blur(12px);
+  transition: transform 160ms ease, background-color 160ms ease, border-color 160ms ease;
+}
+
+.hero-movie-slider__action :deep(svg) { width: 1rem; height: 1rem; }
+.hero-movie-slider__action--play { border-color: #fff; background: #fff; color: #080b0e; }
+.hero-movie-slider__action--download { background: rgb(5 8 11 / 58%); }
+.hero-movie-slider__action:focus-visible { outline: 2px solid #fff; outline-offset: 3px; }
+
+@media (hover: hover) and (pointer: fine) {
+  .hero-movie-slider__action:hover { transform: translateY(-2px); }
+  .hero-movie-slider__action--play:hover { background: rgb(255 255 255 / 88%); }
+  .hero-movie-slider__action--download:hover { border-color: rgb(255 255 255 / 55%); background: rgb(5 8 11 / 78%); }
 }
 
 .hero-movie-slider__nav {

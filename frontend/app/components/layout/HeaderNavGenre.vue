@@ -137,7 +137,7 @@ watch(() => route.fullPath, closeGroup)
                 v-for="genre in group.relatedGenres"
                 :key="genre.slug"
                 :to="{ path: group.path, query: { ...group.query, genre: genre.slug } }"
-                class="inline-flex min-h-10 items-center gap-1.5 rounded-xl px-2.5 py-1.5 text-[11px] font-bold ring-1 ring-transparent transition-colors"
+                class="inline-flex min-h-10 items-center gap-1.5 rounded-xl px-2.5 py-1.5 text-xs font-bold ring-1 ring-transparent transition-colors"
                 :class="isActiveGenre(genre.slug) ? 'bg-energy-500/14 text-brand ring-energy-400/20' : 'text-secondary hover:bg-elevated hover:text-ink'"
                 :aria-current="isActiveGenre(genre.slug) ? 'page' : undefined"
                 role="menuitem"
@@ -149,7 +149,7 @@ watch(() => route.fullPath, closeGroup)
             </div>
             <NuxtLink
               :to="group.path"
-              class="mt-3 flex min-h-11 items-center justify-center gap-1.5 rounded-xl border border-line bg-elevated/70 py-2 text-[10px] font-black text-muted transition hover:border-primary-500/40 hover:bg-elevated hover:text-brand"
+              class="mt-3 flex min-h-11 items-center justify-center gap-1.5 rounded-xl border border-line bg-elevated/70 py-2 text-[11px] font-black text-muted transition hover:border-primary-500/40 hover:bg-elevated hover:text-brand"
               role="menuitem"
               @click="closeGroup"
             >

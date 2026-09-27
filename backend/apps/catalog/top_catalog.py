@@ -87,12 +87,34 @@ def _version_coverage(obj) -> dict:
         'has_playback_ready': has_dub and has_toggleable,
     }
 
+def _media_verified(obj) -> bool:
+    """Do this title's sources actually answer? Blocks publish when they do not.
+
+    The link list only proves someone once wrote a URL down; this asks the host.
+    An unreachable-from-here result is not a failure verdict — the title simply
+    waits for the next pass instead of going live unverified.
+    """
+    from apps.catalog.media_verification import verification_enabled, verify_before_publish
+
+    if not verification_enabled():
+        return True
+    ok, blockers = verify_before_publish(obj)
+    if not ok:
+        logger.warning(
+            'Refusing to publish %s %s: media check says %s',
+            obj.__class__.__name__.lower(), obj.pk, ','.join(blockers),
+        )
+    return ok
+
+
 def _publish_movie(movie: Movie) -> bool:
     if movie.is_published and movie.publication_status == Movie.PublicationStatus.PUBLISHED:
         return False
     from apps.catalog.provider_import.media_links import is_playable_video_url
     if not _has_download_links(movie) and not is_playable_video_url(movie.video_url):
         logger.warning('Refusing to publish movie %s without a valid playback source', movie.pk)
+        return False
+    if not _media_verified(movie):
         return False
     movie.is_published = True
     movie.publication_status = Movie.PublicationStatus.PUBLISHED
@@ -105,6 +127,8 @@ def _publish_series(series: Series) -> bool:
         return False
     if not _has_download_links(series):
         logger.warning('Refusing to publish series %s without valid episode playback links', series.pk)
+        return False
+    if not _media_verified(series):
         return False
     series.is_published = True
     series.save(update_fields=['is_published', 'updated_at'])

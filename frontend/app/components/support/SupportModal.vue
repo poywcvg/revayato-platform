@@ -1,17 +1,17 @@
 <script setup lang="ts">
-import type { SupportCategory, SupportTicket } from '~/types'
+import type { CinematicIconName, SupportCategory, SupportTicket } from '~/types'
 
 const { isOpen, presetCategory, close } = useSupportModal()
 const support = useSupport()
 const authStore = useAuthStore()
 const notifications = useNotifications()
 
-const categoryOptions: Array<{ value: SupportCategory; label: string; icon: string }> = [
+const categoryOptions: Array<{ value: SupportCategory; label: string; icon: CinematicIconName }> = [
   { value: 'content_request', label: 'فیلم یا سریال', icon: 'film' },
-  { value: 'bug', label: 'گزارش مشکل', icon: 'triangle-alert' },
-  { value: 'content_fix', label: 'اصلاح اطلاعات', icon: 'pencil-line' },
+  { value: 'bug', label: 'گزارش مشکل', icon: 'info' },
+  { value: 'content_fix', label: 'اصلاح اطلاعات', icon: 'edit' },
   { value: 'suggestion', label: 'پیشنهاد', icon: 'sparkles' },
-  { value: 'support', label: 'پشتیبانی', icon: 'messages-square' },
+  { value: 'support', label: 'پشتیبانی', icon: 'comments' },
   { value: 'cooperation', label: 'همکاری', icon: 'heart' },
 ]
 
@@ -78,7 +78,7 @@ async function copyCode() {
   try {
     await navigator.clipboard.writeText(code)
     copied.value = true
-    notifications.success('کد پیگیری کپی شد')
+    notifications.success('کد پیگیری کپی شد', 'حالا می‌توانی گفتگو را از «پیام‌های من» دنبال کنی.')
   } catch {
     notifications.error('کپی نشد', 'کد را دستی انتخاب کن.')
   }
@@ -109,11 +109,11 @@ async function copyCode() {
           <header class="flex items-center justify-between gap-3 border-b border-white/8 px-5 py-4">
             <div class="flex items-center gap-3">
               <span class="grid size-10 place-items-center rounded-2xl bg-gradient-to-br from-primary-400/30 to-crimson/25 text-brand ring-1 ring-white/12">
-                <CinematicIcon name="wand-sparkles" class="size-5" />
+                <CinematicIcon name="sparkles" class="size-5" />
               </span>
               <div>
                 <h2 class="text-sm font-black text-ink">پیام به روایتو</h2>
-                <p class="text-[11px] text-muted">معمولاً کمتر از یک روز پاسخ می‌دهیم</p>
+                <p class="text-xs text-muted">معمولاً کمتر از یک روز پاسخ می‌دهیم</p>
               </div>
             </div>
             <button type="button" class="grid size-9 place-items-center rounded-xl text-secondary transition hover:bg-white/8 hover:text-ink active:scale-90" aria-label="بستن" @click="close">
@@ -124,7 +124,7 @@ async function copyCode() {
           <Transition name="support-step" mode="out-in">
             <div v-if="created" key="done" class="px-6 py-9 text-center">
               <span class="support-done mx-auto grid size-16 place-items-center rounded-full bg-success/15 text-success ring-1 ring-success/30">
-                <CinematicIcon name="circle-check" class="size-8" />
+                <CinematicIcon name="check-circle" class="size-8" />
               </span>
               <h3 class="mt-4 text-lg font-black text-ink">پیامت ثبت شد!</h3>
               <p class="mt-1 text-xs leading-6 text-muted">این کد را نگه دار تا در «پیام‌های من» گفتگو را پی بگیری.</p>
@@ -135,7 +135,7 @@ async function copyCode() {
                 @click="copyCode"
               >
                 {{ created.tracking_code }}
-                <CinematicIcon :name="copied ? 'check' : 'share-2'" class="size-4" />
+                <CinematicIcon :name="copied ? 'check' : 'share'" class="size-4" />
               </button>
               <div class="mt-6 flex justify-center gap-2">
                 <NuxtLink to="/contact" class="ui-secondary-button min-h-11" @click="close">گفتگوها</NuxtLink>
@@ -179,9 +179,9 @@ async function copyCode() {
 
               <button type="submit" class="ui-primary-button min-h-11 w-full" :disabled="submitting">
                 {{ submitting ? 'در حال ارسال…' : 'ارسال سریع' }}
-                <CinematicIcon name="zap" class="size-4" />
+                <CinematicIcon name="arrow-left" class="size-4" />
               </button>
-              <div class="flex items-center justify-between text-[11px]">
+              <div class="flex items-center justify-between text-xs">
                 <NuxtLink to="/contact" class="font-bold text-brand hover:underline" @click="close">گفتگوی کامل‌تر</NuxtLink>
                 <NuxtLink v-if="!authStore.isAuthenticated" to="/auth/login?redirect=/contact" class="font-bold text-secondary hover:text-ink" @click="close">ورود به حساب</NuxtLink>
                 <a v-else href="https://t.me/revayato" target="_blank" rel="noopener noreferrer" class="font-bold text-secondary hover:text-ink">@revayato در تلگرام</a>

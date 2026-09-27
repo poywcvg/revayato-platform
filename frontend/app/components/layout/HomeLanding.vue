@@ -18,6 +18,7 @@ const { catalog, recentlyAdded, pending, error, loadFromApi } = useCatalog()
 const { api } = useApi()
 const config = useRuntimeConfig()
 const route = useRoute()
+const nuxtApp = useNuxtApp()
 const authStore = useAuthStore()
 
 function heroScore(item: Movie) {
@@ -36,11 +37,19 @@ const seriesOnly = computed(() => catalog.value.filter(item => item.type === 'se
 
 /** Backend-scored rails — frontend only renders. */
 const remoteTrending = ref<Movie[]>([])
+const remoteHero = ref<Movie[]>([])
 const remoteFeatured = ref<Movie[]>([])
 const remoteDubbed = ref<Movie[]>([])
 const remotePopularSeries = ref<Movie[]>([])
 /** Dedicated «تازه اضافه‌شده‌ها» rail — independent of the lean catalog merge. */
 const remoteRecent = ref<Movie[]>([])
+/** Anime shelves — mixed newest, films only, series only (see /catalog/anime/). */
+const remoteAnimeNew = ref<Movie[]>([])
+const remoteAnimeMovies = ref<Movie[]>([])
+const remoteAnimeSeries = ref<Movie[]>([])
+/** IMDb Top 250 shelves — playable positions only, in chart order (see /catalog/top250/). */
+const remoteTop250Movies = ref<Movie[]>([])
+const remoteTop250Series = ref<Movie[]>([])
 const shellPending = ref(true)
 const railMeta = ref<{
   focus_genre?: string
@@ -49,14 +58,16 @@ const railMeta = ref<{
 }>({})
 
 const heroSource = computed(() => {
+  if (remoteHero.value.length) return remoteHero.value
   if (catalog.value.length) return catalog.value
   return remoteRecent.value
 })
 
 const heroItems = computed(() => {
   const source = heroSource.value
-  const withArt = source.filter(item => item.has_backdrop !== false && item.has_artwork !== false)
-  const pool = withArt.length >= 3 ? withArt : source.filter(item => item.backdrop_url && item.poster_url)
+  const playable = source.filter(item => item.has_downloads)
+  const withArt = playable.filter(item => item.has_backdrop !== false && item.has_artwork !== false)
+  const pool = withArt.length >= 3 ? withArt : playable.filter(item => item.backdrop_url && item.poster_url)
   return [...pool].sort((a, b) => heroScore(b) - heroScore(a)).slice(0, 6)
 })
 
@@ -86,6 +97,15 @@ const newReleasesEyebrow = computed(() => {
     seriesCount ? `${seriesCount.toLocaleString('fa-IR')} سریال` : '',
   ].filter(Boolean)
   return parts.length ? parts.join(' و ') : 'جدیدترین عنوان‌های آرشیو'
+})
+const animeNewEyebrow = computed(() => {
+  const movieCount = remoteAnimeNew.value.filter(item => item.type === 'movie').length
+  const seriesCount = remoteAnimeNew.value.filter(item => item.type === 'series').length
+  const parts = [
+    movieCount ? `${movieCount.toLocaleString('fa-IR')} فیلم` : '',
+    seriesCount ? `${seriesCount.toLocaleString('fa-IR')} سریال` : '',
+  ].filter(Boolean)
+  return parts.length ? parts.join(' و ') : 'تازه‌ترین انیمه‌های آرشیو'
 })
 const popularSeries = computed(() => {
   if (remotePopularSeries.value.length) return remotePopularSeries.value.slice(0, railLimit)
@@ -180,6 +200,57 @@ async function loadRecentRail() {
   }
 }
 
+async function loadAnimeRails() {
+  const mediaBase = String(config.public.mediaCdnBaseUrl)
+  const adaptMixed = (rows: (ApiCatalogItem & { content_type?: ContentType })[]) =>
+    rows.map((item) => {
+      const type: ContentType = item.content_type === 'series' ? 'series' : 'movie'
+      return adaptApiCatalogListItem(item, type, mediaBase)
+    })
+  const [mixedResult, moviesResult, seriesResult] = await Promise.allSettled([
+    api<ApiListResponse<ApiCatalogItem & { content_type?: ContentType }>>('/catalog/anime/', {
+      query: { limit: railLimit },
+      timeout: 6_000,
+    }),
+    api<ApiListResponse<ApiCatalogItem>>('/catalog/anime/', {
+      query: { type: 'movie', limit: railLimit },
+      timeout: 6_000,
+    }),
+    api<ApiListResponse<ApiCatalogItem>>('/catalog/anime/', {
+      query: { type: 'series', limit: railLimit },
+      timeout: 6_000,
+    }),
+  ])
+  remoteAnimeNew.value = mixedResult.status === 'fulfilled'
+    ? adaptMixed(unwrapApiList(mixedResult.value))
+    : []
+  remoteAnimeMovies.value = moviesResult.status === 'fulfilled'
+    ? unwrapApiList(moviesResult.value).map(item => adaptApiCatalogListItem(item, 'movie', mediaBase))
+    : []
+  remoteAnimeSeries.value = seriesResult.status === 'fulfilled'
+    ? unwrapApiList(seriesResult.value).map(item => adaptApiCatalogListItem(item, 'series', mediaBase))
+    : []
+}
+
+async function loadTop250Rails() {
+  const mediaBase = String(config.public.mediaCdnBaseUrl)
+  const load = async (type: ContentType) => {
+    try {
+      const response = await api<ApiListResponse<ApiCatalogItem>>('/catalog/top250/', {
+        query: { type, available: 1, limit: 16 },
+        timeout: 6_000,
+      })
+      return unwrapApiList(response).map(item => adaptApiCatalogListItem(item, type, mediaBase))
+    }
+    catch {
+      return []
+    }
+  }
+  const [moviesTop, seriesTop] = await Promise.all([load('movie'), load('series')])
+  remoteTop250Movies.value = moviesTop
+  remoteTop250Series.value = seriesTop
+}
+
 async function loadHeroShell() {
   // The home catalog load already fetches /movies/?limit=12&sort=popular (the
   // popularMovies=12 slice in useContent's home mode), so we reuse that instead
@@ -205,6 +276,7 @@ async function loadRemoteDiscovery() {
         eyebrow?: Record<string, string>
       }
       featured?: ApiCatalogItem[]
+      hero?: ApiCatalogItem[]
       dubbed?: ApiCatalogItem[]
       popular_series?: ApiCatalogItem[]
     }>('/home/rails/', {
@@ -221,11 +293,13 @@ async function loadRemoteDiscovery() {
   if (railsResult.status === 'fulfilled') {
     const payload = railsResult.value
     railMeta.value = payload.meta || {}
+    remoteHero.value = adaptMovies(payload.hero)
     remoteFeatured.value = adaptMovies(payload.featured)
     remoteDubbed.value = adaptMovies(payload.dubbed).filter(item => item.is_dubbed)
     remotePopularSeries.value = adaptSeries(payload.popular_series)
   } else {
     railMeta.value = {}
+    remoteHero.value = []
     remoteFeatured.value = []
     remoteDubbed.value = []
     remotePopularSeries.value = []
@@ -242,11 +316,21 @@ async function refreshHomeShell(force = false) {
 
 // Block SSR only on the two fast shell endpoints (recent + popular hero).
 // Full catalog merge + discovery rails hydrate after paint so TTFB stays low.
-try {
-  await Promise.all([loadRecentRail(), loadHeroShell()])
+// Await on the server AND while hydrating (hero/featured live in plain refs, so the
+// hydrating client must repopulate them to match the server DOM). On a client SPA
+// navigation to home, do NOT block the swap — `shellPending` drives the skeleton and
+// awaiting only froze the outgoing page under the out-in page transition.
+if (import.meta.server || nuxtApp.isHydrating) {
+  try {
+    await Promise.all([loadRecentRail(), loadHeroShell(), loadRemoteDiscovery()])
+  }
+  finally {
+    shellPending.value = false
+  }
 }
-finally {
-  shellPending.value = false
+else {
+  Promise.all([loadRecentRail(), loadHeroShell(), loadRemoteDiscovery()])
+    .finally(() => { shellPending.value = false })
 }
 
 async function revealRequestedSection(section: unknown) {
@@ -260,8 +344,22 @@ onMounted(() => {
   void revealRequestedSection(route.query.section)
   void loadFromApi(false, 'home')
   void loadRemoteDiscovery()
+  void loadTop250Rails()
+  void loadAnimeRails()
 })
-useSeoMeta({ title: 'خانه', description: 'در روایتو فیلم و سریال را پیدا کن، تماشا کن و تجربه‌ات را با دوستانت به اشتراک بگذار.' })
+// The home page answers the broadest searches («دانلود فیلم», «سریال دوبله»…),
+// so its title names the offer, not the page ("خانه" ranked for nothing).
+const homeTitle = 'دانلود فیلم و سریال با دوبله و زیرنویس فارسی'
+const homeDescription = 'دانلود و تماشای آنلاین هزاران فیلم و سریال با دوبله و زیرنویس فارسی در کیفیت‌های مختلف؛ فیلم‌های جدید، سریال‌های کره‌ای و ترکی، انیمه و ۲۵۰ فیلم برتر IMDb در روایتو.'
+useSeoMeta({
+  title: homeTitle,
+  description: homeDescription,
+  ogTitle: `${homeTitle} | روایتو`,
+  ogDescription: homeDescription,
+  ogImage: `${useRuntimeConfig().public.siteUrl}/icon-512.png?v=2`,
+  twitterCard: 'summary',
+  robots: 'index, follow, max-image-preview:large',
+})
 </script>
 
 <template>
@@ -307,6 +405,35 @@ useSeoMeta({ title: 'خانه', description: 'در روایتو فیلم و سر
         </section>
       </DeferredContent>
 
+      <DeferredContent v-if="remoteTop250Movies.length" class="home-landing__deferred">
+        <LazyMovieRow
+          id="top250-movies"
+          hydrate-on-visible
+          title="۲۵۰ فیلم برتر IMDb"
+          eyebrow="بهترین‌های تاریخ سینما"
+          description="به ترتیب رتبه در فهرست رسمی IMDb — هر روز به‌روز می‌شود."
+          :items="remoteTop250Movies"
+          href="/top250"
+          link-label="هر ۲۵۰ فیلم"
+          icon="trophy"
+          dark
+        />
+      </DeferredContent>
+      <DeferredContent v-if="remoteTop250Series.length" class="home-landing__deferred">
+        <LazyMovieRow
+          id="top250-series"
+          hydrate-on-visible
+          title="۲۵۰ سریال برتر IMDb"
+          eyebrow="بهترین‌های تاریخ تلویزیون"
+          description="سریال‌هایی که میلیون‌ها کاربر IMDb بالاترین امتیاز را به آن‌ها داده‌اند."
+          :items="remoteTop250Series"
+          href="/top250?type=series"
+          link-label="هر ۲۵۰ سریال"
+          icon="trophy"
+          dark
+        />
+      </DeferredContent>
+
       <section class="content-section" aria-labelledby="home-party-title">
         <NuxtLink
           to="/watch-party"
@@ -317,7 +444,7 @@ useSeoMeta({ title: 'خانه', description: 'در روایتو فیلم و سر
               <CinematicIcon name="users" class="size-5" />
             </span>
             <div class="min-w-0">
-              <p class="text-[11px] font-black text-brand">با دوستان</p>
+              <p class="text-xs font-black text-brand">با دوستان</p>
               <h2 id="home-party-title" class="mt-0.5 text-base font-black text-ink sm:text-lg">تماشای گروهی</h2>
               <p class="mt-1 text-xs leading-6 text-secondary">اتاق خصوصی بساز، لینک بفرست و هم‌زمان تماشا کنید.</p>
             </div>
@@ -400,6 +527,41 @@ useSeoMeta({ title: 'خانه', description: 'در روایتو فیلم و سر
           :eyebrow="popularSeriesEyebrow"
           :items="popularSeries"
           href="/series?sort=popular"
+          icon="series"
+          dark
+        />
+      </DeferredContent>
+      <DeferredContent v-if="remoteAnimeNew.length" class="home-landing__deferred">
+        <LazyMovieRow
+          hydrate-on-visible
+          title="تازه‌ترین انیمه‌ها"
+          :eyebrow="animeNewEyebrow"
+          description="جدیدترین انیمه‌های ژاپنی که به آرشیو روایتو اضافه شده‌اند."
+          :items="remoteAnimeNew"
+          href="/movies?genre=anime"
+          link-label="همه انیمه‌ها"
+          icon="animation"
+          dark
+        />
+      </DeferredContent>
+      <DeferredContent v-if="remoteAnimeMovies.length" class="home-landing__deferred">
+        <LazyMovieRow
+          hydrate-on-visible
+          title="انیمه‌های سینمایی"
+          eyebrow="فیلم‌های انیمه"
+          :items="remoteAnimeMovies"
+          href="/movies/genre/anime"
+          icon="movie"
+          dark
+        />
+      </DeferredContent>
+      <DeferredContent v-if="remoteAnimeSeries.length" class="home-landing__deferred">
+        <LazyMovieRow
+          hydrate-on-visible
+          title="انیمه‌های سریالی"
+          eyebrow="سریال‌های انیمه"
+          :items="remoteAnimeSeries"
+          href="/series/genre/anime"
           icon="series"
           dark
         />

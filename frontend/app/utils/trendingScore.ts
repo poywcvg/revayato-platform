@@ -129,13 +129,29 @@ export function featuredScore(item: Movie, now = Date.now(), recentHits = 0) {
   return score
 }
 
-/** «محبوب» — sustained audience engagement. */
+// Confidence-weighted community rating — mirrors backend trending.popular_score
+// so the combined (movies+series) view ranks «محبوب‌ترین» the same way the API
+// does for single-type pages: user ratings first, engagement breaks ties.
+const SITE_RATING_PRIOR_MEAN = 7.0
+const SITE_RATING_PRIOR_VOTES = 6
+
+function siteRatingBayesian(item: Movie): { score: number, votes: number } {
+  const votes = Number((item as Movie & { site_rating_count?: number }).site_rating_count || 0)
+  const raw = Number((item as Movie & { site_rating?: number }).site_rating || 0)
+  if (!votes || !raw) return { score: SITE_RATING_PRIOR_MEAN, votes: 0 }
+  const m = SITE_RATING_PRIOR_VOTES
+  return { score: (votes * raw + m * SITE_RATING_PRIOR_MEAN) / (votes + m), votes }
+}
+
+/** «محبوب» — driven primarily by community ratings, engagement breaks ties. */
 export function popularScore(item: Movie, now = Date.now(), recentHits = 0) {
   const age = ageHours(item, now)
-  let score = log1p(viewsOf(item)) * 3.4
+  const user = siteRatingBayesian(item)
+  let score = (user.score - SITE_RATING_PRIOR_MEAN) * 7
+    + log1p(user.votes) * 2.6
+    + log1p(viewsOf(item)) * 3.4
     + log1p(likesOf(item)) * 4.2
     + Number(item.popularity || 0) / 12
-    + Math.max(0, (ratingOf(item) - 6) * 1.1)
     + log1p(recentHits) * 1.6
     + playableBonus(item) * 0.55
 

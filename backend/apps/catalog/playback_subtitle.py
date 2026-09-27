@@ -4,12 +4,15 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import time
 from typing import Any
 from urllib.parse import urlsplit
 
 from django.core.cache import cache
 from django.db import transaction
 from django.utils import timezone
+
+from apps.catalog.slugs import canonical_slug
 
 logger = logging.getLogger(__name__)
 
@@ -139,42 +142,221 @@ def resolve_playback_subtitle_gaps(
     )
 
 
-def _attach_providers_sync_movie(movie, *, timeout_seconds: int) -> bool:
-    """SubtitleStar → Subzone sidecar attach for the movie the player is open on.
+EXHAUSTED_RESULT = 'exhausted'
+
+
+def mark_playback_subtitle_gaps_exhausted(
+    *,
+    content_type: str,
+    object_id: int,
+    episode_ids: list[int] | None = None,
+    reason: str = '',
+) -> int:
+    """Record that a complete worker pass found no Persian subtitle for these gaps.
+
+    Stored as UNAVAILABLE + ``last_result='exhausted'`` with the time and the
+    source file that was searched, so a later report for a different file (a new
+    encode or mirror) is not blocked by this verdict.
+    """
+    from apps.catalog.models import PlaybackSubtitleGap
+
+    rows = PlaybackSubtitleGap.objects.filter(
+        content_type=str(content_type or ''),
+        object_id=int(object_id),
+    ).exclude(status=PlaybackSubtitleGap.Status.RESOLVED)
+    if episode_ids is not None:
+        rows = rows.filter(episode_id__in=[int(value) for value in episode_ids])
+    now = timezone.now()
+    marked = 0
+    for gap in rows:
+        meta = dict(gap.meta or {})
+        meta['exhausted_at'] = now.isoformat()
+        meta['exhausted_source_path'] = str(meta.get('source_path') or '')
+        meta['exhausted_count'] = int(meta.get('exhausted_count') or 0) + 1
+        meta['exhausted_reason'] = str(reason or '')[:32]
+        gap.meta = meta
+        gap.status = PlaybackSubtitleGap.Status.UNAVAILABLE
+        gap.last_result = EXHAUSTED_RESULT
+        gap.save(update_fields=['meta', 'status', 'last_result', 'updated_at'])
+        marked += 1
+    return marked
+
+
+def gap_is_exhausted(gap) -> bool:
+    """True while an exhausted verdict still applies to this gap's current source."""
+    from datetime import datetime
+
+    from django.conf import settings
+    from apps.catalog.models import PlaybackSubtitleGap
+
+    if gap is None or gap.status != PlaybackSubtitleGap.Status.UNAVAILABLE:
+        return False
+    if gap.last_result != EXHAUSTED_RESULT:
+        return False
+    meta = gap.meta or {}
+    try:
+        exhausted_at = datetime.fromisoformat(str(meta.get('exhausted_at') or ''))
+    except ValueError:
+        return False
+    if timezone.is_naive(exhausted_at):
+        exhausted_at = timezone.make_aware(exhausted_at)
+    cooldown = int(getattr(settings, 'PLAYBACK_SUBTITLE_EXHAUSTED_COOLDOWN_SECONDS', 6 * 60 * 60))
+    if meta.get('exhausted_reason') == BURNED_IN_ONLY:
+        # Only a new file (different source_path, checked below) can change this.
+        cooldown = max(cooldown, 7 * 24 * 60 * 60)
+    if (timezone.now() - exhausted_at).total_seconds() >= cooldown:
+        return False
+    searched = str(meta.get('exhausted_source_path') or '')
+    current = str(meta.get('source_path') or '')
+    return not (searched and current and searched != current)
+
+
+def _exhausted_payload(gap, *, episode_id: int | None = None) -> dict[str, Any]:
+    payload: dict[str, Any] = {
+        'status': EXHAUSTED_RESULT,
+        'reported': True,
+        'queued': False,
+        'has_subtitle_tracks': False,
+        'report_id': gap.pk,
+        'message': 'no_subtitle_found',
+    }
+    if episode_id is not None:
+        payload['episode_id'] = episode_id or None
+    return payload
+
+
+NOT_NEEDED_RESULT = 'not_needed'
+_PERSIAN_LANGUAGE_CODES = {'fa', 'fas', 'per', 'persian', 'farsi'}
+
+
+def playback_subtitle_not_needed(
+    obj,
+    *,
+    version: str = '',
+    active_link: dict | None = None,
+    preferred_source_url: str = '',
+) -> str:
+    """Why this playback needs no Persian sidecar, or ``''`` when it does.
+
+    A dubbed stream carries Persian in the audio and a Persian-language title
+    is already Persian, so neither is a gap: registering one only puts the
+    title on the urgent crawler lane every time someone presses play.
+    HardSub is deliberately *not* here — providers mislabel encodes often
+    enough that burned-in Persian cannot be trusted before the worker has
+    probed the file (see ``title_is_burned_in_only``).
+    """
+    from apps.catalog.subtitle_extract import looks_like_dub_link, url_implies_dub
+
+    if str(version or '').strip().lower() in {'dub', 'dubbed'}:
+        return 'dubbed_stream'
+    if active_link is not None:
+        if looks_like_dub_link(active_link):
+            return 'dubbed_stream'
+    elif preferred_source_url and url_implies_dub({'url': preferred_source_url}):
+        return 'dubbed_stream'
+    language = str(getattr(obj, 'original_language', '') or '').strip().lower()
+    if language in _PERSIAN_LANGUAGE_CODES:
+        return 'persian_original'
+    return ''
+
+
+BURNED_IN_ONLY = 'burned_in_only'
+
+
+def title_is_burned_in_only(obj) -> bool:
+    """Every stream's CDN file name says Dubbed or HardSub (Çukur: 490 Dubbed +
+    262 HardSub files, nothing else). No subtitle-less stream exists for a
+    sidecar to bind to, and one drawn over burned-in Persian doubles the text.
+    File names only — provider labels are too often wrong to trust here.
+    """
+    from apps.catalog.subtitle_extract import url_implies_dub, url_implies_hardsub
+
+    links = [
+        row for row in (getattr(obj, 'download_links', None) or [])
+        if isinstance(row, dict) and str(row.get('url') or '').startswith(('https://', 'http://'))
+    ]
+    return bool(links) and all(url_implies_dub(row) or url_implies_hardsub(row) for row in links)
+
+
+def _not_needed_payload(reason: str, *, episode_id: int | None = None) -> dict[str, Any]:
+    payload = {
+        'status': NOT_NEEDED_RESULT,
+        'reported': False,
+        'queued': False,
+        'has_subtitle_tracks': False,
+        'reason': reason,
+        'message': NOT_NEEDED_RESULT,
+    }
+    if episode_id:
+        payload['episode_id'] = episode_id
+    return payload
+
+
+def _sync_budget(timeout_seconds: int) -> int:
+    """Wall-clock cap for the in-request sidecar lookup.
+
+    Provider sidecars are a best-effort acceleration for the open player; the
+    worker performs the full embedded-demux → SubtitleStar → Subzone pipeline
+    with a real time budget. Keeping this small guarantees the ensure endpoint
+    returns quickly instead of stalling the player request for 10+ seconds.
+    """
+    from django.conf import settings
+
+    cap = max(1, int(getattr(settings, 'PLAYBACK_SYNC_ATTACH_SECONDS', 4)))
+    return min(cap, max(1, int(timeout_seconds or cap)))
+
+
+def _attach_providers_sync_movie(movie, *, timeout_seconds: int, preferred_source_url: str = '') -> bool:
+    """SubtitleStar → SubDL → Subzone sidecar attach for the movie the player is open on.
 
     Deliberately avoids ``attach_extracted_subtitle``: ffmpeg demux belongs on the
     Celery worker, not on the player request thread. The open player gets cues in
-    seconds even when an embedded extraction is still queued.
+    seconds even when an embedded extraction is still queued. One deadline is
+    shared, so a provider that fails fast (open circuit, no key) hands its time
+    to the next instead of burning a fixed slice.
     """
     from apps.catalog.subtitle_extract import (
+        _attach_subdl_subtitle,
         _attach_subtitlestar_subtitle,
         _attach_subzone_subtitle,
     )
 
     links = [item for item in (movie.download_links or []) if isinstance(item, dict)]
-    budget = max(8, int(timeout_seconds or 12))
-    star_budget = min(budget - 2, max(6, budget * 2 // 3))
-    if _attach_subtitlestar_subtitle(movie, links, timeout_seconds=star_budget):
-        return True
-    remaining = max(6, budget - min(star_budget, 8))
-    return bool(_attach_subzone_subtitle(movie, links, timeout_seconds=remaining))
+    budget = max(1, int(timeout_seconds or 4))
+    deadline = time.monotonic() + budget
+    chain = (
+        (_attach_subtitlestar_subtitle, max(1, budget * 2 // 3)),
+        (_attach_subdl_subtitle, budget),
+        (_attach_subzone_subtitle, budget),
+    )
+    for attach, cap in chain:
+        left = int(deadline - time.monotonic())
+        if left < 1:
+            return False
+        if attach(movie, links, timeout_seconds=min(cap, left), preferred_source_url=preferred_source_url):
+            return True
+    return False
 
 
-def _attach_open_episode_subtitlestar(series, episode, *, timeout_seconds: int) -> bool:
-    """SubtitleStar/Subzone lookup scoped to the episode currently open in the player."""
+def _attach_open_episode_subtitlestar(series, episode, *, timeout_seconds: int, preferred_source_url: str = '') -> bool:
+    """SubtitleStar → SubDL → Subzone lookup scoped to the episode open in the player."""
     from apps.catalog.subtitle_contract import normalize_subtitle_tracks
     from apps.catalog.subtitle_extract import (
         _episode_video_map,
+        _fps_prealigned_payload,
         _is_usable_persian_webvtt,
         _links_for_episode,
+        _measured_runtime,
         _non_conflicting_release_sources,
         _store_webvtt,
         _strict_release_sources,
         _track_payload,
+        _with_preferred_source,
         ensure_episodes_from_download_links,
         looks_like_dub_link,
         normalize_subtitle_payload,
     )
+    from apps.catalog.subdl import find_series_episode_subtitles as find_subdl_episode_subtitles
     from apps.catalog.subtitle_star import find_series_episode_subtitles
     from apps.catalog.subzone import find_series_episode_subtitles as find_subzone_episode_subtitles
 
@@ -200,45 +382,60 @@ def _attach_open_episode_subtitlestar(series, episode, *, timeout_seconds: int) 
     if key not in videos:
         return False
 
-    budget = max(6, int(timeout_seconds or 12))
-    star_budget = min(budget, max(6, budget * 2 // 3))
-    matches = find_series_episode_subtitles(
-        series,
-        episode_videos={key: videos[key]},
-        timeout_seconds=star_budget,
+    budget = max(1, int(timeout_seconds or 4))
+    deadline = time.monotonic() + budget
+    chain = (
+        ('subtitlestar', find_series_episode_subtitles, max(1, budget * 2 // 3)),
+        ('subdl', find_subdl_episode_subtitles, budget),
+        ('subzone', find_subzone_episode_subtitles, budget),
     )
-    provider = 'subtitlestar'
-    if not matches:
-        remaining = max(6, budget - min(star_budget, 8))
-        matches = find_subzone_episode_subtitles(
+    match = None
+    payload = b''
+    provider = ''
+    for provider, finder, cap in chain:
+        left = int(deadline - time.monotonic())
+        if left < 1:
+            return False
+        matches = finder(
             series,
             episode_videos={key: videos[key]},
-            timeout_seconds=remaining,
+            timeout_seconds=min(cap, left),
+        ) or []
+        # Accuracy guard: only bind cues that provably belong to this exact
+        # season/episode. A "closest" match would play with the wrong timing,
+        # which is worse than a short wait — the worker lane re-probes with
+        # release matching and the beat drain guarantees an eventual retry.
+        match = next(
+            (
+                row for row in matches
+                if int(row.season_number) == season_no and int(row.episode_number) == ep_no
+            ),
+            None,
         )
-        provider = 'subzone'
-    if not matches:
-        return False
-
-    # Accuracy guard: only bind cues that provably belong to this exact
-    # season/episode. A "closest" match from the provider would play with the
-    # wrong timing, which is worse than a short wait — the worker lane re-probes
-    # with release matching and the beat drain guarantees an eventual retry.
-    match = next(
-        (
-            row for row in matches
-            if int(row.season_number) == season_no and int(row.episode_number) == ep_no
-        ),
-        None,
-    )
+        if match is None:
+            continue
+        payload = normalize_subtitle_payload(match.payload, filename=match.filename)
+        if _is_usable_persian_webvtt(payload):
+            break
+        match = None
     if match is None:
         return False
-    payload = normalize_subtitle_payload(match.payload, filename=match.filename)
-    if not _is_usable_persian_webvtt(payload):
-        return False
+    # Same FPS pre-alignment the worker lane applies (23.976 ↔ 25 releases),
+    # timed against the viewer's own stream when we know it.
+    episode_urls = videos.get(key, [])
+    payload = _fps_prealigned_payload(
+        payload,
+        subtitle_release=match.release_name,
+        video_reference=(preferred_source_url or (episode_urls[0] if episode_urls else '')),
+    )
 
     filename = f'series-{series.pk}-s{season_no}e{ep_no}-fa-{provider}.vtt'
-    saved = _store_webvtt(payload, filename=filename)
-    episode_urls = videos.get(key, [])
+    saved = _store_webvtt(
+        payload, filename=filename,
+        duration=_measured_runtime(series, episode=episode),
+    )
+    if not saved:
+        return False
     bound_sources = _strict_release_sources(match.release_name, (
         url for url in match.source_urls
         if url and not looks_like_dub_link({'url': url, 'label': url})
@@ -260,6 +457,9 @@ def _attach_open_episode_subtitlestar(series, episode, *, timeout_seconds: int) 
         sync_confidence = 'title-fallback'
     if not bound_sources:
         return False
+    # Bind the exact URL being played first so the player pairs cues to the
+    # active stream (highest sync confidence) instead of a ranked mirror.
+    bound_sources = _with_preferred_source(bound_sources, preferred_source_url)
 
     tracks = []
     for index, source_url in enumerate(bound_sources, start=1):
@@ -305,7 +505,10 @@ def ensure_playback_subtitles(
     Priority:
       1. Queue urgent embedded extraction from the exact playback file
       2. SubtitleStar release/IMDb match when no embedded track is available
-      3. Subzone and other configured provider fallbacks
+      3. SubDL exact IMDb/TMDb-id API lookup
+      4. Subzone (robots-gated canonical slugs, metadata-verified)
+
+    A title that already carries tracks answers at once and is never searched.
 
     Remote ffmpeg stays on the worker so flaky TLS cannot freeze the player.
     """
@@ -343,8 +546,31 @@ def ensure_playback_subtitles(
         )
         return bool(getattr(django_settings, 'SOFTSUB_ALLOW_FFMPEG', False)) or soft
 
+    def _active_source_link(links: list[dict]) -> dict | None:
+        """Return metadata for the exact stream open in the player.
+
+        A title can expose both HardSub and original encodes. Looking at *any*
+        HardSub link used to suppress/report the wrong lane. The viewer report
+        must describe the selected stream, because subtitle timing is bound to
+        that release and URL.
+        """
+        if preferred_source_url:
+            selected = next(
+                (row for row in links if str(row.get('url') or '').strip() == preferred_source_url),
+                None,
+            )
+            if selected is not None:
+                return selected
+        return None
+
+    def _active_source_is_hardsub(links: list[dict]) -> bool:
+        selected = _active_source_link(links)
+        if selected is not None:
+            return bool(looks_like_hardsub_link(selected))
+        return version == 'hardsub'
+
     if kind == 'movie':
-        movie = Movie.objects.filter(is_published=True, slug=slug).first()
+        movie = Movie.objects.filter(is_published=True, slug=canonical_slug(Movie, slug)).first()
         if movie is None:
             return {'status': 'missing', 'reported': False, 'queued': False, 'has_subtitle_tracks': False}
 
@@ -358,23 +584,21 @@ def ensure_playback_subtitles(
                 'message': 'tracks_present',
             }
 
-        # Player soft-poll: never re-queue or hit SubtitleStar — just ask if cues landed.
-        if not sync:
-            return {
-                'status': 'queued',
-                'reported': False,
-                'queued': True,
-                'has_subtitle_tracks': False,
-                'message': 'polling',
-            }
-
         links = [item for item in (movie.download_links or []) if isinstance(item, dict)]
+        not_needed = playback_subtitle_not_needed(
+            movie,
+            version=version,
+            active_link=_active_source_link(links),
+            preferred_source_url=preferred_source_url,
+        )
+        if not_needed:
+            return _not_needed_payload(not_needed)
         has_soft = (
             any(url_implies_softsub(item) for item in links)
             or download_links_imply_softsub(links)
         )
         allow_ffmpeg = _allow_ffmpeg(links)
-        has_hard = any(looks_like_hardsub_link(item) for item in links)
+        has_hard = _active_source_is_hardsub(links)
         prefer_embedded = bool(has_soft and allow_ffmpeg)
         soft_only = bool(links) and prefer_embedded and not has_hard
         burned_in_only = bool(links) and has_hard and not allow_ffmpeg
@@ -392,8 +616,27 @@ def ensure_playback_subtitles(
                 'prefer_embedded': prefer_embedded,
                 'allow_ffmpeg': allow_ffmpeg,
                 'source_path': _safe_source_path(preferred_source_url),
+                'preferred_source_url': preferred_source_url,
             },
         )
+
+        # A full pass already came back empty for this file: answer at once
+        # rather than re-queue the same hunt for every viewer.
+        if gap_is_exhausted(gap):
+            return _exhausted_payload(gap)
+
+        # Player soft-poll: the gap is registered above so the beat drain can
+        # retry it, but never re-queue or hit providers from a poll — the caller
+        # only wants to know whether cues have landed yet.
+        if not sync:
+            return {
+                'status': 'queued',
+                'reported': True,
+                'queued': True,
+                'has_subtitle_tracks': False,
+                'report_id': gap.pk,
+                'message': 'polling',
+            }
 
         if burned_in_only:
             # HardSub-only rows still get SubtitleStar sidecars so online SoftSub
@@ -417,6 +660,8 @@ def ensure_playback_subtitles(
                 _clear_subtitlestar_miss_for_movie(movie)
                 from apps.catalog.subzone import clear_subzone_miss_for_movie
                 clear_subzone_miss_for_movie(movie)
+                from apps.catalog.subdl import clear_subdl_miss_for_movie
+                clear_subdl_miss_for_movie(movie)
             try:
                 queued = enqueue_movie_softsub_urgent(
                     movie.pk,
@@ -431,13 +676,14 @@ def ensure_playback_subtitles(
 
             attached = False
             if sync:
-                sync_budget = min(14, max(8, int(timeout_seconds or 12)))
+                sync_budget = _sync_budget(timeout_seconds)
                 try:
                     attached = bool(attach_extracted_subtitle(
                         movie,
                         force=True,
                         timeout_seconds=sync_budget,
                         allow_ffmpeg=False,
+                        preferred_source_url=preferred_source_url,
                     ))
                 except Exception as exc:
                     logger.info('playback subtitle hardsub-star failed movie=%s: %s', movie.pk, exc)
@@ -457,22 +703,25 @@ def ensure_playback_subtitles(
                     'message': 'attached' if attached else 'ready',
                 }
 
-        # A held worker queue-lock (enqueue False) means extraction is already
-        # in flight; a broker error is retried by the beat drain. Either way the
-        # open player must keep waiting instead of seeing a dead-end.
-        _mark_gap(
-            gap,
-            status=PlaybackSubtitleGap.Status.QUEUED,
-            last_result='burned_in_queued' if queued else 'burned_in_pending',
-        )
-        return {
-            'status': 'queued',
-            'reported': True,
-            'queued': True,
-            'has_subtitle_tracks': False,
-            'report_id': gap.pk,
-            'message': 'loading',
-        }
+            # A held worker queue-lock (enqueue False) means extraction is already
+            # in flight; a broker error is retried by the beat drain. Either way the
+            # open player must keep waiting instead of seeing a dead-end.
+            # This return belongs to the burned-in lane only — at module
+            # indentation it made every soft/no-subtitle movie below unreachable
+            # and raised UnboundLocalError on ``queued``.
+            _mark_gap(
+                gap,
+                status=PlaybackSubtitleGap.Status.QUEUED,
+                last_result='burned_in_queued' if queued else 'burned_in_pending',
+            )
+            return {
+                'status': 'queued',
+                'reported': True,
+                'queued': True,
+                'has_subtitle_tracks': False,
+                'report_id': gap.pk,
+                'message': 'loading',
+            }
 
         # Rate-limited repeats only report the gap — do not clear Star caches or
         # re-stampede the urgent SoftSub queue (that blocked online playback).
@@ -494,6 +743,8 @@ def ensure_playback_subtitles(
             _clear_subtitlestar_miss_for_movie(movie)
             from apps.catalog.subzone import clear_subzone_miss_for_movie
             clear_subzone_miss_for_movie(movie)
+            from apps.catalog.subdl import clear_subdl_miss_for_movie
+            clear_subdl_miss_for_movie(movie)
         try:
             queued = enqueue_movie_softsub_urgent(
                 movie.pk,
@@ -511,11 +762,12 @@ def ensure_playback_subtitles(
             # Always offer provider sidecars in the sync lane: queued embedded
             # ffmpeg extraction takes minutes on the worker, while the open
             # player should get cues within seconds.
-            sync_budget = min(14, max(8, int(timeout_seconds or 12)))
+            sync_budget = _sync_budget(timeout_seconds)
             try:
                 attached = bool(_attach_providers_sync_movie(
                     movie,
                     timeout_seconds=sync_budget,
+                    preferred_source_url=preferred_source_url,
                 ))
             except Exception as exc:
                 logger.info('playback subtitle sync failed movie=%s: %s', movie.pk, exc)
@@ -556,7 +808,7 @@ def ensure_playback_subtitles(
         }
 
     # series
-    series = Series.objects.filter(is_published=True, slug=slug).first()
+    series = Series.objects.filter(is_published=True, slug=canonical_slug(Series, slug)).first()
     if series is None:
         return {'status': 'missing', 'reported': False, 'queued': False, 'has_subtitle_tracks': False}
 
@@ -577,18 +829,15 @@ def ensure_playback_subtitles(
             'message': 'tracks_present',
         }
 
-    # Player soft-poll: status only — do not re-queue Celery or SubtitleStar.
-    if not sync:
-        return {
-            'status': 'queued',
-            'reported': False,
-            'queued': True,
-            'has_subtitle_tracks': False,
-            'episode_id': ep_id or None,
-            'message': 'polling',
-        }
-
     links = [item for item in (series.download_links or []) if isinstance(item, dict)]
+    not_needed = playback_subtitle_not_needed(
+        series,
+        version=version,
+        active_link=_active_source_link(links),
+        preferred_source_url=preferred_source_url,
+    )
+    if not_needed:
+        return _not_needed_payload(not_needed, episode_id=ep_id)
     allow_ffmpeg = _allow_ffmpeg(links)
     episode_links = (
         _links_for_episode(
@@ -605,7 +854,7 @@ def ensure_playback_subtitles(
         or (episode_video and url_implies_softsub({'url': episode_video}))
     )
     prefer_embedded = bool(allow_ffmpeg and target_has_soft)
-    has_hard = any(looks_like_hardsub_link(item) for item in links)
+    has_hard = _active_source_is_hardsub(episode_links)
     burned_in_only = bool(links) and has_hard and not allow_ffmpeg
 
     gap = _upsert_gap(
@@ -621,8 +870,25 @@ def ensure_playback_subtitles(
             'prefer_embedded': prefer_embedded,
             'hardsub_lane': burned_in_only,
             'source_path': _safe_source_path(preferred_source_url),
+            'preferred_source_url': preferred_source_url,
         },
     )
+
+    if gap_is_exhausted(gap):
+        return _exhausted_payload(gap, episode_id=ep_id)
+
+    # Player soft-poll: the gap is registered above so the beat drain can retry
+    # it, but a poll never re-queues Celery or hits SubtitleStar.
+    if not sync:
+        return {
+            'status': 'queued',
+            'reported': True,
+            'queued': True,
+            'has_subtitle_tracks': False,
+            'episode_id': ep_id or None,
+            'report_id': gap.pk,
+            'message': 'polling',
+        }
 
     if burned_in_only:
         # HardSub-only catalog rows still often need SubtitleStar sidecars —
@@ -645,6 +911,8 @@ def ensure_playback_subtitles(
             _clear_subtitlestar_miss_for_series(series)
             from apps.catalog.subzone import clear_subzone_miss_for_series
             clear_subzone_miss_for_series(series)
+            from apps.catalog.subdl import clear_subdl_miss_for_series
+            clear_subdl_miss_for_series(series)
         try:
             queued = enqueue_series_softsub_urgent(
                 series.pk,
@@ -660,9 +928,11 @@ def ensure_playback_subtitles(
             queued = False
         attached_eps = 0
         if sync and episode is not None:
-            sync_budget = min(14, max(8, int(timeout_seconds or 12)))
+            sync_budget = _sync_budget(timeout_seconds)
             try:
-                if _attach_open_episode_subtitlestar(series, episode, timeout_seconds=sync_budget):
+                if _attach_open_episode_subtitlestar(
+                    series, episode, timeout_seconds=sync_budget, preferred_source_url=preferred_source_url,
+                ):
                     attached_eps = 1
             except Exception as exc:
                 logger.info('playback subtitle hardsub-star failed series=%s: %s', series.pk, exc)
@@ -712,6 +982,8 @@ def ensure_playback_subtitles(
         _clear_subtitlestar_miss_for_series(series)
         from apps.catalog.subzone import clear_subzone_miss_for_series
         clear_subzone_miss_for_series(series)
+        from apps.catalog.subdl import clear_subdl_miss_for_series
+        clear_subdl_miss_for_series(series)
     # Prefer a small urgent batch so the open episode is covered quickly.
     try:
         queued = enqueue_series_softsub_urgent(
@@ -731,10 +1003,12 @@ def ensure_playback_subtitles(
     if sync:
         # Always try provider sidecars, even when an embedded extraction is
         # queued — the open episode should not wait minutes for the worker.
-        sync_budget = min(14, max(8, int(timeout_seconds or 12)))
+        sync_budget = _sync_budget(timeout_seconds)
         try:
             if episode is not None:
-                if _attach_open_episode_subtitlestar(series, episode, timeout_seconds=sync_budget):
+                if _attach_open_episode_subtitlestar(
+                    series, episode, timeout_seconds=sync_budget, preferred_source_url=preferred_source_url,
+                ):
                     attached_eps = 1
             else:
                 result = attach_series_softsub_tracks(
@@ -865,7 +1139,7 @@ def _build_status_payload(*, kind: str, slug: str, episode_id: int, report_id: i
             }
 
     if kind == 'movie':
-        movie = Movie.objects.filter(is_published=True, slug=slug).first()
+        movie = Movie.objects.filter(is_published=True, slug=canonical_slug(Movie, slug)).first()
         if movie is None:
             return {
                 'status': 'missing',
@@ -902,7 +1176,7 @@ def _build_status_payload(*, kind: str, slug: str, episode_id: int, report_id: i
             'message': 'tracks_present' if ready else 'loading',
         }
 
-    series = Series.objects.filter(is_published=True, slug=slug).first()
+    series = Series.objects.filter(is_published=True, slug=canonical_slug(Series, slug)).first()
     if series is None:
         return {
             'status': 'missing',
@@ -980,5 +1254,5 @@ def _gap_status_label(gap) -> str:
     if gap.status == PlaybackSubtitleGap.Status.RESOLVED:
         return 'queued'
     if gap.status == PlaybackSubtitleGap.Status.UNAVAILABLE:
-        return 'unavailable'
+        return EXHAUSTED_RESULT if gap_is_exhausted(gap) else 'unavailable'
     return 'queued'

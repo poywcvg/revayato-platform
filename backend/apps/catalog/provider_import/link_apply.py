@@ -17,6 +17,36 @@ def _prefer_streamable_download(links: list) -> str:
     return prefer(links)
 
 
+def guard_provider_links(obj, normalized: list) -> tuple[list, list, list]:
+    """Run incoming links through both storage guards. ``(kept, bad, dead)``.
+
+    Split out of :func:`apply_provider_download_links` because it was the only
+    caller of the guards, yet three other import paths write ``download_links``
+    directly — the discovery crawlers (``dornatv_import``, ``myf2m_discover``)
+    and the movie link-apply path — so contaminated and dead links reached
+    storage through them untouched. The guards belong to *storing links*, not
+    to one function.
+
+    ``bad`` are links whose self-describing CDN path proves they belong to a
+    different title; ``dead`` are links the host positively reports gone.
+    """
+    from apps.catalog.media_verification import screen_links
+    from apps.catalog.provider_import.link_integrity import filter_contaminated_links
+
+    kept, dropped = filter_contaminated_links(obj, normalized)
+    if dropped:
+        logger.warning(
+            'link_integrity: rejected %d contaminated link(s) for %s %s: %s',
+            len(dropped), obj.__class__.__name__, getattr(obj, 'pk', '?'),
+            ', '.join(f'{cat}:{str(item.get("url") or "")[:80]}' for item, cat in dropped[:10]),
+        )
+    if not kept:
+        return [], dropped, []
+
+    kept, dead = screen_links(obj, kept)
+    return kept, dropped, dead
+
+
 def apply_provider_download_links(
     obj,
     links: list,
@@ -40,6 +70,19 @@ def apply_provider_download_links(
     if not normalized:
         raise ProviderImportError(empty_message, code=empty_code)
 
+    # Two guards before storage: the links must provably belong to this title
+    # (link_integrity), and the files must still exist (media_verification).
+    # Only positive verdicts drop a link — unreachable-from-here is kept and
+    # re-checked later, because a CDN outage is not a broken film.
+    normalized, _bad, dead = guard_provider_links(obj, normalized)
+    if not normalized and not dead:
+        raise ProviderImportError(empty_message, code=empty_code)
+    if dead and not normalized:
+        raise ProviderImportError(
+            'Every provider link failed the pre-publish media check.',
+            code='provider_links_dead',
+        )
+
     previous_download_urls = {
         str(item.get('url') or '').strip()
         for item in (getattr(obj, 'download_links', None) or [])
@@ -58,14 +101,16 @@ def apply_provider_download_links(
         if not obj.quality and normalized[0].get('quality'):
             obj.quality = normalized[0]['quality']
             update_fields.append('quality')
-        preferred = _prefer_streamable_download(list(obj.download_links or []))
-        if preferred and (
-            not previous_video
-            or previous_video in previous_download_urls
-            or previous_video == preferred
-        ):
-            obj.video_url = preferred
-            update_fields.append('video_url')
+        # The link the player is handed is decided by testing the sources —
+        # reachable, seekable, and a container/codec a browser really decodes —
+        # not by whichever file name scored highest. See playback_gate.
+        # A video_url that did not come from download_links was set by hand and
+        # is still left alone.
+        if not previous_video or previous_video in previous_download_urls:
+            from apps.catalog import playback_gate
+
+            _choice, gate_fields = playback_gate.gate_links(obj, obj.download_links or [])
+            update_fields.extend(gate_fields)
 
     flag_fields = apply_availability_flags(obj, obj.download_links)
     update_fields.extend(flag_fields)
@@ -100,6 +145,7 @@ def apply_provider_download_links(
 
     return {
         'imported_count': len(normalized),
+        'rejected_dead_count': len(dead),
         'download_links': normalized,
         'is_dubbed': getattr(obj, 'is_dubbed', False),
         'has_subtitle': getattr(obj, 'has_subtitle', False),

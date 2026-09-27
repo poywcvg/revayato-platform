@@ -30,7 +30,7 @@ withDefaults(defineProps<{
         <CinematicIcon :name="icon" class="size-[1.15rem] sm:size-5" :stroke-width="1.55" />
       </span>
       <div class="min-w-0 flex-1">
-        <p v-if="eyebrow" class="mb-0.5 inline-flex max-w-full items-center gap-1.5 text-[11px] font-medium text-muted sm:mb-1 sm:gap-2 sm:text-xs">
+        <p v-if="eyebrow" class="mb-0.5 inline-flex max-w-full items-center gap-1.5 text-xs font-medium text-muted sm:mb-1 sm:gap-2 sm:text-xs">
           <span class="hidden h-1.5 w-1.5 shrink-0 rounded-full bg-primary-500 sm:inline-block" />
           <span class="truncate">{{ eyebrow }}</span>
         </p>

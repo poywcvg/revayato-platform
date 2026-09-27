@@ -25,7 +25,7 @@ const remainingMinutes = computed(() => Math.max(0, Math.ceil(props.durationMinu
           <p class="truncate font-black text-slate-100">
             {{ normalizedPercent > 0 ? `ادامه تماشا از ${numberFormatter.format(normalizedPercent)}٪` : 'آماده شروع تماشا' }}
           </p>
-          <p class="mt-0.5 truncate text-[11px] text-slate-500">
+          <p class="mt-0.5 truncate text-xs text-slate-500">
             <span v-if="label">{{ label }}</span>
             <span v-if="label && remainingMinutes"> · </span>
             <span v-if="remainingMinutes">حدود {{ numberFormatter.format(remainingMinutes) }} دقیقه مانده</span>

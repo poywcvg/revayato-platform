@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<network-security-config>
+    <!-- The Revayato API is HTTPS, but streaming/subtitle files come from many
+         third-party CDNs, some of which still serve over plain HTTP. Blocking
+         cleartext there breaks online playback, so it is permitted app-wide;
+         our own API traffic stays on TLS regardless. -->
+    <base-config cleartextTrafficPermitted="true" />
+</network-security-config>

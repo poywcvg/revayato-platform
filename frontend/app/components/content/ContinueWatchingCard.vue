@@ -36,11 +36,11 @@ function continueWatching() {
       />
       <div class="absolute inset-0 bg-gradient-to-t from-night-950 via-transparent to-black/10" />
       <span class="absolute inset-0 m-auto grid size-12 place-items-center rounded-full bg-primary-500 text-night-950 shadow-lg shadow-black/25 transition group-hover:scale-105"><CinematicIcon name="resume" class="size-6" /></span>
-      <span class="absolute right-3 top-3 rounded-lg bg-black/65 px-2 py-1 text-[10px] font-bold text-slate-200 ring-1 ring-white/10">{{ item.type === 'series' ? 'سریال' : 'فیلم' }}</span>
+      <span class="absolute right-3 top-3 rounded-lg bg-black/65 px-2 py-1 text-[11px] font-bold text-slate-200 ring-1 ring-white/10">{{ item.type === 'series' ? 'سریال' : 'فیلم' }}</span>
       <div class="absolute inset-x-0 bottom-0 h-1.5 bg-white/15" role="progressbar" :aria-valuenow="roundedProgress" aria-valuemin="0" aria-valuemax="100" :aria-label="`پیشرفت تماشای ${displayTitle}: ${roundedProgress.toLocaleString('fa-IR')} درصد`"><div class="h-full rounded-l-full bg-primary-500 transition-[width] duration-300" :style="{ width: `${roundedProgress}%` }" /></div>
     </div>
     <div class="flex items-center justify-between gap-3 p-3.5 sm:p-4">
-      <div class="min-w-0"><h3 class="truncate font-latin text-sm font-black text-ink sm:text-base" dir="ltr">{{ displayTitle }}</h3><p class="mt-1 text-[11px] text-muted sm:text-xs">{{ watchLabel }}</p></div>
+      <div class="min-w-0"><h3 class="truncate font-latin text-sm font-black text-ink sm:text-base" dir="ltr">{{ displayTitle }}</h3><p class="mt-1 text-xs text-muted sm:text-xs">{{ watchLabel }}</p></div>
       <span class="inline-flex shrink-0 items-center gap-1 text-xs font-black text-brand">ادامه بده<CinematicIcon name="arrow-left" class="size-4 transition-transform group-hover:-translate-x-0.5" /></span>
     </div>
   </NuxtLink>

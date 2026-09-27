@@ -152,7 +152,10 @@ class AdminTMDBApiTests(TestCase):
             movie = Movie.objects.get(tmdb_id=9001)
             self.assertFalse(movie.is_published)
             self.assertEqual(str(movie.rating_average), '7.8')
-            self.assertIsNone(movie.imdb_rating)
+            # No OMDb/manual IMDb score is available on a fresh TMDB import, so
+            # ``imdb_rating`` falls back to TMDB's ``vote_average`` — the public
+            # card always shows a score instead of an empty badge.
+            self.assertEqual(str(movie.imdb_rating), '7.8')
 
             sync = self.client.post(f'/api/admin/movies/{movie.id}/sync-tmdb/', {'dry_run': True}, format='json')
             self.assertEqual(sync.status_code, 200)
@@ -206,18 +209,24 @@ class AdminTMDBApiTests(TestCase):
         self.client.force_authenticate(self.staff)
         response = self.client.post(
             '/api/admin/movies/',
-            {'title': 'Open publication', 'publication_status': 'published'},
+            {
+                # Admin writes require a Persian ``title``; the Latin name goes
+                # to ``original_title``.
+                'title': 'انتشار آزاد',
+                'original_title': 'Open publication',
+                'publication_status': 'published',
+            },
             format='json',
         )
         self.assertEqual(response.status_code, 201)
-        movie = Movie.objects.get(title='Open publication')
+        movie = Movie.objects.get(title='انتشار آزاد')
         self.assertTrue(movie.is_published)
         self.assertEqual(movie.publication_status, Movie.PublicationStatus.PUBLISHED)
 
     def test_empty_genre_list_can_be_saved_over_multipart(self):
         self.client.force_authenticate(self.staff)
         genre = Genre.objects.create(title='Drama Admin', slug='drama-admin')
-        movie = Movie.objects.create(title='Genre test', slug='genre-test')
+        movie = Movie.objects.create(title='آزمون ژانر', slug='genre-test')
         movie.genres.add(genre)
 
         response = self.client.patch(

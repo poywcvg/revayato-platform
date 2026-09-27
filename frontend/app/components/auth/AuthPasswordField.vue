@@ -39,7 +39,7 @@ const strength = computed(() => [
     </div>
     <div v-if="showStrength && model" class="mt-2" aria-live="polite">
       <div class="grid grid-cols-4 gap-1" aria-hidden="true"><span v-for="index in 4" :key="index" class="h-1 rounded-full" :class="index <= score ? strength.color : 'bg-elevated'" /></div>
-      <div class="mt-1.5 flex items-center justify-between gap-3 text-[11px]"><span class="text-muted">حداقل ۸ کاراکتر همراه حرف و عدد</span><span class="font-black" :class="score >= 4 ? 'text-success' : score >= 2 ? 'text-warning' : 'text-error'">{{ strength.label }}</span></div>
+      <div class="mt-1.5 flex items-center justify-between gap-3 text-xs"><span class="text-muted">حداقل ۸ کاراکتر همراه حرف و عدد</span><span class="font-black" :class="score >= 4 ? 'text-success' : score >= 2 ? 'text-warning' : 'text-error'">{{ strength.label }}</span></div>
     </div>
   </div>
 </template>

@@ -1,6 +1,13 @@
 {
 	email {$ACME_EMAIL}
 	admin off
+
+	# On-demand TLS is opt-in per site (only *.filmix0.site below uses it).
+	# Charkhyar's Django answers 200 only for tenant subdomains that exist, so
+	# nobody can make Caddy mint certificates for arbitrary names.
+	on_demand_tls {
+		ask http://charkhyar-web/internal/tls-ask/
+	}
 }
 
 # Prefer apex: www -> https://{$SITE_DOMAIN}
@@ -27,6 +34,40 @@ nilla.shop {
 	}
 }
 
+# Charkhyar (/root/saas-car) is an independent Docker Compose project, like
+# Nilla: only its internal nginx joins this edge network (alias charkhyar-web).
+# Multi-tenant: every business gets <subdomain>.filmix0.site.
+(charkhyar) {
+	encode zstd gzip
+	# The TLS "ask" endpoint is for Caddy only, never the public.
+	@charkhyar_internal path /internal/*
+	respond @charkhyar_internal 404
+	reverse_proxy charkhyar-web:80
+	header {
+		-Server
+		Strict-Transport-Security "max-age=31536000"
+		X-Content-Type-Options "nosniff"
+		Referrer-Policy "strict-origin-when-cross-origin"
+	}
+}
+
+www.filmix0.site {
+	redir https://filmix0.site{uri} permanent
+}
+
+filmix0.site {
+	import charkhyar
+}
+
+# Tenant subdomains: one certificate per existing business, issued on first
+# visit (HTTP-01 through Cloudflare), gated by the ask endpoint above.
+*.filmix0.site {
+	tls {
+		on_demand
+	}
+	import charkhyar
+}
+
 # ---- Shared handler set, imported by both the public HTTPS site and the
 # ---- native-app direct-origin fallback (plain HTTP on :8080). Keeps the two
 # ---- in lockstep so the app gets identical routes on either path.
@@ -47,8 +88,6 @@ nilla.shop {
 		Content-Security-Policy "upgrade-insecure-requests"
 	}
 
-	# /admin/* belongs to the Nuxt staff panel (dashboard at /admin).
-	# Keep Django's built-in admin on /django-admin so the two apps never shadow each other.
 
 	handle_path /static/* {
 		root * /srv/static
@@ -84,12 +123,35 @@ nilla.shop {
 	handle_path /downloads/* {
 		root * /srv/downloads
 		header Cache-Control "private, max-age=0, no-store"
+		# Force a real download instead of letting the browser try to preview the
+		# APK inline — in-app browsers (Telegram/Instagram) and some Android
+		# browsers otherwise fail silently on the package MIME type.
+		header Content-Disposition "attachment"
+		header Content-Type "application/octet-stream"
 		file_server
 	}
 
-	handle /django-admin* {
-		uri replace /django-admin /admin
-		reverse_proxy backend:8000
+
+	# Playback gateway. Ahead of @backend because /api/stream/* is also /api/*,
+	# and these two are nothing alike: a segment request is a long, unbuffered
+	# byte stream from a container with its own disk and its own CPU budget,
+	# while the API next door must stay snappy. Splitting them here is what
+	# keeps one viewer's rewrapped film from occupying a web worker.
+	@stream path /api/stream/*
+	handle @stream {
+		# No Cache-Control of our own: the playlist grows while ffmpeg runs and
+		# must never be stored, while a segment may be reused for the minute it
+		# survives. Django already says which is which, per response.
+		reverse_proxy stream-gateway:8000 {
+			flush_interval -1
+			transport http {
+				# Opening a session waits on ffmpeg producing a real segment, and
+				# serving one is a slow read by design; neither may be cut short.
+				read_timeout 0
+				write_timeout 0
+				dial_timeout 5s
+			}
+		}
 	}
 
 	@backend path /api/* /ws/*
@@ -143,7 +205,7 @@ nilla.shop {
 		path /
 		path /*
 		not path /_nuxt/* /_ipx/* /favicon.ico /favicon.svg /favicon.png /favicon-32.png /apple-touch-icon.png /icon-192.png /icon-512.png /site.webmanifest /robots.txt /sitemap.xml
-		not path /assets/* /admin* /profile* /watch-party* /auth* /watchlist /feed
+		not path /dashboard* /profile* /watch-party* /auth* /watchlist /feed
 	}
 
 	handle @html {
@@ -159,7 +221,7 @@ nilla.shop {
 	}
 
 	@private_html {
-		path /admin* /profile* /watch-party* /auth* /watchlist /feed
+		path /dashboard* /profile* /watch-party* /auth* /watchlist /feed
 	}
 
 	handle @private_html {

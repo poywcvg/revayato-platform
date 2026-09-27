@@ -1,6 +1,6 @@
 """Unit tests for SoftSub helpers (no DB required for pure classifiers)."""
 
-from django.test import SimpleTestCase, TestCase
+from django.test import SimpleTestCase, TestCase, override_settings
 
 from apps.catalog.subtitle_extract import (
     _pick_extract_source,
@@ -8,6 +8,7 @@ from apps.catalog.subtitle_extract import (
     _prioritize_extract_sources,
     _is_usable_persian_webvtt,
     _non_conflicting_release_sources,
+    _pack_episode_keys,
     _season_episode_key,
     _strict_release_sources,
     ass_to_webvtt,
@@ -255,6 +256,77 @@ class SoftSubClassifierTests(SimpleTestCase):
             (1, 3),
         )
 
+    # --- reading the pack, not just the link -----------------------------
+
+    LIGHTER = 'https://cdn.example/Lighter.and.Princess.2022.EP%02d.480p.SS.mkv'
+
+    def test_a_pack_that_agrees_with_itself_is_returned_untouched(self):
+        links = [
+            {'url': self.LIGHTER % 1, 'season_number': 1, 'episode_number': 1},
+            {'url': self.LIGHTER % 2, 'season_number': 1, 'episode_number': 2},
+        ]
+        self.assertEqual(_pack_episode_keys(links), [(1, 1), (1, 2)])
+
+    def test_a_page_that_numbers_two_files_alike_loses_to_the_file_names(self):
+        """«فندک و شاهزاده خانم»: two files labelled «قسمت 1», then a slip of
+        one that runs to the end of the series."""
+        links = [
+            {'url': self.LIGHTER % 1, 'season_number': 1, 'episode_number': 1},
+            {'url': self.LIGHTER % 2, 'season_number': 1, 'episode_number': 1},
+            {'url': self.LIGHTER % 3, 'season_number': 1, 'episode_number': 2},
+        ]
+        self.assertEqual(_pack_episode_keys(links), [(1, 1), (1, 2), (1, 3)])
+
+    def test_straight_through_numbering_is_not_a_collision(self):
+        """«اشرف رویا» numbers its serial across seasons. Nothing collides, so
+        nothing is "corrected" into a season the catalogue does not have."""
+        links = [
+            {'url': 'https://cdn.example/Esref.Ruya.S01E14.1080p.mkv',
+             'season_number': 2, 'episode_number': 1},
+            {'url': 'https://cdn.example/Esref.Ruya.S01E15.1080p.mkv',
+             'season_number': 2, 'episode_number': 2},
+        ]
+        self.assertEqual(_pack_episode_keys(links), [(2, 1), (2, 2)])
+
+    def test_qualities_of_one_episode_are_not_a_collision(self):
+        links = [
+            {'url': self.LIGHTER % 1, 'season_number': 1, 'episode_number': 1},
+            {'url': 'https://cdn.example/Lighter.and.Princess.2022.EP01.1080p.SS.mkv',
+             'season_number': 1, 'episode_number': 1},
+        ]
+        self.assertEqual(_pack_episode_keys(links), [(1, 1), (1, 1)])
+
+    def test_a_silent_file_name_keeps_the_key_it_was_given(self):
+        """Correcting a pack may not cost it the links that named nothing."""
+        links = [
+            {'url': self.LIGHTER % 1, 'season_number': 1, 'episode_number': 1},
+            {'url': self.LIGHTER % 2, 'season_number': 1, 'episode_number': 1},
+            {'url': 'https://cdn.example/6f2a91c4b8.mkv',
+             'season_number': 1, 'episode_number': 7},
+        ]
+        self.assertEqual(_pack_episode_keys(links), [(1, 1), (1, 2), (1, 7)])
+
+    def test_a_truncated_file_name_cannot_pull_a_row_to_episode_zero(self):
+        """«مکان خوب»: the provider wrote ``S02E0`` for S02E07."""
+        links = [
+            {'url': 'https://cdn.example/The.Good.Place.S02E06.720p.mkv',
+             'season_number': 2, 'episode_number': 6},
+            {'url': 'https://cdn.example/The.Good.Place.S02E07.720p.mkv',
+             'season_number': 2, 'episode_number': 6},
+            {'url': 'https://cdn.example/The.Good.Place.S02E0.720p.mkv',
+             'season_number': 2, 'episode_number': 7},
+        ]
+        self.assertEqual(_pack_episode_keys(links), [(2, 6), (2, 7), (2, 7)])
+
+    def test_a_file_name_stating_its_season_brings_it_along(self):
+        links = [
+            {'url': 'https://cdn.example/Show.S02E05.1080p.mkv',
+             'season_number': 2, 'episode_number': 5},
+            {'url': 'https://cdn.example/Show.S02E06.1080p.mkv',
+             'season_number': 2, 'episode_number': 5},
+        ]
+        self.assertEqual(_pack_episode_keys(links), [(2, 5), (2, 6)])
+
     def test_srt_to_webvtt_strips_html_and_normalizes_timing(self):
         srt = (
             "1\n"
@@ -417,9 +489,14 @@ class SoftSubClassifierTests(SimpleTestCase):
             {'index': 2, 'codec': 'subrip', 'language': 'und', 'title': ''},
             {'index': 3, 'codec': 'subrip', 'language': 'und', 'title': ''},
         ]
+        # The reachability fast-skip was added after this test and short-circuits
+        # before any stream is read, so the example host has to be vouched for or
+        # the stream-selection logic under test never runs.
         with patch('apps.catalog.subtitle_extract.ffmpeg_available', return_value=True), patch(
-            'apps.catalog.subtitle_extract._ffprobe_subtitle_streams',
-            return_value=streams,
+            'apps.catalog.subtitle_extract._source_reachable', return_value=True,
+        ), patch(
+            'apps.catalog.subtitle_extract._probe_subtitle_streams',
+            return_value=(True, streams),
         ), patch(
             'apps.catalog.subtitle_extract._ffmpeg_copy_subtitle_stream',
             side_effect=[english, persian],
@@ -429,6 +506,11 @@ class SoftSubClassifierTests(SimpleTestCase):
         self.assertEqual(result, persian)
         self.assertEqual(extract.call_count, 2)
 
+    # A shared Redis cache would leak the live SubtitleStar circuit-breaker flag
+    # into this test and silently skip the provider branch under test.
+    @override_settings(CACHES={
+        'default': {'BACKEND': 'django.core.cache.backends.locmem.LocMemCache'},
+    })
     def test_series_softsub_save_skips_missing_subtitle_tracks_field(self):
         """Series has no subtitle_tracks column; save must only touch real fields."""
         from unittest.mock import MagicMock, patch
@@ -614,3 +696,36 @@ class SoftSubEpisodeMaterializeTests(TestCase):
         ensure_episodes_from_download_links(series)
         episode.refresh_from_db()
         self.assertEqual(episode.video_url, previous)
+
+
+@override_settings(CACHES={
+    'default': {'BACKEND': 'django.core.cache.backends.locmem.LocMemCache'},
+})
+class SlowSubtitleHostBenchTests(SimpleTestCase):
+    """A host that keeps timing ffmpeg out is skipped instead of starving the queue."""
+
+    def setUp(self):
+        from django.core.cache import cache
+
+        cache.clear()
+
+    def test_two_timeouts_bench_the_host_and_other_hosts_are_untouched(self):
+        import subprocess
+        from pathlib import Path
+        from unittest.mock import patch
+
+        from apps.catalog.subtitle_extract import _run_ffmpeg_raw, extract_webvtt_from_url
+
+        slow = 'https://s8.slow.example/Soft/film.mkv'
+        with patch('apps.catalog.subtitle_extract.subprocess.run', side_effect=subprocess.TimeoutExpired('ffmpeg', 1)):
+            for _ in range(2):
+                with self.assertRaises(subprocess.TimeoutExpired):
+                    _run_ffmpeg_raw(['ffmpeg'], Path('/nonexistent/out.vtt'), slow, 1)
+
+        with patch('apps.catalog.subtitle_extract._source_reachable', return_value=True), patch(
+            'apps.catalog.subtitle_extract.ffmpeg_available', return_value=True,
+        ), patch('apps.catalog.subtitle_extract._probe_subtitle_streams', return_value=(False, [])) as probe:
+            self.assertIsNone(extract_webvtt_from_url('https://s8.slow.example/Soft/other.mkv'))
+            probe.assert_not_called()
+            extract_webvtt_from_url('https://fast.example/Soft/film.mkv')
+            probe.assert_called()

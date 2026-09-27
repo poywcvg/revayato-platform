@@ -7,27 +7,18 @@ const { catalog } = useCatalog()
 const { watchlist, likes } = useLibrary()
 const { continueWatching } = useWatchProgress()
 const { stats: watchTimeStats } = useWatchTime()
+const { myCollections, loaded: collectionsLoaded, refreshMine } = useCollections()
 const authStore = useAuthStore()
 const notifications = useNotifications()
+const route = useRoute()
 
-const editOpen = ref(false)
-const bioDraft = ref('')
-const languageDraft = ref('fa')
-const avatarFile = shallowRef<File | null>(null)
-const avatarPreview = ref('')
-const removeAvatar = ref(false)
-const formError = ref('')
-const avatarInput = useTemplateRef<HTMLInputElement>('avatarInput')
+/* ---------- identity ---------- */
 
 const displayName = computed(() => authStore.user?.username || 'کاربر روایتو')
 const avatarInitial = computed(() => displayName.value.trim().charAt(0).toUpperCase() || 'ر')
-const avatarSource = computed(() => {
-  if (avatarPreview.value) return avatarPreview.value
-  if (removeAvatar.value) return ''
-  return authStore.user?.profile.avatar || ''
-})
-const profileBio = computed(() => authStore.user?.profile.bio?.trim() || 'هنوز چیزی درباره خودت ننوشته‌ای.')
+const profileBio = computed(() => authStore.user?.profile.bio?.trim() || '')
 const isVerified = computed(() => Boolean(authStore.user?.is_verified || authStore.user?.profile.is_email_verified))
+const publicProfilePath = computed(() => (authStore.user?.username ? `/u/${authStore.user.username}` : '/profile'))
 const memberSince = computed(() => {
   const value = authStore.user?.profile.created_at
   if (!value) return 'همین تازگی'
@@ -37,141 +28,131 @@ const memberSince = computed(() => {
     return 'همین تازگی'
   }
 })
+
 const watchTimeLabel = computed(() => {
-  const hours = watchTimeStats.value.hours
-  const minutes = watchTimeStats.value.minutes
+  const { hours, minutes } = watchTimeStats.value
   if (hours <= 0 && minutes <= 0) return '۰ دقیقه'
   if (hours <= 0) return `${minutes.toLocaleString('fa-IR')} دقیقه`
   if (minutes <= 0) return `${hours.toLocaleString('fa-IR')} ساعت`
   return `${hours.toLocaleString('fa-IR')}س ${minutes.toLocaleString('fa-IR')}د`
 })
-const profileCompletion = computed(() => {
-  // Honest completion: every real, persisted profile field earns its share.
-  let value = 20
-  if (authStore.user?.profile.avatar) value += 20
-  if (authStore.user?.profile.bio?.trim()) value += 25
-  if (isVerified.value) value += 20
-  if (authStore.user?.profile.preferred_language) value += 15
-  return Math.min(100, value)
-})
 
-const languageOptions = [
-  { value: 'fa', label: 'فارسی' },
-  { value: 'en', label: 'English' },
-] as const
+/* ---------- tabs ----------
+ * One navigation replaces the three the page used to carry (a mobile anchor
+ * rail, a proximity sidebar and a quick-links panel). Panels mount on first
+ * visit and stay mounted, so switching back never re-runs their fetches.
+ */
 
-const stats = computed<Array<{ label: string; value: string; icon: CinematicIconName; to: string }>>(() => [
-  { label: 'زمان تماشا', value: watchTimeLabel.value, icon: 'clock', to: '#watch-time' },
-  { label: 'لیست من', value: watchlist.value.length.toLocaleString('fa-IR'), icon: 'bookmark', to: '/watchlist' },
-  { label: 'پسندیده‌ها', value: likes.value.length.toLocaleString('fa-IR'), icon: 'heart', to: '/profile/favorites' },
-  { label: 'کامل دیده‌شده', value: watchTimeStats.value.titles_completed.toLocaleString('fa-IR'), icon: 'check', to: '#watch-time' },
-])
+type TabId = 'overview' | 'activity' | 'settings'
 
-const quickLinks: Array<{ label: string; description: string; icon: CinematicIconName; to: string }> = [
-  { label: 'ادامه تماشا', description: 'برگشت به آخرین عنوان‌ها', icon: 'resume', to: '#continue' },
-  { label: 'لیست من', description: 'عنوان‌های ذخیره‌شده', icon: 'bookmark', to: '/watchlist' },
-  { label: 'پسندیده‌ها', description: 'انتخاب‌های موردعلاقه', icon: 'heart', to: '/profile/favorites' },
-  { label: 'سلیقه و پیشنهادها', description: 'تنظیم پیشنهادهای شخصی', icon: 'sliders', to: '#personalization' },
-  { label: 'تحلیل هوشمند', description: 'شناخت رفتار و پیشنهاد AI', icon: 'sparkles', to: '#behavior-insight' },
-]
+const TABS = [
+  { id: 'overview', label: 'نمای کلی', icon: 'grid' },
+  { id: 'activity', label: 'فعالیت', icon: 'clock' },
+  { id: 'settings', label: 'تنظیمات', icon: 'sliders' },
+] as const satisfies ReadonlyArray<{ id: TabId; label: string; icon: CinematicIconName }>
 
-const profileSections = [
-  { label: 'نمای کلی', target: 'overview' },
-  { label: 'ادامه تماشا', target: 'continue' },
-  { label: 'آمار تماشا', target: 'watch-time' },
-  { label: 'پیشنهادهای من', target: 'personalization' },
-  { label: 'تحلیل هوشمند', target: 'behavior-insight' },
-] as const
-const sectionItems = profileSections.map(section => section.label)
-
-function scrollToSection(index: number) {
-  const section = profileSections[index]
-  if (!section) return
-  document.getElementById(section.target)?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+// Links elsewhere in the app still point at the old section anchors
+// (/profile#continue, /profile#personalization) — they must keep landing
+// somewhere sensible now that the sections live behind tabs.
+const HASH_TO_TAB: Record<string, TabId> = {
+  overview: 'overview',
+  continue: 'overview',
+  collections: 'overview',
+  watchlist: 'overview',
+  activity: 'activity',
+  'watch-time': 'activity',
+  'behavior-insight': 'activity',
+  settings: 'settings',
+  personalization: 'settings',
+  account: 'settings',
 }
 
-const continueItems = computed(() => continueWatching.value.slice(0, 4))
+const activeTab = ref<TabId>('overview')
+const mountedTabs = reactive<Record<TabId, boolean>>({ overview: false, activity: false, settings: false })
+const tabsBar = useTemplateRef<HTMLElement>('tabsBar')
+const tabButtons = ref<HTMLButtonElement[]>([])
+
+watch(activeTab, (id) => { mountedTabs[id] = true }, { immediate: true })
+
+function tabFromHash(hash: string): TabId | null {
+  return HASH_TO_TAB[hash.replace(/^#/, '')] ?? null
+}
+
+// The hash never reaches the server, so it is resolved after mount to keep
+// server and client markup identical.
+onMounted(() => {
+  const fromHash = tabFromHash(route.hash)
+  if (fromHash) activeTab.value = fromHash
+  void refreshMine()
+})
+
+watch(() => route.hash, (hash) => {
+  const target = tabFromHash(hash)
+  if (target) activeTab.value = target
+})
+
+// `reveal` is for switches triggered from outside the tab bar (the stat
+// strip): the panel changes below the fold, so bring the tabs into view to
+// show what happened.
+function selectTab(id: TabId, reveal = false) {
+  if (activeTab.value === id) {
+    if (reveal) revealTabs()
+    return
+  }
+  activeTab.value = id
+  if (!import.meta.client) return
+  // replaceState instead of the router: the tab is already switched, and a
+  // router hash change would trigger the scroll-to-anchor behaviour.
+  history.replaceState(history.state, '', `${route.path}#${id}`)
+  nextTick(() => {
+    if (reveal || (tabsBar.value?.getBoundingClientRect().top ?? 0) < 0) revealTabs()
+  })
+}
+
+function revealTabs() {
+  tabsBar.value?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+}
+
+function onTabKeydown(event: KeyboardEvent, index: number) {
+  const last = TABS.length - 1
+  let next = -1
+  // RTL: ArrowLeft advances, ArrowRight goes back.
+  if (event.key === 'ArrowLeft') next = index === last ? 0 : index + 1
+  else if (event.key === 'ArrowRight') next = index === 0 ? last : index - 1
+  else if (event.key === 'Home') next = 0
+  else if (event.key === 'End') next = last
+  if (next < 0) return
+  event.preventDefault()
+  const target = TABS[next]
+  if (!target) return
+  selectTab(target.id)
+  nextTick(() => tabButtons.value[next]?.focus())
+}
+
+/* ---------- content ---------- */
+
+const stats = computed<Array<{ key: string; label: string; value: string; to?: string; tab?: TabId }>>(() => [
+  { key: 'time', label: 'زمان تماشا', value: watchTimeLabel.value, tab: 'activity' },
+  { key: 'watchlist', label: 'لیست من', value: watchlist.value.length.toLocaleString('fa-IR'), to: '/watchlist' },
+  { key: 'likes', label: 'پسندیده‌ها', value: likes.value.length.toLocaleString('fa-IR'), to: '/profile/favorites' },
+  { key: 'done', label: 'کامل دیده‌شده', value: watchTimeStats.value.titles_completed.toLocaleString('fa-IR'), tab: 'activity' },
+])
+
+const continueItems = computed(() => continueWatching.value.slice(0, 6))
+const topCollections = computed(() => myCollections.value.slice(0, 3))
 const watchlistItems = computed(() => catalog.value.filter(item =>
   watchlist.value.some(entry => entry.content_type === item.type && entry.object_id === item.id),
 ).slice(0, 10))
 
-function clearAvatarPreview() {
-  if (avatarPreview.value) URL.revokeObjectURL(avatarPreview.value)
-  avatarPreview.value = ''
-}
+const accountLinks = computed<Array<{ label: string; hint: string; icon: CinematicIconName; to: string }>>(() => [
+  { label: 'نمای عمومی پروفایل', hint: 'همان چیزی که دیگران می‌بینند', icon: 'user', to: publicProfilePath.value },
+  { label: 'کالکشن‌های من', hint: 'فهرست‌های شخصی و اشتراکی', icon: 'layers', to: '/collections/my' },
+  { label: 'درخواست‌های من', hint: 'گفت‌وگو و پاسخ پشتیبانی', icon: 'comments', to: '/requests' },
+])
 
-function openEditor() {
-  bioDraft.value = authStore.user?.profile.bio || ''
-  languageDraft.value = authStore.user?.profile.preferred_language || 'fa'
-  avatarFile.value = null
-  removeAvatar.value = false
-  formError.value = ''
-  clearAvatarPreview()
-  editOpen.value = true
-}
+/* ---------- actions ---------- */
 
-function closeEditor() {
-  editOpen.value = false
-  formError.value = ''
-  avatarFile.value = null
-  removeAvatar.value = false
-  clearAvatarPreview()
-}
-
-function chooseAvatar() {
-  avatarInput.value?.click()
-}
-
-function onAvatarSelected(event: Event) {
-  const input = event.target as HTMLInputElement
-  const file = input.files?.[0]
-  input.value = ''
-  if (!file) return
-  if (!['image/jpeg', 'image/png', 'image/webp'].includes(file.type)) {
-    formError.value = 'تصویر پروفایل باید JPEG، PNG یا WebP باشد.'
-    return
-  }
-  if (file.size > 5 * 1024 * 1024) {
-    formError.value = 'حجم تصویر پروفایل باید کمتر از ۵ مگابایت باشد.'
-    return
-  }
-  clearAvatarPreview()
-  avatarFile.value = file
-  avatarPreview.value = URL.createObjectURL(file)
-  removeAvatar.value = false
-  formError.value = ''
-}
-
-function clearAvatar() {
-  clearAvatarPreview()
-  avatarFile.value = null
-  removeAvatar.value = true
-}
-
-async function saveProfile() {
-  formError.value = ''
-  const bio = bioDraft.value.trim()
-  if (bio.length > 500) {
-    formError.value = 'متن معرفی نباید بیشتر از ۵۰۰ نویسه باشد.'
-    return
-  }
-  try {
-    if (removeAvatar.value && !avatarFile.value) {
-      await authStore.updateProfile({ bio, preferred_language: languageDraft.value, avatar: null })
-    } else {
-      const payload = new FormData()
-      payload.append('bio', bio)
-      payload.append('preferred_language', languageDraft.value || 'fa')
-      if (avatarFile.value) payload.append('avatar', avatarFile.value)
-      await authStore.updateProfile(payload)
-    }
-    notifications.success('پروفایل به‌روز شد', 'تغییرات حساب همین حالا ذخیره شد.')
-    closeEditor()
-  } catch (error) {
-    formError.value = getAppError(error, 'ذخیره تغییرات پروفایل ممکن نشد.').reason
-      || 'ذخیره تغییرات پروفایل ممکن نشد.'
-  }
-}
+const editOpen = ref(false)
 
 async function logout() {
   await authStore.logout()
@@ -179,353 +160,289 @@ async function logout() {
   await navigateTo('/')
 }
 
-onBeforeUnmount(clearAvatarPreview)
-
 const visibilityHydration = { rootMargin: '320px 0px' }
 useSeoMeta({ title: 'پروفایل من', description: 'مدیریت پروفایل، ادامه تماشا، ساعت تماشا و فهرست شخصی.' })
 </script>
 
 <template>
-  <div class="profile-page cinema-page pb-14 sm:pb-20">
-    <section class="page-section pb-0 pt-3 sm:pt-6">
-      <div class="profile-hero">
-        <span class="profile-hero__glow profile-hero__glow--one" aria-hidden="true" />
-        <span class="profile-hero__glow profile-hero__glow--two" aria-hidden="true" />
+  <div class="cinema-page pb-14 sm:pb-20">
+    <section class="page-section pb-3 pt-3 sm:pt-6">
+      <header class="pf-card pf-identity">
+        <button type="button" class="pf-avatar" aria-label="ویرایش تصویر پروفایل" @click="editOpen = true">
+          <img v-if="authStore.user?.profile.avatar" :src="authStore.user.profile.avatar" alt="" class="size-full object-cover">
+          <span v-else>{{ avatarInitial }}</span>
+          <span class="pf-avatar__edit" aria-hidden="true"><CinematicIcon name="edit" class="size-3.5" /></span>
+        </button>
 
-        <div class="profile-hero__top">
-          <div class="profile-identity">
-            <button type="button" class="profile-avatar" aria-label="ویرایش تصویر پروفایل" @click="openEditor">
-              <img v-if="authStore.user?.profile.avatar" :src="authStore.user.profile.avatar" alt="" class="size-full object-cover">
-              <span v-else>{{ avatarInitial }}</span>
-              <span class="profile-avatar__edit" aria-hidden="true"><CinematicIcon name="edit" class="size-3.5" /></span>
-            </button>
-
-            <div class="min-w-0 flex-1">
-              <div class="flex flex-wrap items-center gap-2">
-                <p class="profile-kicker">فضای شخصی من</p>
-                <span v-if="isVerified" class="profile-verified"><CinematicIcon name="shield-check" class="size-3.5" />تأییدشده</span>
-              </div>
-              <h1 class="profile-title font-latin" dir="ltr">{{ displayName }}</h1>
-              <p class="profile-bio">{{ profileBio }}</p>
-              <p class="profile-member"><CinematicIcon name="calendar" class="size-3.5" />عضو روایتو از {{ memberSince }}</p>
-            </div>
+        <div class="min-w-0 flex-1">
+          <div class="flex flex-wrap items-center gap-x-2 gap-y-1">
+            <h1 class="pf-name font-latin" dir="ltr">{{ displayName }}</h1>
+            <span v-if="isVerified" class="pf-verified"><CinematicIcon name="shield-check" class="size-3.5" />تأییدشده</span>
           </div>
 
-          <div class="profile-hero__actions">
-            <button type="button" class="ui-primary-button" @click="openEditor">
-              <CinematicIcon name="edit" class="size-4.5" />
-              ویرایش پروفایل
-            </button>
-            <NuxtLink to="/watchlist" class="ui-secondary-button">
-              <CinematicIcon name="bookmark" class="size-4.5" />
-              لیست من
-            </NuxtLink>
-          </div>
+          <p v-if="profileBio" class="pf-bio">{{ profileBio }}</p>
+          <button v-else type="button" class="pf-bio pf-bio--empty" @click="editOpen = true">
+            معرفی کوتاهی درباره خودت بنویس…
+          </button>
+
+          <p class="pf-meta">عضو روایتو از {{ memberSince }}</p>
         </div>
 
-        <div class="profile-stats" aria-label="خلاصه فعالیت حساب">
-          <NuxtLink v-for="stat in stats" :key="stat.label" :to="stat.to" class="profile-stat">
-            <span class="profile-stat__icon"><CinematicIcon :name="stat.icon" class="size-4.5" /></span>
-            <span class="min-w-0">
-              <strong class="profile-stat__value">{{ stat.value }}</strong>
-              <span class="profile-stat__label">{{ stat.label }}</span>
-            </span>
+        <div class="pf-identity__actions">
+          <button type="button" class="ui-secondary-button pf-edit" aria-label="ویرایش پروفایل" @click="editOpen = true">
+            <CinematicIcon name="edit" class="size-4" />
+            <span class="pf-edit__label">ویرایش پروفایل</span>
+          </button>
+        </div>
+      </header>
+
+      <div class="pf-stats" aria-label="خلاصه فعالیت حساب">
+        <template v-for="stat in stats" :key="stat.key">
+          <NuxtLink v-if="stat.to" :to="stat.to" class="pf-stat">
+            <strong>{{ stat.value }}</strong>
+            <span>{{ stat.label }}</span>
           </NuxtLink>
-        </div>
-
-        <nav class="profile-anchor-nav soft-scrollbar lg:hidden" aria-label="بخش‌های پروفایل">
-          <a href="#overview">نمای کلی</a>
-          <a href="#continue">ادامه تماشا</a>
-          <a href="#watch-time">آمار تماشا</a>
-          <a href="#personalization">پیشنهادهای من</a>
-          <a href="#behavior-insight">تحلیل هوشمند</a>
-        </nav>
-
-        <Transition name="profile-editor">
-          <form v-if="editOpen" class="profile-editor" @submit.prevent="saveProfile">
-            <div class="profile-editor__head">
-              <div>
-                <p class="text-xs font-black text-brand">ویرایش حساب</p>
-                <h2 class="mt-1 text-lg font-black text-ink">پروفایل را به سلیقهٔ خودت بساز</h2>
-              </div>
-              <button type="button" class="profile-editor__close" aria-label="بستن ویرایش پروفایل" @click="closeEditor">
-                <CinematicIcon name="x" class="size-5" />
-              </button>
-            </div>
-
-            <div class="profile-editor__body">
-              <div class="profile-editor__avatar">
-                <span class="profile-avatar profile-avatar--editor">
-                  <img v-if="avatarSource" :src="avatarSource" alt="پیش‌نمایش تصویر پروفایل" class="size-full object-cover">
-                  <span v-else>{{ avatarInitial }}</span>
-                </span>
-                <div class="flex flex-wrap gap-2">
-                  <button type="button" class="ui-secondary-button min-h-11 px-3 text-xs" @click="chooseAvatar">
-                    <CinematicIcon name="edit" class="size-4" />انتخاب تصویر
-                  </button>
-                  <button v-if="avatarSource" type="button" class="ui-ghost-button min-h-11 px-3 text-xs" @click="clearAvatar">حذف تصویر</button>
-                </div>
-                <input ref="avatarInput" type="file" accept="image/jpeg,image/png,image/webp" class="sr-only" @change="onAvatarSelected">
-                <p class="text-[11px] leading-5 text-muted">JPEG، PNG یا WebP تا ۵ مگابایت</p>
-              </div>
-
-              <div class="min-w-0 flex-1">
-                <label for="profile-bio" class="text-xs font-bold text-secondary">درباره من</label>
-                <textarea id="profile-bio" v-model="bioDraft" rows="4" maxlength="500" class="ui-field mt-2 resize-y px-3 py-3 text-sm leading-7" placeholder="از سلیقه سینمایی‌ات یا فیلم‌هایی که دوست داری بنویس…" />
-                <div class="mt-1 flex items-center justify-between gap-3 text-[10px] text-muted">
-                  <span>این متن در پروفایل تو نمایش داده می‌شود.</span>
-                  <span class="font-latin tabular-nums">{{ bioDraft.length.toLocaleString('fa-IR') }}/۵۰۰</span>
-                </div>
-
-                <span class="mt-4 block text-xs font-bold text-secondary">زبان ترجیحی رابط</span>
-                <div class="mt-2 max-w-44">
-                  <UiSelect
-                    v-model="languageDraft"
-                    :options="languageOptions"
-                    label="زبان ترجیحی رابط"
-                    icon="globe"
-                    compact
-                  />
-                </div>
-                <p class="mt-1.5 text-[10px] leading-5 text-muted">زبان نمایش منوها و پیشنهادها را تعیین می‌کند.</p>
-
-                <div v-if="formError" class="mt-3 flex items-start gap-2 rounded-xl bg-red-500/10 p-3 text-xs leading-6 text-red-300 ring-1 ring-red-500/25" role="alert">
-                  <CinematicIcon name="info" class="mt-0.5 size-4 shrink-0" />{{ formError }}
-                </div>
-
-                <div class="mt-4 flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
-                  <button type="button" class="ui-ghost-button min-h-11" :disabled="authStore.pending" @click="closeEditor">انصراف</button>
-                  <button type="submit" class="ui-primary-button min-h-11" :disabled="authStore.pending">
-                    <CinematicIcon :name="authStore.pending ? 'refresh' : 'check'" class="size-4.5" :class="authStore.pending && 'animate-spin'" />
-                    {{ authStore.pending ? 'در حال ذخیره…' : 'ذخیره تغییرات' }}
-                  </button>
-                </div>
-              </div>
-            </div>
-          </form>
-        </Transition>
+          <button v-else type="button" class="pf-stat" @click="stat.tab && selectTab(stat.tab, true)">
+            <strong>{{ stat.value }}</strong>
+            <span>{{ stat.label }}</span>
+          </button>
+        </template>
       </div>
     </section>
 
-    <section id="overview" class="content-section scroll-under-header">
-      <div class="profile-overview-grid">
-        <div id="continue" class="scroll-under-header min-w-0">
-          <SectionHeader
-            title="ادامه تماشا"
-            eyebrow="برگشت سریع"
-            description="از همان لحظه‌ای که متوقف کردی ادامه بده."
-            href="/movies"
-            link-label="پیدا کردن عنوان"
-            icon="resume"
+    <div ref="tabsBar" class="pf-tabs">
+      <div class="pf-tabs__inner" role="tablist" aria-label="بخش‌های پروفایل">
+        <button
+          v-for="(tab, index) in TABS"
+          :id="`pf-tab-${tab.id}`"
+          :key="tab.id"
+          :ref="(el) => { if (el) tabButtons[index] = el as HTMLButtonElement }"
+          type="button"
+          role="tab"
+          :aria-selected="activeTab === tab.id"
+          :aria-controls="`pf-panel-${tab.id}`"
+          :tabindex="activeTab === tab.id ? 0 : -1"
+          class="pf-tab"
+          :class="activeTab === tab.id && 'is-active'"
+          @click="selectTab(tab.id)"
+          @keydown="onTabKeydown($event, index)"
+        >
+          <CinematicIcon :name="tab.icon" class="size-4" />
+          {{ tab.label }}
+        </button>
+      </div>
+    </div>
+
+    <div
+      v-if="mountedTabs.overview"
+      v-show="activeTab === 'overview'"
+      id="pf-panel-overview"
+      role="tabpanel"
+      aria-labelledby="pf-tab-overview"
+      tabindex="0"
+      class="pf-panel"
+    >
+      <section class="content-section">
+        <SectionHeader
+          title="ادامه تماشا"
+          href="/movies"
+          link-label="پیدا کردن عنوان"
+          icon="resume"
+        />
+        <div v-if="continueItems.length" class="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
+          <ContinueWatchingCard v-for="item in continueItems" :key="`${item.type}-${item.id}`" :item="item" />
+        </div>
+        <EmptyState
+          v-else
+          title="هنوز چیزی در حال تماشا نیست"
+          description="پخش یک فیلم یا سریال را شروع کن؛ ادامه‌اش از همین‌جا در دسترس می‌ماند."
+          icon="resume"
+          action-label="مرور فیلم‌ها"
+          action-href="/movies"
+        />
+      </section>
+
+      <LazyMovieRow
+        v-if="watchlistItems.length"
+        :hydrate-on-visible="visibilityHydration"
+        title="لیست من"
+        :items="watchlistItems"
+        href="/watchlist"
+        icon="bookmark"
+      />
+
+      <section class="content-section">
+        <SectionHeader
+          title="کالکشن‌های من"
+          href="/collections/my"
+          link-label="همه کالکشن‌ها"
+          icon="layers"
+        >
+          <template #actions>
+            <NuxtLink to="/collections/my" class="ui-secondary-button min-h-11 px-3 text-xs">
+              <CinematicIcon name="plus" class="size-4" />کالکشن جدید
+            </NuxtLink>
+          </template>
+        </SectionHeader>
+
+        <div v-if="!collectionsLoaded" class="grid place-items-center py-12">
+          <LoadingSpinnerA size="small" />
+        </div>
+        <div v-else-if="topCollections.length" class="pf-collections">
+          <CollectionSummaryCard
+            v-for="collection in topCollections"
+            :key="collection.id"
+            :collection="collection"
+            :to="`/collections/my/${collection.slug}`"
           />
-          <div v-if="continueItems.length" class="grid gap-3 sm:grid-cols-2">
-            <ContinueWatchingCard v-for="item in continueItems" :key="`${item.type}-${item.id}`" :item="item" />
+        </div>
+        <EmptyState
+          v-else
+          title="هنوز کالکشنی نساخته‌ای"
+          description="اولین فهرستت را بساز؛ مثلاً «شاهکارهای سینما» یا «برای یک شب بارانی»."
+          icon="layers"
+          action-label="ساخت اولین کالکشن"
+          action-href="/collections/my"
+        />
+      </section>
+    </div>
+
+    <div
+      v-if="mountedTabs.activity"
+      v-show="activeTab === 'activity'"
+      id="pf-panel-activity"
+      role="tabpanel"
+      aria-labelledby="pf-tab-activity"
+      tabindex="0"
+      class="pf-panel"
+    >
+      <WatchTimeStory />
+      <LazyBehaviorInsight :hydrate-on-visible="visibilityHydration" />
+    </div>
+
+    <div
+      v-if="mountedTabs.settings"
+      v-show="activeTab === 'settings'"
+      id="pf-panel-settings"
+      role="tabpanel"
+      aria-labelledby="pf-tab-settings"
+      tabindex="0"
+      class="pf-panel"
+    >
+      <LazyPersonalizationSettings :hydrate-on-visible="visibilityHydration" />
+
+      <section class="content-section" aria-label="حساب کاربری">
+        <SectionHeader title="حساب کاربری" icon="user" />
+
+        <div class="pf-card pf-account">
+          <div class="pf-row pf-row--static">
+            <span class="pf-row__icon"><CinematicIcon :name="isVerified ? 'shield-check' : 'shield-alert'" class="size-4.5" /></span>
+            <span class="min-w-0 flex-1">
+              <strong>ایمیل حساب</strong>
+              <small class="font-latin" dir="ltr">{{ authStore.user?.email }}</small>
+            </span>
+            <span class="pf-badge" :class="isVerified ? 'pf-badge--ok' : 'pf-badge--warn'">
+              {{ isVerified ? 'تأییدشده' : 'تأیید نشده' }}
+            </span>
           </div>
-          <EmptyState
-            v-else
-            title="هنوز چیزی در حال تماشا نیست"
-            description="پخش یک فیلم یا سریال را شروع کن؛ ادامه‌اش از همین‌جا در دسترس می‌ماند."
-            icon="resume"
-            action-label="مرور فیلم‌ها"
-            action-href="/movies"
-          />
+
+          <NuxtLink v-for="link in accountLinks" :key="link.to" :to="link.to" class="pf-row">
+            <span class="pf-row__icon"><CinematicIcon :name="link.icon" class="size-4.5" /></span>
+            <span class="min-w-0 flex-1">
+              <strong>{{ link.label }}</strong>
+              <small>{{ link.hint }}</small>
+            </span>
+            <CinematicIcon name="arrow-left" class="size-4 shrink-0 text-disabled" />
+          </NuxtLink>
+
+          <button type="button" class="pf-row pf-row--danger" @click="logout">
+            <span class="pf-row__icon"><CinematicIcon name="logout" class="size-4.5" /></span>
+            <span class="min-w-0 flex-1">
+              <strong>خروج از حساب</strong>
+              <small>نشست این دستگاه بسته می‌شود</small>
+            </span>
+          </button>
         </div>
+      </section>
+    </div>
 
-        <aside class="profile-side" aria-label="میانبرهای حساب">
-          <section class="profile-panel profile-panel--sections">
-            <div class="profile-panel__head">
-              <span class="profile-panel__icon"><CinematicIcon name="list-video" class="size-5" /></span>
-              <div><h2>بخش‌های صفحه</h2><p>پرش سریع بین بخش‌ها</p></div>
-            </div>
-            <LineSidebar
-              :items="sectionItems"
-              aria-label="بخش‌های پروفایل"
-              accent-color="var(--theme-accent-primary)"
-              text-color="var(--theme-text-secondary)"
-              marker-color="var(--theme-text-muted)"
-              :proximity-radius="80"
-              :max-shift="16"
-              :marker-length="44"
-              :item-gap="14"
-              :font-size="0.8"
-              :default-active="0"
-              class="profile-sections-nav"
-              @item-click="scrollToSection"
-            />
-          </section>
-
-          <section class="profile-panel">
-            <div class="profile-panel__head">
-              <span class="profile-panel__icon"><CinematicIcon name="grid" class="size-5" /></span>
-              <div><h2>دسترسی سریع</h2><p>همه چیز نزدیک دست تو</p></div>
-            </div>
-            <nav class="profile-quick-links">
-              <NuxtLink v-for="item in quickLinks" :key="item.to" :to="item.to" class="profile-quick-link">
-                <span class="profile-quick-link__icon"><CinematicIcon :name="item.icon" class="size-4.5" /></span>
-                <span class="min-w-0 flex-1"><strong>{{ item.label }}</strong><small>{{ item.description }}</small></span>
-                <CinematicIcon name="arrow-left" class="size-4 shrink-0 text-disabled" />
-              </NuxtLink>
-            </nav>
-          </section>
-
-          <section class="profile-panel profile-panel--account">
-            <div class="flex items-start justify-between gap-3">
-              <div>
-                <p class="text-xs font-black text-brand">وضعیت پروفایل</p>
-                <p class="mt-1 text-2xl font-black text-ink tabular-nums">{{ profileCompletion.toLocaleString('fa-IR') }}٪</p>
-              </div>
-              <span class="profile-panel__icon"><CinematicIcon name="shield-check" class="size-5" /></span>
-            </div>
-            <div class="mt-3 h-1.5 overflow-hidden rounded-full bg-white/10" role="progressbar" :aria-valuenow="profileCompletion" aria-valuemin="0" aria-valuemax="100" aria-label="درصد تکمیل پروفایل">
-              <span class="block h-full rounded-full bg-primary-500 transition-[width] duration-500" :style="{ width: `${profileCompletion}%` }" />
-            </div>
-            <p class="mt-3 break-all text-xs leading-6 text-muted" dir="ltr">{{ authStore.user?.email }}</p>
-            <button type="button" class="ui-destructive-button mt-4 min-h-11 w-full text-xs" @click="logout">
-              <CinematicIcon name="logout" class="size-4" />خروج امن از حساب
-            </button>
-          </section>
-        </aside>
-      </div>
-    </section>
-
-    <WatchTimeStory />
-
-    <LazyMovieRow
-      v-if="watchlistItems.length"
-      :hydrate-on-visible="visibilityHydration"
-      title="لیست من"
-      eyebrow="برای تماشای بعدی"
-      :items="watchlistItems"
-      href="/watchlist"
-    />
-
-    <LazyPersonalizationSettings :hydrate-on-visible="visibilityHydration" />
-
-    <LazyBehaviorInsight :hydrate-on-visible="visibilityHydration" />
+    <ProfileEditorModal :open="editOpen" @close="editOpen = false" />
   </div>
 </template>
 
 <style scoped>
-.profile-hero {
-  position: relative;
-  isolation: isolate;
-  overflow: hidden;
-  border: 1px solid color-mix(in srgb, var(--theme-border) 78%, transparent);
-  border-radius: 1.35rem;
-  background:
-    linear-gradient(145deg, color-mix(in srgb, var(--theme-accent-primary) 8%, var(--theme-bg-surface)), var(--theme-bg-surface) 45%, color-mix(in srgb, var(--theme-bg-elevated) 92%, black));
-  padding: 1rem;
-  box-shadow: 0 20px 55px rgb(0 0 0 / 18%);
+/* One card shape for the whole page — no gradients, no glow layers. */
+.pf-card {
+  border: 1px solid color-mix(in srgb, var(--theme-border) 80%, transparent);
+  border-radius: 1.15rem;
+  background: var(--theme-bg-surface);
 }
 
-.profile-hero__glow {
-  position: absolute;
-  z-index: -1;
-  border-radius: 999px;
-  filter: blur(4px);
-  pointer-events: none;
-}
+/* ---- identity ---- */
 
-.profile-hero__glow--one {
-  inset: -7rem -5rem auto auto;
-  width: 18rem;
-  height: 18rem;
-  background: radial-gradient(circle, rgb(var(--palette-sand-rgb) / 16%), transparent 68%);
-}
-
-.profile-hero__glow--two {
-  inset: auto auto -9rem -6rem;
-  width: 20rem;
-  height: 20rem;
-  background: radial-gradient(circle, rgb(var(--palette-mid-rgb) / 12%), transparent 68%);
-}
-
-.profile-hero__top {
+.pf-identity {
   display: flex;
-  flex-direction: column;
-  gap: 1rem;
-}
-
-.profile-identity {
-  display: flex;
-  min-width: 0;
   align-items: flex-start;
-  gap: .85rem;
+  gap: .9rem;
+  padding: 1rem;
 }
 
-.profile-avatar {
+.pf-avatar {
   position: relative;
   display: grid;
-  width: 4.75rem;
-  height: 4.75rem;
+  width: 4rem;
+  height: 4rem;
   flex: none;
   place-items: center;
   overflow: hidden;
-  border: 3px solid color-mix(in srgb, var(--theme-accent-primary) 35%, transparent);
-  border-radius: 1.35rem;
+  border-radius: 1.15rem;
   background: linear-gradient(145deg, var(--theme-accent-primary), var(--theme-primary-700));
   color: var(--theme-on-accent);
   font-family: var(--font-latin-ui);
-  font-size: 1.45rem;
+  font-size: 1.4rem;
   font-weight: 800;
-  box-shadow: 0 12px 32px rgb(0 0 0 / 28%);
+  cursor: pointer;
 }
 
-button.profile-avatar { cursor: pointer; }
-button.profile-avatar:focus-visible { outline: 3px solid var(--theme-focus-ring); outline-offset: 3px; }
+.pf-avatar:focus-visible { outline: 3px solid var(--theme-focus-ring); outline-offset: 3px; }
 
-.profile-avatar__edit {
+.pf-avatar__edit {
   position: absolute;
-  inset: auto auto .2rem .2rem;
+  inset: auto auto .15rem .15rem;
   display: grid;
-  width: 1.55rem;
-  height: 1.55rem;
+  width: 1.4rem;
+  height: 1.4rem;
   place-items: center;
-  border-radius: .55rem;
+  border-radius: .5rem;
   background: rgb(5 8 7 / 82%);
   color: white;
-  box-shadow: inset 0 0 0 1px rgb(255 255 255 / 15%);
 }
 
-.profile-avatar--editor {
-  width: 5.5rem;
-  height: 5.5rem;
-  border-radius: 1.5rem;
-}
-
-.profile-kicker {
-  font-size: .7rem;
+.pf-name {
+  overflow-wrap: anywhere;
+  color: var(--theme-text-primary);
+  font-size: 1.3rem;
   font-weight: 800;
-  color: var(--theme-accent-primary);
+  line-height: 1.2;
 }
 
-.profile-verified {
+.pf-verified {
   display: inline-flex;
   align-items: center;
   gap: .25rem;
-  border: 1px solid color-mix(in srgb, var(--theme-success) 30%, transparent);
   border-radius: 999px;
-  background: color-mix(in srgb, var(--theme-success) 9%, transparent);
-  padding: .2rem .5rem;
+  background: color-mix(in srgb, var(--theme-success) 12%, transparent);
+  padding: .15rem .45rem;
   color: var(--theme-success);
-  font-size: .62rem;
+  font-size: 0.75rem;
   font-weight: 800;
 }
 
-.profile-title {
-  margin-top: .25rem;
-  overflow-wrap: anywhere;
-  font-size: clamp(1.35rem, 7vw, 2.35rem);
-  font-weight: 800;
-  line-height: 1.15;
-  color: var(--theme-text-primary);
-}
-
-.profile-bio {
+.pf-bio {
   display: -webkit-box;
   overflow: hidden;
-  margin-top: .45rem;
-  max-width: 42rem;
+  margin-top: .35rem;
+  max-width: 44rem;
   -webkit-box-orient: vertical;
   -webkit-line-clamp: 2;
   color: var(--theme-text-secondary);
@@ -533,147 +450,188 @@ button.profile-avatar:focus-visible { outline: 3px solid var(--theme-focus-ring)
   line-height: 1.75;
 }
 
-.profile-member {
-  display: flex;
-  align-items: center;
-  gap: .35rem;
-  margin-top: .45rem;
+.pf-bio--empty {
+  text-align: start;
   color: var(--theme-text-muted);
-  font-size: .68rem;
+  text-decoration: underline;
+  text-decoration-style: dotted;
+  text-underline-offset: 3px;
+  cursor: pointer;
 }
 
-.profile-hero__actions {
+.pf-bio--empty:hover { color: var(--theme-accent-primary); }
+
+.pf-meta {
+  margin-top: .35rem;
+  color: var(--theme-text-muted);
+  font-size: 0.75rem;
+}
+
+.pf-identity__actions { flex: none; }
+
+.pf-edit {
+  min-height: 2.75rem;
+  gap: .4rem;
+  padding: .5rem;
+  aspect-ratio: 1;
+  font-size: .75rem;
+}
+
+.pf-edit__label { display: none; }
+
+/* ---- stats ---- */
+
+.pf-stats {
   display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: .55rem;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  margin-top: .6rem;
+  border: 1px solid color-mix(in srgb, var(--theme-border) 80%, transparent);
+  border-radius: 1.15rem;
+  background: var(--theme-bg-surface);
+  overflow: hidden;
 }
 
-.profile-hero__actions > * { min-height: 2.75rem; padding: .65rem .75rem; font-size: .75rem; }
-
-.profile-stats {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: .5rem;
-  margin-top: 1rem;
-}
-
-.profile-stat {
+.pf-stat {
   display: flex;
   min-width: 0;
-  min-height: 4rem;
+  min-height: 3.75rem;
+  flex-direction: column;
   align-items: center;
-  gap: .65rem;
-  border: 1px solid color-mix(in srgb, var(--theme-border) 66%, transparent);
-  border-radius: .95rem;
-  background: color-mix(in srgb, var(--theme-bg-elevated) 72%, transparent);
-  padding: .65rem;
-  transition: border-color 160ms ease, background-color 160ms ease, transform 160ms ease;
+  justify-content: center;
+  gap: .15rem;
+  padding: .6rem .35rem;
+  text-align: center;
+  transition: background-color 150ms ease;
 }
 
-.profile-stat:hover,
-.profile-stat:focus-visible {
-  border-color: color-mix(in srgb, var(--theme-accent-primary) 38%, transparent);
-  background: color-mix(in srgb, var(--theme-accent-primary) 9%, var(--theme-bg-elevated));
-  transform: translateY(-1px);
+.pf-stat + .pf-stat { border-inline-start: 1px solid color-mix(in srgb, var(--theme-border) 70%, transparent); }
+.pf-stat:hover, .pf-stat:focus-visible { background: color-mix(in srgb, var(--theme-accent-primary) 7%, transparent); }
+.pf-stat strong { overflow: hidden; max-width: 100%; text-overflow: ellipsis; white-space: nowrap; color: var(--theme-text-primary); font-size: .85rem; font-weight: 900; }
+.pf-stat span { color: var(--theme-text-muted); font-size: 0.75rem; }
+
+/* ---- tabs ---- */
+
+.pf-tabs {
+  position: sticky;
+  top: var(--sticky-offset);
+  z-index: 20;
+  border-bottom: 1px solid color-mix(in srgb, var(--theme-border) 65%, transparent);
+  background: color-mix(in srgb, var(--theme-bg-main) 90%, transparent);
+  backdrop-filter: blur(14px);
 }
 
-.profile-stat__icon,
-.profile-panel__icon,
-.profile-quick-link__icon {
+.pf-tabs__inner {
+  display: flex;
+  gap: .25rem;
+  inline-size: 100%;
+  max-inline-size: var(--layout-max);
+  margin-inline: auto;
+  padding-inline: var(--layout-gutter);
+}
+
+.pf-tab {
+  position: relative;
+  display: inline-flex;
+  min-height: 2.9rem;
+  flex: 1;
+  align-items: center;
+  justify-content: center;
+  gap: .4rem;
+  padding: .5rem .5rem;
+  color: var(--theme-text-muted);
+  font-size: .78rem;
+  font-weight: 800;
+  transition: color 150ms ease;
+}
+
+.pf-tab::after {
+  content: '';
+  position: absolute;
+  inset-inline: .5rem;
+  bottom: -1px;
+  height: 2px;
+  border-radius: 999px;
+  background: transparent;
+  transition: background-color 180ms ease;
+}
+
+.pf-tab:hover { color: var(--theme-text-secondary); }
+.pf-tab.is-active { color: var(--theme-text-primary); }
+.pf-tab.is-active::after { background: var(--theme-accent-primary); }
+.pf-tab:focus-visible { outline: 2px solid var(--theme-focus-ring); outline-offset: -3px; border-radius: .6rem; }
+
+.pf-panel:focus-visible { outline: none; }
+
+/* ---- collections ---- */
+
+.pf-collections {
   display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 15rem), 1fr));
+  gap: 1rem;
+}
+
+/* ---- account rows ---- */
+
+.pf-account { overflow: hidden; }
+
+.pf-row {
+  display: flex;
+  width: 100%;
+  min-height: 3.75rem;
+  align-items: center;
+  gap: .75rem;
+  padding: .7rem .9rem;
+  text-align: start;
+  transition: background-color 150ms ease;
+}
+
+.pf-row + .pf-row { border-top: 1px solid color-mix(in srgb, var(--theme-border) 60%, transparent); }
+.pf-row:not(.pf-row--static):hover,
+.pf-row:not(.pf-row--static):focus-visible { background: var(--theme-bg-elevated); }
+.pf-row strong { display: block; color: var(--theme-text-primary); font-size: .8rem; font-weight: 800; }
+.pf-row small { display: block; overflow: hidden; margin-top: .15rem; text-overflow: ellipsis; white-space: nowrap; color: var(--theme-text-muted); font-size: 0.75rem; }
+
+.pf-row__icon {
+  display: grid;
+  width: 2.25rem;
+  height: 2.25rem;
   flex: none;
   place-items: center;
   border-radius: .75rem;
-  background: color-mix(in srgb, var(--theme-accent-primary) 11%, transparent);
+  background: color-mix(in srgb, var(--theme-accent-primary) 10%, transparent);
   color: var(--theme-accent-primary);
 }
 
-.profile-stat__icon { width: 2.15rem; height: 2.15rem; }
-.profile-stat__value { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--theme-text-primary); font-size: .8rem; font-weight: 900; }
-.profile-stat__label { display: block; margin-top: .2rem; color: var(--theme-text-muted); font-size: .63rem; }
+.pf-row--danger .pf-row__icon { background: rgb(239 68 68 / 12%); color: var(--theme-error); }
+.pf-row--danger strong { color: var(--theme-error); }
+.pf-row--danger:hover { background: rgb(239 68 68 / 8%); }
 
-.profile-anchor-nav {
-  display: flex;
-  overflow-x: auto;
-  gap: .35rem;
-  margin-top: 1rem;
-  padding-top: .75rem;
-  border-top: 1px solid color-mix(in srgb, var(--theme-border) 55%, transparent);
-  scrollbar-width: none;
-}
-
-.profile-anchor-nav::-webkit-scrollbar { display: none; }
-.profile-anchor-nav a { flex: none; border-radius: .75rem; padding: .55rem .75rem; color: var(--theme-text-muted); font-size: .7rem; font-weight: 700; transition: color 140ms ease, background-color 140ms ease; }
-.profile-anchor-nav a:hover,
-.profile-anchor-nav a:focus-visible { background: color-mix(in srgb, var(--theme-accent-primary) 10%, transparent); color: var(--theme-accent-primary); }
-
-.profile-editor {
-  margin-top: 1rem;
-  overflow: hidden;
-  border: 1px solid color-mix(in srgb, var(--theme-accent-primary) 24%, var(--theme-border));
-  border-radius: 1rem;
-  background: color-mix(in srgb, var(--theme-bg-surface) 95%, transparent);
-}
-
-.profile-editor__head { display: flex; align-items: flex-start; justify-content: space-between; gap: 1rem; padding: 1rem; border-bottom: 1px solid var(--theme-border); }
-.profile-editor__close { display: grid; width: 2.75rem; height: 2.75rem; flex: none; place-items: center; border-radius: .75rem; color: var(--theme-text-muted); transition: color 140ms ease, background-color 140ms ease; }
-.profile-editor__close:hover { background: var(--theme-bg-elevated); color: var(--theme-text-primary); }
-.profile-editor__body { display: flex; flex-direction: column; gap: 1.25rem; padding: 1rem; }
-.profile-editor__avatar { display: flex; flex-direction: column; align-items: flex-start; gap: .7rem; }
-
-.profile-editor-enter-active,
-.profile-editor-leave-active { transition: opacity 180ms ease, transform 200ms cubic-bezier(.22, 1, .36, 1); }
-.profile-editor-enter-from,
-.profile-editor-leave-to { opacity: 0; transform: translateY(-.4rem); }
-
-.profile-overview-grid { display: grid; gap: 1rem; }
-.profile-side { display: grid; align-content: start; gap: .75rem; }
-.profile-panel { overflow: hidden; border: 1px solid color-mix(in srgb, var(--theme-border) 75%, transparent); border-radius: 1.1rem; background: var(--theme-bg-surface); padding: 1rem; }
-.profile-panel__head { display: flex; align-items: center; gap: .7rem; }
-.profile-panel__head h2 { color: var(--theme-text-primary); font-size: .92rem; font-weight: 900; }
-.profile-panel__head p { margin-top: .15rem; color: var(--theme-text-muted); font-size: .65rem; }
-.profile-sections-nav { margin-top: .4rem; }
-.profile-panel__icon { width: 2.5rem; height: 2.5rem; }
-.profile-quick-links { display: grid; gap: .3rem; margin-top: .8rem; }
-.profile-quick-link { display: flex; min-height: 3.5rem; align-items: center; gap: .65rem; border-radius: .85rem; padding: .45rem .5rem; transition: background-color 140ms ease; }
-.profile-quick-link:hover,
-.profile-quick-link:focus-visible { background: var(--theme-bg-elevated); }
-.profile-quick-link__icon { width: 2.15rem; height: 2.15rem; }
-.profile-quick-link strong { display: block; color: var(--theme-text-primary); font-size: .76rem; font-weight: 800; }
-.profile-quick-link small { display: block; margin-top: .15rem; color: var(--theme-text-muted); font-size: .62rem; }
-.profile-panel--account { background: linear-gradient(145deg, color-mix(in srgb, var(--theme-accent-primary) 6%, var(--theme-bg-surface)), var(--theme-bg-surface)); }
+.pf-badge { flex: none; border-radius: 999px; padding: .2rem .5rem; font-size: 0.75rem; font-weight: 800; }
+.pf-badge--ok { background: color-mix(in srgb, var(--theme-success) 12%, transparent); color: var(--theme-success); }
+.pf-badge--warn { background: rgb(234 179 8 / 14%); color: rgb(250 204 21); }
 
 @media (min-width: 640px) {
-  .profile-hero { border-radius: 1.75rem; padding: 1.5rem; }
-  .profile-avatar { width: 5.75rem; height: 5.75rem; border-radius: 1.6rem; font-size: 1.8rem; }
-  .profile-hero__actions { display: flex; }
-  .profile-stats { grid-template-columns: repeat(4, minmax(0, 1fr)); gap: .7rem; }
-  .profile-stat { min-height: 4.5rem; padding: .75rem; }
-  .profile-editor__head,
-  .profile-editor__body { padding: 1.25rem; }
-  .profile-editor__body { flex-direction: row; }
-  .profile-editor__avatar { width: 12rem; flex: none; }
-}
-
-@media (min-width: 1024px) {
-  .profile-hero { padding: 1.75rem; }
-  .profile-hero__top { flex-direction: row; align-items: flex-start; justify-content: space-between; gap: 2rem; }
-  .profile-hero__actions { flex: none; }
-  .profile-overview-grid { grid-template-columns: minmax(0, 2fr) minmax(17rem, .8fr); gap: 1.25rem; }
-  .profile-stat__value { font-size: .9rem; }
+  .pf-card { border-radius: 1.35rem; }
+  .pf-identity { padding: 1.25rem 1.35rem; }
+  .pf-avatar { width: 4.75rem; height: 4.75rem; font-size: 1.6rem; }
+  .pf-name { font-size: 1.6rem; }
+  .pf-edit { aspect-ratio: auto; padding: .5rem .9rem; }
+  .pf-edit__label { display: inline; }
+  .pf-stats { border-radius: 1.35rem; }
+  .pf-stat strong { font-size: .95rem; }
+  .pf-stat span { font-size: 0.75rem; }
+  .pf-tab { flex: none; padding-inline: 1rem; font-size: .82rem; }
 }
 
 @media (max-width: 359px) {
-  .profile-hero { padding: .8rem; }
-  .profile-avatar { width: 4.1rem; height: 4.1rem; }
-  .profile-bio { -webkit-line-clamp: 1; }
-  .profile-stat { gap: .45rem; padding: .5rem; }
-  .profile-stat__icon { width: 1.9rem; height: 1.9rem; }
+  .pf-identity { padding: .8rem; gap: .65rem; }
+  .pf-avatar { width: 3.4rem; height: 3.4rem; font-size: 1.15rem; }
+  .pf-name { font-size: 1.1rem; }
+  .pf-bio { -webkit-line-clamp: 1; }
+  .pf-tab { gap: .25rem; font-size: 0.75rem; }
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .profile-editor-enter-active,
-  .profile-editor-leave-active,
-  .profile-stat { transition: none; }
+  .pf-stat, .pf-tab, .pf-tab::after, .pf-row { transition: none; }
 }
 </style>

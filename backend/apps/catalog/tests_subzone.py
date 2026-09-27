@@ -1,10 +1,16 @@
 from django.core.cache import cache
 from django.test import SimpleTestCase, override_settings
 
+from unittest import mock
+
+from apps.catalog import subzone
 from apps.catalog.subzone import (
+    SubzoneError,
+    _movie_page_candidates,
     _parse_farsi_items,
-    _score_search_hit,
-    _season_slug_matches,
+    _robots_allows,
+    _season_page_candidates,
+    _slugify_title,
     find_movie_subtitle,
 )
 
@@ -46,32 +52,51 @@ class SubzoneParserTests(SimpleTestCase):
         self.assertEqual(items[0][0], '/subtitles/interstellar/farsi_persian/1833997')
         self.assertIn('Interstellar.2014.720p.BluRay.x264', items[0][1])
 
-    def test_search_hit_prefers_exact_title_year(self):
-        exact = _score_search_hit(
-            '/subtitles/interstellar',
-            'Interstellar (2014)',
-            title='Interstellar',
-            year=2014,
-        )
-        wars = _score_search_hit(
-            '/subtitles/interstellar-wars',
-            'Interstellar Wars (2016)',
-            title='Interstellar',
-            year=2014,
-        )
-        self.assertGreater(exact, wars)
+    def test_slug_folds_accents_and_apostrophes(self):
+        self.assertEqual(_slugify_title('Çukur'), 'cukur')
+        self.assertEqual(_slugify_title("The Queen's Gambit"), 'the-queens-gambit')
+        self.assertEqual(_slugify_title("Bize Bi'Şey Olmaz"), 'bize-bisey-olmaz')
+        self.assertEqual(_slugify_title('Spider-Man: No Way Home'), 'spider-man-no-way-home')
+        self.assertEqual(_slugify_title('Fast & Furious'), 'fast-and-furious')
 
-    def test_season_slug_matches_ordinal_pages(self):
-        self.assertTrue(_season_slug_matches(
-            '/subtitles/breaking-bad-fifth-season',
-            title='Breaking Bad',
-            season=5,
-        ))
-        self.assertFalse(_season_slug_matches(
-            '/subtitles/breaking-bad-first-season',
-            title='Breaking Bad',
-            season=5,
-        ))
+    def test_movie_candidates_try_year_slug_first(self):
+        urls = _movie_page_candidates(['The Batman', 'The Batman'], 2022)
+        self.assertEqual(urls, [
+            'https://subzone.ir/subtitles/the-batman-2022',
+            'https://subzone.ir/subtitles/the-batman',
+        ])
+
+    def test_season_candidates_use_ordinal_word(self):
+        urls = _season_page_candidates(['From'], 1, 2022)
+        self.assertEqual(urls[0], 'https://subzone.ir/subtitles/from-first-season')
+        self.assertIn('https://subzone.ir/subtitles/from-2022-first-season', urls)
+        self.assertEqual(
+            _season_page_candidates(['Breaking Bad'], 5, None),
+            ['https://subzone.ir/subtitles/breaking-bad-fifth-season'],
+        )
+        self.assertEqual(_season_page_candidates(['X'], 99, None), [])
+
+    def test_robots_gate_blocks_search_even_without_robots_txt(self):
+        with mock.patch.object(subzone, '_robots_text', return_value=None):
+            self.assertFalse(_robots_allows('https://subzone.ir/subtitles/searchbytitle?query=x'))
+            self.assertTrue(_robots_allows('https://subzone.ir/subtitles/from-first-season'))
+            # The download CDN is a different site with its own rules.
+            self.assertTrue(_robots_allows('https://media.sub-api.ir/subtitles/searchbytitle'))
+
+    def test_robots_gate_honours_live_rules(self):
+        robots = 'User-agent: *\nDisallow: /private/\n'
+        with mock.patch.object(subzone, '_robots_text', return_value=robots):
+            self.assertFalse(_robots_allows('https://subzone.ir/private/page'))
+            self.assertTrue(_robots_allows('https://subzone.ir/subtitles/interstellar'))
+
+    def test_fetch_refuses_disallowed_path_before_network(self):
+        with mock.patch.object(subzone, 'build_opener') as opener:
+            with self.assertRaises(SubzoneError):
+                subzone._fetch(
+                    'https://subzone.ir/subtitles/searchbytitle?query=from',
+                    max_bytes=1024, timeout_seconds=5,
+                )
+            opener.assert_not_called()
 
     @override_settings(SUBZONE_ENABLED=False)
     def test_disabled_provider_returns_none(self):

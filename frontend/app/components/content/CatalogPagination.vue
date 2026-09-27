@@ -7,10 +7,16 @@ const props = withDefaults(defineProps<{
   total?: number
   pending?: boolean
   label?: string
+  /**
+   * When set, pages render as real ``<a href>`` links (crawlable pagination for
+   * the SEO landing pages) and navigation is left to the router — no ``change``.
+   */
+  hrefFor?: (page: number) => string
 }>(), {
   total: 0,
   pending: false,
   label: 'صفحه‌بندی نتایج',
+  hrefFor: undefined,
 })
 
 const emit = defineEmits<{
@@ -45,44 +51,79 @@ function go(page: number) {
     class="catalog-pagination mt-6 flex flex-wrap items-center justify-between gap-3 px-1 py-2"
     :aria-label="label"
   >
-    <p class="text-[11px] font-bold text-muted">
+    <p class="text-xs font-bold text-muted">
       صفحه {{ page.toLocaleString('fa-IR') }} از {{ totalPages.toLocaleString('fa-IR') }}
       <span v-if="total" class="text-secondary"> · {{ total.toLocaleString('fa-IR') }} مورد</span>
     </p>
     <div class="flex flex-wrap items-center gap-1 sm:gap-1.5">
-      <button
-        type="button"
-        class="catalog-pagination__arrow"
-        :disabled="pending || page <= 1"
-        aria-label="صفحه قبل"
-        @click="go(page - 1)"
-      >
-        <CinematicIcon name="chevron-right" class="size-5" />
-      </button>
-      <template v-for="segment in segments" :key="segment.type === 'gap' ? segment.key : `page-${segment.page}`">
-        <span v-if="segment.type === 'gap'" class="px-0.5 text-xs font-black text-muted" aria-hidden="true">…</span>
-        <button
-          v-else
-          type="button"
-          class="catalog-pagination__page"
-          :class="{ 'is-active': segment.page === page }"
-          :aria-current="segment.page === page ? 'page' : undefined"
-          :disabled="pending"
-          :aria-label="`صفحه ${segment.page}`"
-          @click="go(segment.page)"
+      <template v-if="hrefFor">
+        <NuxtLink
+          v-if="page > 1"
+          :to="hrefFor(page - 1)"
+          rel="prev"
+          class="catalog-pagination__arrow"
+          aria-label="صفحه قبل"
         >
-          {{ segment.page.toLocaleString('fa-IR') }}
+          <CinematicIcon name="chevron-right" class="size-5" />
+        </NuxtLink>
+        <template v-for="segment in segments" :key="segment.type === 'gap' ? segment.key : `link-${segment.page}`">
+          <span v-if="segment.type === 'gap'" class="px-0.5 text-xs font-black text-muted" aria-hidden="true">…</span>
+          <NuxtLink
+            v-else
+            :to="hrefFor(segment.page)"
+            class="catalog-pagination__page"
+            :class="{ 'is-active': segment.page === page }"
+            :aria-current="segment.page === page ? 'page' : undefined"
+            :aria-label="`صفحه ${segment.page}`"
+          >
+            {{ segment.page.toLocaleString('fa-IR') }}
+          </NuxtLink>
+        </template>
+        <NuxtLink
+          v-if="page < totalPages"
+          :to="hrefFor(page + 1)"
+          rel="next"
+          class="catalog-pagination__arrow"
+          aria-label="صفحه بعد"
+        >
+          <CinematicIcon name="chevron-left" class="size-5" />
+        </NuxtLink>
+      </template>
+      <template v-else>
+        <button
+          type="button"
+          class="catalog-pagination__arrow"
+          :disabled="pending || page <= 1"
+          aria-label="صفحه قبل"
+          @click="go(page - 1)"
+        >
+          <CinematicIcon name="chevron-right" class="size-5" />
+        </button>
+        <template v-for="segment in segments" :key="segment.type === 'gap' ? segment.key : `page-${segment.page}`">
+          <span v-if="segment.type === 'gap'" class="px-0.5 text-xs font-black text-muted" aria-hidden="true">…</span>
+          <button
+            v-else
+            type="button"
+            class="catalog-pagination__page"
+            :class="{ 'is-active': segment.page === page }"
+            :aria-current="segment.page === page ? 'page' : undefined"
+            :disabled="pending"
+            :aria-label="`صفحه ${segment.page}`"
+            @click="go(segment.page)"
+          >
+            {{ segment.page.toLocaleString('fa-IR') }}
+          </button>
+        </template>
+        <button
+          type="button"
+          class="catalog-pagination__arrow"
+          :disabled="pending || page >= totalPages"
+          aria-label="صفحه بعد"
+          @click="go(page + 1)"
+        >
+          <CinematicIcon name="chevron-left" class="size-5" />
         </button>
       </template>
-      <button
-        type="button"
-        class="catalog-pagination__arrow"
-        :disabled="pending || page >= totalPages"
-        aria-label="صفحه بعد"
-        @click="go(page + 1)"
-      >
-        <CinematicIcon name="chevron-left" class="size-5" />
-      </button>
     </div>
   </nav>
 </template>

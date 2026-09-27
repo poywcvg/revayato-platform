@@ -92,11 +92,6 @@ watch(
 <template>
   <section id="watch-time" class="watch-time-story content-section scroll-under-header" aria-labelledby="watch-time-title">
     <div class="watch-time-story__stage">
-      <div class="watch-time-story__glow" aria-hidden="true" />
-      <div class="watch-time-story__reel" aria-hidden="true">
-        <span v-for="n in 8" :key="n" class="watch-time-story__perf" />
-      </div>
-
       <div class="watch-time-story__grid">
         <div class="watch-time-story__main">
           <p class="watch-time-story__eyebrow">
@@ -148,7 +143,7 @@ watch(
               />
             </svg>
             <div class="watch-time-story__ring-label">
-              <p class="text-[10px] font-black text-muted">این هفته</p>
+              <p class="text-[11px] font-black text-muted">این هفته</p>
               <p class="mt-0.5 text-xs font-black tabular-nums text-ink sm:text-sm">{{ weekHeadline }}</p>
             </div>
           </div>
@@ -193,62 +188,22 @@ watch(
 .watch-time-story__stage {
   position: relative;
   overflow: hidden;
-  isolation: isolate;
   width: 100%;
   max-width: 100%;
   border-radius: 1.15rem;
-  border: 1px solid var(--theme-border);
-  background:
-    radial-gradient(ellipse 80% 60% at 100% 0%, rgb(var(--palette-sand-rgb) / 14%), transparent 55%),
-    radial-gradient(ellipse 70% 50% at 0% 100%, rgb(var(--palette-mid-rgb) / 12%), transparent 50%),
-    linear-gradient(165deg, var(--theme-bg-elevated), var(--theme-bg-soft));
+  border: 1px solid color-mix(in srgb, var(--theme-border) 80%, transparent);
+  background: var(--theme-bg-surface);
   padding: 1rem 0.95rem 0.95rem;
 }
 
 @media (min-width: 640px) {
   .watch-time-story__stage {
-    border-radius: 1.5rem;
-    padding: 1.75rem 1.75rem 1.35rem;
+    border-radius: 1.35rem;
+    padding: 1.5rem 1.5rem 1.25rem;
   }
 }
 
-.watch-time-story__glow {
-  position: absolute;
-  inset: auto -20% -40% 40%;
-  height: 14rem;
-  background: radial-gradient(circle, rgb(var(--palette-sand-rgb) / 18%), transparent 70%);
-  pointer-events: none;
-  z-index: 0;
-  animation: watch-time-breathe 7s ease-in-out infinite;
-}
-
-.watch-time-story__reel {
-  position: absolute;
-  top: 0;
-  inset-inline: 0;
-  display: flex;
-  gap: 0.45rem;
-  padding: 0.35rem 0.65rem;
-  opacity: 0.3;
-  z-index: 0;
-  pointer-events: none;
-}
-
-.watch-time-story__perf {
-  width: 0.45rem;
-  height: 0.55rem;
-  border-radius: 0.12rem;
-  background: color-mix(in srgb, var(--theme-text-muted) 55%, transparent);
-  animation: watch-time-perf 2.8s linear infinite;
-}
-
-.watch-time-story__perf:nth-child(odd) {
-  animation-delay: -1.2s;
-}
-
 .watch-time-story__grid {
-  position: relative;
-  z-index: 1;
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
   align-items: start;
@@ -335,7 +290,7 @@ watch(
   background: color-mix(in srgb, var(--theme-accent-primary) 14%, transparent);
   color: var(--theme-accent-primary);
   padding: 0.28rem 0.65rem;
-  font-size: 0.7rem;
+  font-size: 0.75rem;
   font-weight: 900;
   box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--theme-accent-primary) 28%, transparent);
 }
@@ -407,7 +362,7 @@ watch(
 
 .watch-time-story__goal {
   margin: 0;
-  font-size: 0.62rem;
+  font-size: 0.75rem;
   font-weight: 700;
   line-height: 1.45;
   color: var(--theme-text-secondary);
@@ -421,8 +376,6 @@ watch(
 }
 
 .watch-time-story__equivalents {
-  position: relative;
-  z-index: 1;
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 0.45rem;
@@ -452,21 +405,19 @@ watch(
 
 .watch-time-story__eq-label {
   margin: 0.15rem 0 0;
-  font-size: 0.62rem;
+  font-size: 0.75rem;
   line-height: 1.45;
   color: var(--theme-text-muted);
 }
 
 @media (min-width: 640px) {
   .watch-time-story__eq-label {
-    font-size: 0.68rem;
+    font-size: 0.75rem;
     line-height: 1.5;
   }
 }
 
 .watch-time-story__meta {
-  position: relative;
-  z-index: 1;
   display: flex;
   flex-wrap: wrap;
   gap: 0.55rem 1rem;
@@ -480,7 +431,7 @@ watch(
 }
 
 .watch-time-story__meta-item dt {
-  font-size: 0.65rem;
+  font-size: 0.75rem;
   color: var(--theme-text-muted);
 }
 
@@ -496,28 +447,13 @@ watch(
 }
 
 .watch-time-story__footnote {
-  position: relative;
-  z-index: 1;
   margin: 0.7rem 0 0;
-  font-size: 0.65rem;
+  font-size: 0.75rem;
   color: color-mix(in srgb, var(--theme-text-muted) 85%, transparent);
 }
 
-@keyframes watch-time-breathe {
-  0%, 100% { opacity: 0.55; transform: translateY(0); }
-  50% { opacity: 1; transform: translateY(-6px); }
-}
-
-@keyframes watch-time-perf {
-  0%, 100% { opacity: 0.25; }
-  50% { opacity: 0.7; }
-}
-
 @media (prefers-reduced-motion: reduce) {
-  .watch-time-story__glow,
-  .watch-time-story__perf,
   .watch-time-story__ring-progress {
-    animation: none;
     transition: none;
   }
 }

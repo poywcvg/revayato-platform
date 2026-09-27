@@ -179,9 +179,26 @@ def tmdb_search(request):
         return error
     query = (request.GET.get('query') or request.GET.get('q') or '').strip()
     page = request.GET.get('page', 1)
+    # ``movie`` stays the default so existing callers keep the exact shape they
+    # had. ``series`` and ``all`` are what the admin import screen uses: a person
+    # looking for a title does not think in terms of which TMDB index it lives
+    # in, so making them pick first is a step that exists only for our benefit.
+    kind = (request.GET.get('kind') or 'movie').strip().lower()
+    if kind not in {'movie', 'series', 'all'}:
+        return Response(
+            {'detail': 'kind must be movie, series or all.', 'retryable': False},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
     try:
         language = _safe_language(request.GET.get('language'))
-        payload = client.search_movies(query, page=page, language=language)
+        movie_payload = (
+            client.search_movies(query, page=page, language=language)
+            if kind in {'movie', 'all'} else {}
+        )
+        series_payload = (
+            client.search_tv(query, page=page, language=language)
+            if kind in {'series', 'all'} else {}
+        )
     except (TypeError, ValueError):
         return Response({'detail': 'Page or language is invalid.', 'retryable': False}, status=status.HTTP_400_BAD_REQUEST)
     except TMDBError as exc:
@@ -190,34 +207,65 @@ def tmdb_search(request):
             status=status.HTTP_502_BAD_GATEWAY,
         )
 
-    results = []
-    tmdb_ids = [item.get('id') for item in payload.get('results') or [] if item.get('id')]
-    existing = {
+    movie_rows = list(movie_payload.get('results') or [])
+    series_rows = list(series_payload.get('results') or [])
+
+    existing_movies = {
         movie.tmdb_id: {'id': movie.id, 'slug': movie.slug, 'title': movie.title}
-        for movie in Movie.objects.filter(tmdb_id__in=tmdb_ids).only('id', 'slug', 'title', 'tmdb_id')
+        for movie in Movie.objects.filter(
+            tmdb_id__in=[row.get('id') for row in movie_rows if row.get('id')],
+        ).only('id', 'slug', 'title', 'tmdb_id')
     }
-    for item in payload.get('results') or []:
+    existing_series = {
+        series.tmdb_id: {'id': series.id, 'slug': series.slug, 'title': series.title}
+        for series in Series.objects.filter(
+            tmdb_id__in=[row.get('id') for row in series_rows if row.get('id')],
+        ).only('id', 'slug', 'title', 'tmdb_id')
+    }
+
+    def _row(item, row_kind, existing):
         tmdb_id = item.get('id')
-        results.append({
+        local = existing.get(tmdb_id)
+        # TMDB names the same fields differently per index: a film has
+        # ``title``/``release_date``, a show has ``name``/``first_air_date``.
+        return {
             'tmdb_id': tmdb_id,
-            'title': item.get('title') or item.get('original_title'),
-            'original_title': item.get('original_title'),
+            'kind': row_kind,
+            'title': item.get('title') or item.get('name') or item.get('original_title') or item.get('original_name'),
+            'original_title': item.get('original_title') or item.get('original_name'),
             'overview': item.get('overview') or '',
-            'release_date': item.get('release_date') or '',
+            'release_date': item.get('release_date') or item.get('first_air_date') or '',
             'original_language': item.get('original_language') or '',
             'vote_average': item.get('vote_average'),
             'popularity': item.get('popularity'),
             'poster_path': item.get('poster_path'),
             'poster_url': client.image_url(item.get('poster_path'), 'w185'),
             'backdrop_url': client.image_url(item.get('backdrop_path'), 'w780'),
-            'already_imported': tmdb_id in existing,
-            'local_movie': existing.get(tmdb_id),
-        })
+            'already_imported': local is not None,
+            'local_movie': local,
+            'local_item': local,
+        }
+
+    results = [_row(item, 'movie', existing_movies) for item in movie_rows]
+    results += [_row(item, 'series', existing_series) for item in series_rows]
+    if kind == 'all':
+        # One list, best first. TMDB's popularity is comparable across the two
+        # indexes, and an admin searching a name wants the thing they meant near
+        # the top whether it turned out to be a film or a show.
+        results.sort(key=lambda row: float(row.get('popularity') or 0), reverse=True)
+
     return Response({
         'query': query,
-        'page': payload.get('page', 1),
-        'total_pages': payload.get('total_pages', 0),
-        'total_results': payload.get('total_results', 0),
+        'kind': kind,
+        'page': movie_payload.get('page') or series_payload.get('page') or 1,
+        'total_pages': max(
+            int(movie_payload.get('total_pages') or 0),
+            int(series_payload.get('total_pages') or 0),
+        ),
+        'total_results': (
+            int(movie_payload.get('total_results') or 0)
+            + int(series_payload.get('total_results') or 0)
+        ),
         'proxy': client.uses_proxy,
         'results': results,
     })
@@ -291,6 +339,9 @@ def tmdb_movie_import(request, tmdb_id):
     overwrite_manual = _bool_flag(request.data.get('overwrite_manual', request.data.get('overwrite')), False)
     dry_run = _bool_flag(request.data.get('dry_run'), False)
     publish = _bool_flag(request.data.get('publish'), False)
+    # Staff escape hatch: publish even when the probe cannot confirm the sources
+    # (a host that blocks this datacenter but serves viewers fine).
+    force_publish = _bool_flag(request.data.get('force_publish'), False)
     try:
         details = client.movie_details(tmdb_id)
     except TMDBError as exc:
@@ -388,16 +439,25 @@ def tmdb_movie_import(request, tmdb_id):
         }
         _audit(request, MovieSyncAudit.Action.IMPORT, movie=movie if movie.pk else None, tmdb_id=tmdb_id, overwrite=overwrite_manual, dry_run=True, changed=getattr(movie, '_tmdb_changed_fields', []), skipped=skipped)
         return Response(payload)
-    if publish and movie.ready_for_auto_publish:
-        movie.publication_status = Movie.PublicationStatus.PUBLISHED
-        movie.is_published = True
-        movie.save(update_fields=['publication_status', 'is_published', 'updated_at'])
-        payload['published'] = True
-        if not (movie.download_links or []):
-            from apps.catalog.provider_import.signals import enqueue_provider_movie_auto_crawl
-            enqueue_provider_movie_auto_crawl(movie.pk, replace=True, reason='tmdb_import_publish')
-    elif publish:
-        payload['publication_blockers'] = movie.auto_publish_blockers
+    if publish:
+        # Probe the sources now so `ready_for_auto_publish` judges a fresh verdict
+        # rather than a stale one; staff can override with force_publish.
+        from apps.catalog.media_verification import ensure_verified, verification_enabled
+
+        if verification_enabled() and not force_publish:
+            ensure_verified(movie)
+        blockers = [] if force_publish else movie.auto_publish_blockers
+        if blockers:
+            payload['publication_blockers'] = blockers
+        else:
+            movie.publication_status = Movie.PublicationStatus.PUBLISHED
+            movie.is_published = True
+            movie.save(update_fields=['publication_status', 'is_published', 'updated_at'])
+            payload['published'] = True
+            payload['force_published'] = force_publish
+            if not (movie.download_links or []):
+                from apps.catalog.provider_import.signals import enqueue_provider_movie_auto_crawl
+                enqueue_provider_movie_auto_crawl(movie.pk, replace=True, reason='tmdb_import_publish')
     _audit(request, MovieSyncAudit.Action.IMPORT, movie=movie, tmdb_id=tmdb_id, overwrite=overwrite_manual, changed=getattr(movie, '_tmdb_changed_fields', []), skipped=skipped)
     payload['movie'] = AdminMovieSerializer(movie, context={'request': request}).data
     return Response(payload, status=status.HTTP_201_CREATED if created else status.HTTP_200_OK)
@@ -412,6 +472,7 @@ def tmdb_series_import(request, tmdb_id):
         return error
     dry_run = _bool_flag(request.data.get('dry_run'), False)
     publish = _bool_flag(request.data.get('publish'), False)
+    force_publish = _bool_flag(request.data.get('force_publish'), False)
     try:
         details = client.tv_details(tmdb_id)
         from django.conf import settings as dj_settings
@@ -462,12 +523,29 @@ def tmdb_series_import(request, tmdb_id):
         }
         return Response(payload)
     if publish and not dry_run:
-        series.is_published = True
-        series.save(update_fields=['is_published', 'updated_at'])
-        payload['published'] = True
-        if not (getattr(series, 'download_links', None) or []):
-            from apps.catalog.provider_import.signals import enqueue_provider_series_auto_crawl
-            enqueue_provider_series_auto_crawl(series.pk, replace=True, reason='tmdb_series_import_publish')
+        # A staff import with no links yet is the deliberate "publish the page,
+        # crawl the sources next" flow, so only *existing* links are gated: if the
+        # hosts say they are gone, publishing would ship a broken player.
+        blockers = []
+        if (getattr(series, 'download_links', None) or []) and not force_publish:
+            from apps.catalog.media_verification import (
+                media_publish_blockers, verification_enabled,
+            )
+
+            if verification_enabled():
+                blockers = [
+                    code for code in media_publish_blockers(series, verify=True)
+                    if code == 'media_sources_dead'
+                ]
+        if blockers:
+            payload['publication_blockers'] = blockers
+        else:
+            series.is_published = True
+            series.save(update_fields=['is_published', 'updated_at'])
+            payload['published'] = True
+            if not (getattr(series, 'download_links', None) or []):
+                from apps.catalog.provider_import.signals import enqueue_provider_series_auto_crawl
+                enqueue_provider_series_auto_crawl(series.pk, replace=True, reason='tmdb_series_import_publish')
     payload['series'] = {
         'id': series.id,
         'title': series.title,
@@ -741,11 +819,23 @@ def admin_series_detail(request, series_id):
     if request.method == 'DELETE':
         series.is_published = False
         series.save(update_fields=['is_published', 'updated_at'])
+        # Series carry no ``publication_status`` of their own, so unpublishing is
+        # the whole archive. The audit row is what makes it *reviewable*: without
+        # it the panel could say a movie had been archived by someone, and go
+        # silent on the series next to it.
+        _audit(
+            request, MovieSyncAudit.Action.ARCHIVE, tmdb_id=series.tmdb_id,
+            details={'kind': 'series', 'object_id': series.pk, 'title': series.title},
+        )
         return Response({'id': series.id, 'is_published': False, 'archived': True})
 
     serializer = AdminSeriesSerializer(series, data=request.data, partial=True, context={'request': request})
     serializer.is_valid(raise_exception=True)
     series = serializer.save()
+    _audit(
+        request, MovieSyncAudit.Action.MANUAL_UPDATE, tmdb_id=series.tmdb_id,
+        details={'kind': 'series', 'object_id': series.pk, 'title': series.title},
+    )
     return Response(AdminSeriesSerializer(series, context={'request': request}).data)
 
 

@@ -11,7 +11,7 @@ from apps.catalog.tmdb import TMDBError
 
 class Command(BaseCommand):
     help = (
-        'Crawl Film2Media (https://www.myf2m.info/) for Hollywood download/stream links, '
+        'Crawl Film2Media for Hollywood download/stream links, '
         'sync SoftSub tracks for online playback, purge Iranian titles, delete '
         'catalog rows that myf2m does not carry, and optionally import this week\'s titles.'
     )

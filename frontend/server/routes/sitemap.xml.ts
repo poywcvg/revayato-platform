@@ -1,72 +1,32 @@
-interface CatalogResponse {
-  count?: number
-  next?: string | null
-  results?: Array<{ slug?: string }>
-}
-
-function escapeXml(value: string) {
-  return value
-    .replaceAll('&', '&amp;')
-    .replaceAll('<', '&lt;')
-    .replaceAll('>', '&gt;')
-    .replaceAll('"', '&quot;')
-    .replaceAll("'", '&apos;')
-}
-
-async function fetchAllSlugs(apiBase: string, path: string, limit = 100, maxPages = 20) {
-  const slugs: string[] = []
-  let offset = 0
-  for (let page = 0; page < maxPages; page += 1) {
-    const response = await $fetch<CatalogResponse>(`${apiBase}${path}`, {
-      query: { limit, offset },
-    })
-    for (const row of response.results || []) {
-      if (row.slug) slugs.push(row.slug)
-    }
-    const count = Number(response.count || 0)
-    offset += limit
-    if (!response.next || offset >= count || !(response.results || []).length) break
-  }
-  return slugs
-}
-
+/**
+ * Sitemap index. The catalog is far past the 50,000-URL / single-file limits, so
+ * it is split into parts that each stay small and cacheable:
+ *
+ *   /sitemaps/static.xml     hand-made pages
+ *   /sitemaps/landing.xml    genre / country / year / dubbed landing pages
+ *   /sitemaps/movies-N.xml   every published movie (+ poster)
+ *   /sitemaps/series-N.xml   every published series (+ poster)
+ *   /sitemaps/actors-N.xml   everyone who appears in a published title
+ */
 export default defineEventHandler(async (event) => {
-  const config = useRuntimeConfig(event)
-  const siteUrl = String(config.public.siteUrl).replace(/\/$/, '')
-  const apiBase = String(config.apiInternalBase).replace(/\/$/, '')
-  const paths = new Set([
-    '/',
-    '/movies',
-    '/series',
-    '/new',
-    '/actors',
-    '/countries',
-    '/search',
-    '/about',
-    '/contact',
-    '/privacy',
-    '/terms',
-  ])
-
+  const { siteUrl, apiBase } = sitemapContext(event)
+  const names = ['static', 'landing']
   try {
-    const [movieSlugs, seriesSlugs, actorSlugs] = await Promise.all([
-      fetchAllSlugs(apiBase, '/movies/'),
-      fetchAllSlugs(apiBase, '/series/'),
-      fetchAllSlugs(apiBase, '/actors/', 100, 8),
-    ])
-    for (const slug of movieSlugs) paths.add(`/movies/${encodeURIComponent(slug)}`)
-    for (const slug of seriesSlugs) paths.add(`/series/${encodeURIComponent(slug)}`)
-    for (const slug of actorSlugs) paths.add(`/actors/${encodeURIComponent(slug)}`)
-  } catch {
-    // Static routes remain available if the catalog API is temporarily unavailable.
+    const summary = await fetchSitemapSummary(apiBase)
+    for (const kind of ['movies', 'series', 'actors'] as const) {
+      const pages = pageCount(summary.counts[kind], summary.page_size)
+      for (let page = 1; page <= pages; page += 1) names.push(`${kind}-${page}`)
+    }
+  }
+  catch {
+    // The static part still gets listed while the catalog API is unreachable.
   }
 
-  const urls = [...paths]
-    .map(path => `  <url><loc>${escapeXml(`${siteUrl}${path}`)}</loc></url>`)
+  const entries = names
+    .map(name => `  <sitemap><loc>${escapeXml(`${siteUrl}/sitemaps/${name}.xml`)}</loc></sitemap>`)
     .join('\n')
-
-  setHeader(event, 'content-type', 'application/xml; charset=utf-8')
-  setHeader(event, 'cache-control', 'public, max-age=3600, stale-while-revalidate=86400')
-
-  return `<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n${urls}\n</urlset>\n`
+  return sendXml(
+    event,
+    `<?xml version="1.0" encoding="UTF-8"?>\n<sitemapindex xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n${entries}\n</sitemapindex>\n`,
+  )
 })

@@ -69,6 +69,16 @@ export interface CrewMember {
   photo_url: string | null
 }
 
+/**
+ * What the backend's playback gate proved about a title's online source.
+ *
+ * ``direct`` passed every test; ``gateway`` is real but a browser cannot demux
+ * it, so the HLS rewrap is asked for up front instead of after a black frame;
+ * ``unverified`` means nothing could be established and the old behaviour
+ * stands; ``none`` means there is no playable source.
+ */
+export type PlaybackMode = 'direct' | 'gateway' | 'unverified' | 'none'
+
 export interface Episode {
   id: number
   title: string
@@ -80,6 +90,8 @@ export interface Episode {
   is_watched?: boolean
   thumbnail_url?: string
   hls_url?: string
+  /** Verdict of the backend playback gate for this episode's source. */
+  playback_mode?: PlaybackMode
   download_url?: string | null
   /** SoftSub WebVTT tracks extracted for this episode (toggleable in player). */
   subtitle_tracks?: import('./playback').PlaybackTextTrack[]
@@ -107,6 +119,8 @@ export interface Movie {
   backdrop_url: string
   trailer_url: string
   hls_url: string
+  /** Verdict of the backend playback gate for ``hls_url``. */
+  playback_mode?: PlaybackMode
   /** @deprecated Prefer ``ratings`` — kept for filter/sort compatibility. */
   rating: number
   imdb_rating?: number | null
@@ -115,7 +129,8 @@ export interface Movie {
   tmdb_rating?: number | null
   /** Normalized external + site ratings from the shared media model. */
   ratings: MediaRating[]
-  age_rating: AgeRating
+  /** '' = no rating board has rated it; show no badge rather than a guess. */
+  age_rating: AgeRating | ''
   is_uncensored: boolean
   is_dubbed: boolean
   has_subtitle: boolean
@@ -139,6 +154,9 @@ export interface Movie {
   /** Platform engagement counters from the catalog API (used by discovery ranking). */
   view_count?: number
   like_count?: number
+  /** Community rating average + vote count powering the «محبوب‌ترین» sort. */
+  site_rating?: number | null
+  site_rating_count?: number
   cast: CastMember[]
   crew: CrewMember[]
   download_url?: string | null
@@ -149,6 +167,10 @@ export interface Movie {
   seo_title?: string
   seo_description?: string
   seo_keywords?: string[]
+  /** Which SEO fields an editor wrote by hand (the importer otherwise copies the title). */
+  seo_custom?: { title: boolean; description: boolean }
+  imdb_id?: string | null
+  tmdb_id?: number | null
   recommendation_reason?: string
   audio_languages?: string[]
   subtitle_languages?: string[]

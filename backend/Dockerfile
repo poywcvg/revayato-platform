@@ -18,9 +18,13 @@ RUN python -m pip install --upgrade pip \
     && python -m pip install -r requirements.txt
 
 COPY --chown=revayato:revayato . .
-RUN mkdir -p /app/staticfiles /app/media \
+# /var/tmp/revayato-stream is where the playback gateway writes HLS sessions.
+# It must exist *and* be owned here: Docker seeds a fresh named volume from the
+# image path it covers, ownership included, and without this the volume would
+# arrive root-owned and unwritable to the non-root user below.
+RUN mkdir -p /app/staticfiles /app/media /var/tmp/revayato-stream \
     && chmod +x /app/docker-entrypoint.sh \
-    && chown -R revayato:revayato /app/staticfiles /app/media
+    && chown -R revayato:revayato /app/staticfiles /app/media /var/tmp/revayato-stream
 
 USER revayato
 

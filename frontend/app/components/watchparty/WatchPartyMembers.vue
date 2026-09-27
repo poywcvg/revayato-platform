@@ -14,7 +14,7 @@ function initial(name: string) {
   <section aria-labelledby="party-members-title">
     <div class="mb-3 flex items-center justify-between">
       <h3 id="party-members-title" class="text-xs font-black text-white/80">اعضای اتاق</h3>
-      <span class="rounded-full bg-white/5 px-2 py-0.5 text-[10px] font-bold text-white/45">
+      <span class="rounded-full bg-white/5 px-2 py-0.5 text-[11px] font-bold text-white/45">
         {{ members.length.toLocaleString('fa-IR') }} نفر
       </span>
     </div>
@@ -43,11 +43,11 @@ function initial(name: string) {
         </div>
         <div class="min-w-0 flex-1">
           <p class="truncate text-xs font-bold text-white">{{ member.user.display_name }}</p>
-          <p class="mt-0.5 text-[10px] text-white/40">{{ member.is_online ? 'هم‌اکنون در اتاق' : 'آفلاین' }}</p>
+          <p class="mt-0.5 text-[11px] text-white/40">{{ member.is_online ? 'هم‌اکنون در اتاق' : 'آفلاین' }}</p>
         </div>
         <span
           v-if="member.role === 'host'"
-          class="rounded-lg bg-primary-500/15 px-2 py-1 text-[10px] font-black text-primary-300 ring-1 ring-primary-500/25"
+          class="rounded-lg bg-primary-500/15 px-2 py-1 text-[11px] font-black text-primary-300 ring-1 ring-primary-500/25"
         >میزبان</span>
       </li>
     </ul>

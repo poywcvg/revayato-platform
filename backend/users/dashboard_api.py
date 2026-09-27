@@ -32,6 +32,9 @@ ACTION_LABELS = {
     'rate': 'امتیاز',
     'search': 'جستجو',
     'download_click': 'کلیک دانلود',
+    'app_install_prompt': 'نمایش دعوت نصب اپ',
+    'app_install_click': 'کلیک نصب اپ',
+    'app_install_dismiss': 'بستن دعوت نصب اپ',
     'trailer_watch': 'تماشای تریلر',
     'add_to_watchlist': 'افزودن به فهرست',
     'filter_genre': 'فیلتر ژانر',
@@ -71,6 +74,8 @@ def _activity_snapshot(queryset):
         download_clicks=Count('id', filter=Q(action='download_click')),
         trailer_watches=Count('id', filter=Q(action='trailer_watch')),
         searches=Count('id', filter=Q(action='search')),
+        app_install_prompts=Count('id', filter=Q(action='app_install_prompt')),
+        app_install_clicks=Count('id', filter=Q(action='app_install_click')),
     )
     snapshot['recorded_audience'] = snapshot['active_users'] + snapshot['anonymous_sessions']
     return snapshot
@@ -408,7 +413,7 @@ def _funnel(current, previous):
 @api_view(['GET'])
 @permission_classes([IsAuthenticated, IsStaffUser])
 @throttle_classes([StaffAdminThrottle])
-def admin_dashboard(request):
+def insights_dashboard(request):
     try:
         requested_days = int(request.query_params.get('days', 30))
     except (TypeError, ValueError):
@@ -494,8 +499,24 @@ def admin_dashboard(request):
                 current_activity['searches'],
                 previous_activity['searches'],
             ),
+            'app_install_prompts': _comparison(
+                current_activity['app_install_prompts'],
+                previous_activity['app_install_prompts'],
+            ),
+            'app_install_clicks': _comparison(
+                current_activity['app_install_clicks'],
+                previous_activity['app_install_clicks'],
+            ),
         },
         'funnel': _funnel(current_activity, previous_activity),
+        'app_install_funnel': {
+            'prompts': current_activity['app_install_prompts'],
+            'clicks': current_activity['app_install_clicks'],
+            'dismissals': current_events.filter(action='app_install_dismiss').count(),
+            'click_through_rate': _rate(
+                current_activity['app_install_clicks'], current_activity['app_install_prompts'],
+            ),
+        },
         'users': _user_snapshot(),
         'catalog': _catalog_snapshot(),
         'health': _catalog_health(),

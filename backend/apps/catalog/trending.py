@@ -44,6 +44,29 @@ def _rating(item) -> float:
     )
 
 
+# Confidence-weighted («Bayesian») prior for the community rating so that a title
+# with a single stray 10 cannot outrank one with hundreds of genuine votes.
+SITE_RATING_PRIOR_MEAN = 7.0   # neutral baseline on the 0–10 scale
+SITE_RATING_PRIOR_VOTES = 6    # votes of "pull" the prior exerts before real votes win
+
+
+def _site_rating_bayesian(item) -> tuple[float, int]:
+    """Return (weighted_user_score, vote_count) blending the title's community
+    average toward a neutral prior until enough real votes accumulate.
+
+    An un-rated title returns exactly the prior mean, so it stays neutral in the
+    «محبوب‌ترین» ranking instead of being punished for launching without votes.
+    """
+    votes = int(getattr(item, 'site_rating_count', 0) or 0)
+    raw = getattr(item, 'site_rating', None)
+    if not votes or raw is None:
+        return SITE_RATING_PRIOR_MEAN, 0
+    raw = float(raw)
+    m = SITE_RATING_PRIOR_VOTES
+    weighted = (votes * raw + m * SITE_RATING_PRIOR_MEAN) / (votes + m)
+    return weighted, votes
+
+
 def _has_downloads(item) -> bool:
     flag = getattr(item, '_has_downloads_flag', None)
     if flag is not None:
@@ -383,20 +406,32 @@ def featured_score(item, *, now=None, recent_hits: float = 0.0) -> float:
 
 
 def popular_score(item, *, now=None, recent_hits: float = 0.0) -> float:
-    """Higher = better for «محبوب» — sustained audience signal."""
+    """Higher = better for «محبوب» — driven primarily by community ratings.
+
+    Users asked «محبوب‌ترین‌ها» to rank by their own scores, so the confidence-
+    weighted user rating is the dominant term. Engagement signals (views/likes/
+    popularity) still order the long tail of titles that have no votes yet, and
+    break ties between equally-rated titles.
+    """
     now = now or timezone.now()
     views = int(getattr(item, 'view_count', 0) or 0)
     likes = int(getattr(item, 'like_count', 0) or 0)
     popularity = float(getattr(item, 'popularity', 0) or 0)
-    rating = _rating(item)
     age_hours = _age_hours(item, now, field='updated')
     created_hours = _created_age_hours(item, now)
 
-    score = (
+    # Community rating is the primary ranking signal. Centred on the neutral
+    # prior so an un-rated title contributes 0 (stays where engagement puts it),
+    # a loved title rises strongly, and a disliked one sinks below the un-rated.
+    user_score, user_votes = _site_rating_bayesian(item)
+    score = (user_score - SITE_RATING_PRIOR_MEAN) * 7.0
+    # Reward titles that have actually gathered votes (proof of real popularity).
+    score += math.log1p(user_votes) * 2.6
+
+    score += (
         math.log1p(views) * 3.4
         + math.log1p(likes) * 4.2
         + popularity / 12.0
-        + max(0.0, (rating - 6.0) * 1.1)
         + math.log1p(recent_hits) * 2.4
         + _engagement_velocity(item, now) * 0.55
     )
@@ -551,12 +586,26 @@ def _candidate_pool(queryset, *, sort: str, pool: int):
     """Mix fresh + engaged + editorial candidates so rising titles are not missed."""
     base = lean_public_queryset(queryset)
     annotations = _ranked_annotations(base.model)
-    if sort == 'popular':
-        # The primary ordering already yields a full unique pool. A separate
-        # ID merge + hydration pass only adds a round-trip for this common path.
-        return list(base.order_by('-view_count', '-like_count', '-popularity').annotate(**annotations)[:pool])
-
     model_fields = {field.name for field in base.model._meta.get_fields()}
+    if sort == 'popular':
+        # Blend the highest-engagement titles with the highest community-rated
+        # titles so audience favourites surface even when their raw view counts
+        # are modest — otherwise a great, freshly-rated film could never enter
+        # the pool the ranker scores.
+        engaged = base.order_by('-view_count', '-like_count', '-popularity')
+        if 'site_rating_count' in model_fields:
+            top_rated = base.filter(site_rating_count__gt=0).order_by(
+                '-site_rating_count', '-site_rating',
+            )
+            merged_ids = {}
+            for chunk in (top_rated[: max(60, pool // 3)], engaged[:pool]):
+                for item_id in chunk.values_list('pk', flat=True):
+                    merged_ids[item_id] = None
+                if len(merged_ids) >= pool:
+                    break
+            return list(base.filter(pk__in=merged_ids).order_by().annotate(**annotations))
+        return list(engaged.annotate(**annotations)[:pool])
+
     editorial_filter = Q(is_featured=True)
     if 'is_recommended' in model_fields:
         editorial_filter |= Q(is_recommended=True)

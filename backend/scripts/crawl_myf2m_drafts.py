@@ -57,7 +57,10 @@ def _tokens(text: str) -> list[str]:
 
 def _is_myf2m_linked(obj) -> bool:
     blob = ' '.join(_page_paths(obj)).lower()
-    return any(marker in blob for marker in ('abrtech.top', 'film2media', 'myf2m.info'))
+    # 'myf2m' without a TLD on purpose: the provider has already moved domain
+    # once (myf2m.info -> myf2ms.top) and a pinned suffix stops matching links
+    # we imported under the old one.
+    return any(marker in blob for marker in ('abrtech.top', 'film2media', 'myf2m'))
 
 
 def _looks_mismatched(obj) -> bool:

@@ -66,7 +66,7 @@ function onSelect(key: FilterFieldKey) {
 <template>
   <div class="grid gap-3 p-3 sm:grid-cols-2 sm:p-4 xl:grid-cols-4">
     <div v-for="group in mainGroups" :key="group.key">
-      <span class="mb-1.5 flex items-center gap-1.5 text-[11px] font-bold text-muted">
+      <span class="mb-1.5 flex items-center gap-1.5 text-xs font-bold text-muted">
         <CinematicIcon v-if="group.icon" :name="group.icon" class="size-3.5" />{{ group.label }}
       </span>
       <UiSelect
@@ -83,11 +83,11 @@ function onSelect(key: FilterFieldKey) {
       />
     </div>
     <div v-for="row in detailRows" :key="row.key">
-      <span class="mb-1.5 flex items-center gap-1.5 text-[11px] font-bold text-muted"><CinematicIcon v-if="row.icon" :name="row.icon" class="size-3.5" />{{ row.label }}</span>
+      <span class="mb-1.5 flex items-center gap-1.5 text-xs font-bold text-muted"><CinematicIcon v-if="row.icon" :name="row.icon" class="size-3.5" />{{ row.label }}</span>
       <UiSelect :model-value="filters[row.key]" :options="row.key === 'availability' ? availabilityOptions : row.key === 'format' ? formatOptions : ratingOptions" :label="row.label" compact @update:model-value="onSelect(row.key)" />
     </div>
     <div class="sm:col-span-2 xl:col-span-4">
-      <p class="mb-2 flex items-center gap-1.5 text-[11px] font-bold text-muted">
+      <p class="mb-2 flex items-center gap-1.5 text-xs font-bold text-muted">
         <CinematicIcon name="tag" class="size-3.5" />ژانر
       </p>
       <GenreChips

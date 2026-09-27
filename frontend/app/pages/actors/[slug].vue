@@ -3,12 +3,15 @@ import { CATALOG_PAGE_SIZE, useClientPagination } from '~/composables/usePaginat
 
 const { detail } = useActors()
 const route = useRoute()
-const slug = computed(() => String(route.params.slug || ''))
+const slug = computed(() => decodeRouteSlug(route.params.slug))
 
 const { data, pending, error, refresh } = await useAsyncData(
   () => `actor-detail-${slug.value}`,
   () => detail(slug.value),
-  { watch: [slug] },
+  // Block SSR (complete HTML + SEO) but never freeze a client SPA navigation behind
+  // the fetch — the template's v-if="actor" + CatalogSourceNotice cover the pending
+  // state, so tapping an actor from a detail page swaps instantly.
+  { watch: [slug], lazy: import.meta.client },
 )
 
 if (!pending.value && (!data.value || error.value)) {

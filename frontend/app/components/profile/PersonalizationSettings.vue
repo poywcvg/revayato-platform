@@ -59,7 +59,7 @@ onMounted(() => {
             <span
               v-for="genre in detectedGenres"
               :key="genre.slug"
-              class="inline-flex min-h-9 items-center rounded-xl bg-primary-500/12 px-3 text-[11px] font-bold text-brand ring-1 ring-primary-500/25"
+              class="inline-flex min-h-9 items-center rounded-xl bg-primary-500/12 px-3 text-xs font-bold text-brand ring-1 ring-primary-500/25"
             >
               {{ genre.title }}
             </span>
@@ -100,7 +100,7 @@ onMounted(() => {
               <NuxtImg :src="entry.item.poster_url" :alt="`پوستر ${entry.item.title}`" class="aspect-[2/3] w-14 shrink-0 rounded-xl object-cover" loading="lazy" />
               <span class="min-w-0 py-1">
                 <strong class="block truncate text-xs font-black text-ink">{{ entry.item.title }}</strong>
-                <span class="mt-1 line-clamp-2 block text-[10px] leading-5 text-primary-300">{{ entry.reasons[0] }}</span>
+                <span class="mt-1 line-clamp-2 block text-[11px] leading-5 text-primary-300">{{ entry.reasons[0] }}</span>
               </span>
             </NuxtLink>
           </div>
@@ -129,7 +129,7 @@ onMounted(() => {
                 v-for="genre in genreChoices"
                 :key="genre.slug"
                 type="button"
-                class="inline-flex min-h-10 items-center rounded-xl px-3 text-[11px] font-bold ring-1 transition"
+                class="inline-flex min-h-10 items-center rounded-xl px-3 text-xs font-bold ring-1 transition"
                 :class="preferences.favorite_genres.includes(genre.slug) ? 'bg-primary-500/15 text-brand ring-primary-500/30' : 'bg-elevated text-secondary ring-line hover:text-ink'"
                 :aria-pressed="preferences.favorite_genres.includes(genre.slug)"
                 @click="toggleFavoriteGenre(genre.slug)"
@@ -143,7 +143,7 @@ onMounted(() => {
                 v-for="option in playbackOptions"
                 :key="option.value"
                 type="button"
-                class="inline-flex min-h-10 items-center rounded-xl px-3 text-[11px] font-bold ring-1 transition"
+                class="inline-flex min-h-10 items-center rounded-xl px-3 text-xs font-bold ring-1 transition"
                 :class="preferences.playback_preference === option.value ? 'bg-primary-500 text-night-950 ring-primary-400' : 'bg-elevated text-secondary ring-line hover:text-ink'"
                 :aria-pressed="preferences.playback_preference === option.value"
                 @click="setPlayback(option.value)"

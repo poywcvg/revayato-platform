@@ -29,6 +29,7 @@ from .dornatv_sync import ensure_dornatv_provider
 from .serializers import (
     ApproveMatchSerializer,
     CatalogDiscoverRequestSerializer,
+    CatalogYearImportRequestSerializer,
     DiscoverImportRequestSerializer,
     ProviderImportItemSerializer,
     ProviderImportJobSerializer,
@@ -61,6 +62,49 @@ def _queue_job(job):
     ProviderImportJob.objects.filter(pk=job.pk).update(task_id=async_result.id)
     job.task_id = async_result.id
     return job
+
+
+def _queue_year_job(job):
+    from apps.catalog.provider_import import tasks as provider_tasks
+    # A multi-hour import belongs on the ``imports`` lane. Sending it to
+    # ``softsub-urgent`` blocked the live player's subtitle worker for hours.
+    async_result = provider_tasks.run_catalog_year_import_task.apply_async(
+        args=[str(job.id)], queue='imports',
+    )
+    ProviderImportJob.objects.filter(pk=job.pk).update(task_id=async_result.id)
+    job.task_id = async_result.id
+    return job
+
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated, IsStaffUser])
+@throttle_classes([StaffAdminThrottle])
+def catalog_year_import_start(request):
+    serializer = CatalogYearImportRequestSerializer(data=request.data)
+    serializer.is_valid(raise_exception=True)
+    provider = ensure_dornatv_provider()
+    if ProviderImportJob.objects.filter(provider=provider, status__in=[
+        ProviderImportJob.Status.QUEUED, ProviderImportJob.Status.RUNNING,
+        ProviderImportJob.Status.CANCEL_REQUESTED,
+    ]).exists():
+        return Response({'detail': 'یک ایمپورت کاتالوگ در حال اجرا است.', 'code': 'job_active'}, status=409)
+    params = dict(serializer.validated_data)
+    job = create_import_job(
+        provider=provider, user=request.user,
+        content_type=params['content_type'], mode=ProviderImportJob.Mode.SYNC_ALL,
+        params=params,
+    )
+    append_log(job, 'info', 'ایمپورت سالانه توسط ادمین در صف پس‌زمینه قرار گرفت.', context=params)
+    try:
+        _queue_year_job(job)
+    except Exception:
+        job.status = ProviderImportJob.Status.FAILED
+        job.error_message = 'قرار دادن job در صف Celery ناموفق بود.'
+        job.finished_at = timezone.now()
+        job.save(update_fields=['status', 'error_message', 'finished_at', 'updated_at'])
+        return Response({'detail': job.error_message, 'code': 'queue_failed'}, status=503)
+    job.refresh_from_db()
+    return Response(ProviderImportJobSerializer(job).data, status=status.HTTP_202_ACCEPTED)
 
 
 @api_view(['GET', 'POST'])
@@ -243,10 +287,21 @@ def provider_import_job_cancel(request, job_id):
             {'detail': 'Job is not active.', 'code': 'job_not_active'},
             status=status.HTTP_400_BAD_REQUEST,
         )
+    # Cancellation must be decisive even for stale/review jobs whose worker is
+    # no longer alive. Revoke a known Celery task and immediately release the
+    # UI lock; cooperative workers still observe cancel_requested.
     job.cancel_requested = True
-    job.status = ProviderImportJob.Status.CANCEL_REQUESTED
-    job.save(update_fields=['cancel_requested', 'status', 'updated_at'])
-    append_log(job, 'warning', 'Cancel requested by staff.')
+    if job.task_id:
+        try:
+            from config.celery import app as celery_app
+            celery_app.control.revoke(job.task_id, terminate=True, signal='SIGTERM')
+        except Exception:
+            pass
+    job.status = ProviderImportJob.Status.CANCELLED
+    job.finished_at = timezone.now()
+    job.current_item_label = 'لغو شد'
+    job.save(update_fields=['cancel_requested', 'status', 'finished_at', 'current_item_label', 'updated_at'])
+    append_log(job, 'warning', 'Job cancelled by staff.')
     return Response(ProviderImportJobSerializer(job).data)
 
 

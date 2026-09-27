@@ -1,7 +1,11 @@
 <script setup lang="ts">
 import type Hls from 'hls.js'
-import type { PlaybackEpisodeOption, PlaybackQuality, PlaybackSnapshot, PlaybackTextTrack, PlaybackVersion } from '~/types'
+import type { CinematicIconName, PlaybackEpisodeOption, PlaybackQuality, PlaybackSnapshot, PlaybackTextTrack, PlaybackVersion } from '~/types'
+import type { ReportProblemType } from '~/composables/useContentReport'
 import { pickDefaultSubtitleTrack } from '~/utils/subtitlePolicy'
+import { remuxSupported } from '~/utils/downloadMeta'
+import { describeMediaUrl, reportClientDiag } from '~/utils/clientDiag'
+import type { AudioPreference, EmbeddedSubtitleCue, EmbeddedSubtitleTrack, RemuxSession } from '~/utils/remux/engine'
 import { findActiveCue, loadSubtitleCues, SUBTITLE_OFFSET_MAX, SUBTITLE_OFFSET_MIN, SUBTITLE_OFFSET_STEP, type SubtitleCue } from '~/utils/subtitles'
 
 const props = withDefaults(defineProps<{
@@ -24,6 +28,27 @@ const props = withDefaults(defineProps<{
   fill?: boolean
   locked?: boolean
   partySync?: boolean
+  // 'movie' | 'series' — gates the «قسمت اشتباه» option in the report picker.
+  contentType?: 'movie' | 'series' | ''
+  canReport?: boolean
+  // --- windowed sources ---------------------------------------------------
+  // A gateway stream carries only part of the film, on its own timeline that
+  // always starts at zero. These say where that window sits so the scrubber,
+  // the clock and seeking all speak in film time rather than in window time.
+  // They are all inert (0/false) for an ordinary whole-file source.
+  /** Seconds into the film at which this media begins. */
+  timelineOffset?: number
+  /** The film's true runtime, when the media does not carry it. */
+  timelineTotal?: number
+  /** This media already begins at the playhead, so do not seek on load. */
+  sourceAtPlayhead?: boolean
+  /**
+   * How much already-played media is still fetchable behind the playhead.
+   * 0 means all of it, which is true of any ordinary file. A gateway stream
+   * discards what the viewer has passed, so a rewind past this has to be
+   * handled by reopening rather than by seeking.
+   */
+  timelineBackSeconds?: number
 }>(), {
   poster: '',
   title: 'ویدیو',
@@ -43,6 +68,12 @@ const props = withDefaults(defineProps<{
   fill: false,
   locked: false,
   partySync: false,
+  contentType: '',
+  canReport: true,
+  timelineOffset: 0,
+  timelineTotal: 0,
+  sourceAtPlayhead: false,
+  timelineBackSeconds: 0,
 })
 
 const emit = defineEmits<{
@@ -61,9 +92,19 @@ const emit = defineEmits<{
   versionRequest: [version: PlaybackVersion]
   episodeRequest: [episode: PlaybackEpisodeOption]
   sourceFailed: [payload: { src: string, code: number }]
+  /** Viewer aimed outside the loaded window; the owner must reopen there. */
+  seekBeyondWindow: [filmSeconds: number]
   notice: [message: string]
   fullscreenChange: [active: boolean]
   syncCorrection: [payload: { type: 'seek' | 'rate', drift: number }]
+  syncFeedback: [payload: { trackId: string, offset: number, sig: string }]
+  reportIssue: [payload: { problemType: ReportProblemType, detail: string }]
+  /**
+   * Once per source: what text subtitles the file itself carries. `probed` is
+   * false when this browser plays the file without reading it (native, HLS),
+   * so nothing is known about its tracks.
+   */
+  embeddedSubtitles: [payload: { src: string, probed: boolean, count: number, persian: boolean }]
 }>()
 
 type SettingsTab = 'episodes' | 'version' | 'quality' | 'speed' | 'subtitle'
@@ -85,6 +126,33 @@ const isPip = ref(false)
 const pipSupported = ref(false)
 const showControls = ref(true)
 const showSettings = ref(false)
+
+// --- «گزارش خطا» report picker ------------------------------------------
+const showReport = ref(false)
+const reportProblem = ref<ReportProblemType | ''>('')
+const reportDetail = ref('')
+const reportSubmitting = ref(false)
+const reportDone = ref(false)
+
+function openReport() {
+  showSettings.value = false
+  reportDone.value = false
+  reportProblem.value = ''
+  reportDetail.value = ''
+  showReport.value = true
+  void loadReportOptions()
+}
+
+function submitReport() {
+  if (!reportProblem.value || reportSubmitting.value) return
+  reportSubmitting.value = true
+  emit('reportIssue', { problemType: reportProblem.value, detail: reportDetail.value.trim() })
+  // Optimistic: the parent files + auto-remediates; the picker confirms instantly
+  // and the page surfaces the real outcome via a toast.
+  reportDone.value = true
+  reportSubmitting.value = false
+  window.setTimeout(() => { if (reportDone.value) showReport.value = false }, 2600)
+}
 const settingsTab = ref<SettingsTab>('quality')
 const currentStreamQuality = ref('')
 const selectedSubtitleId = ref('off')
@@ -95,11 +163,36 @@ const subtitleError = ref('')
 // Manual subtitle sync: positive shifts subs EARLIER (subs run late), negative
 // later (subs run early). Applied as mediaTime - offset when picking the cue.
 const subtitleOffset = ref(0)
+// User-adjustable subtitle appearance, persisted in localStorage. Position is the
+// distance from the player's bottom edge as a percentage (resolution-independent,
+// so it holds in fullscreen too); scale is a font-size multiplier percentage.
+const SUBTITLE_POS_MIN = 2
+const SUBTITLE_POS_MAX = 45
+const SUBTITLE_POS_DEFAULT = 9
+const SUBTITLE_SCALE_MIN = 70
+const SUBTITLE_SCALE_MAX = 170
+const SUBTITLE_SCALE_DEFAULT = 100
+const SUBTITLE_APPEARANCE_KEY = 'revayato:subtitle-appearance'
+const subtitlePosition = ref(SUBTITLE_POS_DEFAULT)
+const subtitleScale = ref(SUBTITLE_SCALE_DEFAULT)
 const selectedSeason = ref(0)
 
 let hls: Hls | null = null
+// In-browser MKV→MP4 remux (see utils/remux/engine). `remuxRefusedSrc` is the
+// one source it already failed on, which then plays through plain <video src>.
+let remuxSession: RemuxSession | null = null
+let remuxRefusedSrc = ''
+let remuxStarting = false
 let hlsFatalNetworkRetries = 0
 let hlsMediaRecoveryDone = false
+// Consecutive-failure budgets above; this one is the lifetime cap that keeps a
+// stream which breaks and recovers forever from looping forever.
+let hlsRecoveryTotal = 0
+let sawSourceProgress = false
+let startupGraceUsed = false
+let nativeNetworkRetryDone = false
+// Media time at which playback was first seen advancing with no picture.
+let pictureMissingSince: number | null = null
 let trackingReady = false
 let lastProgressBucket = 0
 let lastPosition = -1
@@ -114,15 +207,41 @@ let hideControlsTimer: ReturnType<typeof setTimeout> | undefined
 let loadToken = 0
 let subtitleLoadToken = 0
 let stallRecoveryAttempts = 0
+/**
+ * Where to resume the next media that loads, **in film time**.
+ *
+ * Film time and not media time, because the two only agree while one source is
+ * playing, and this value exists precisely to cross from one source to the
+ * next. A gateway window's own clock starts at zero no matter how far into the
+ * film it sits, so carrying a raw `currentTime` across the switch is how a
+ * viewer 40 minutes in lands back at minute 2. It is translated to the
+ * incoming media's clock exactly once, in `setReady`.
+ */
 let resumeAfterSourceSeconds: number | null = null
+/**
+ * The playhead in film time, read while the media and the window props still
+ * described the same source.
+ *
+ * `loadSource` cannot work this out for itself: `src` and the window props
+ * change together, so by the time it runs `toFilm` already describes the
+ * *incoming* media and can no longer say where the outgoing one had got to.
+ * This is that reading, taken on every timeupdate.
+ */
+let lastFilmSeconds = 0
 let resumePlaybackAfterLoad = false
 let hasLoadedSource = false
 let failedSourceEmitted = ''
 let previousBodyOverflow = ''
+// Crowd-sync feedback: debounce the settled offset and report it once per value
+// per track, so a viewer's manual correction feeds the auto-sync consensus.
+let subtitleSyncTimer: ReturnType<typeof setTimeout> | undefined
+let lastReportedSyncOffset: number | null = null
+let lastReportedSyncKey = ''
 
 const SOURCE_STARTUP_TIMEOUT_MS = 10_000
 const STALL_RECOVERY_TIMEOUT_MS = 8_000
 const MAX_STALL_RECOVERY_ATTEMPTS = 3
+const MAX_HLS_RECOVERIES = 12
 const MEDIA_ERR_NETWORK = 2
 const MEDIA_ERR_DECODE = 3
 const MEDIA_ERR_SRC_NOT_SUPPORTED = 4
@@ -141,13 +260,93 @@ function activeFullscreenElement(): Element | null {
   return document.fullscreenElement || doc.webkitFullscreenElement || null
 }
 
-const progressPercent = computed(() => duration.value > 0
-  ? Math.min(100, Math.max(0, currentTime.value / duration.value * 100))
+// --- film time vs media time ------------------------------------------------
+// Everything the viewer sees — clock, scrubber, buffer bar, and every subtitle
+// cue — is in film time. For an ordinary whole-file source the two are the
+// same, because the offset is zero and the total falls back to the media's own
+// duration. For a windowed gateway stream they are not, and every crossing
+// between the two goes through `toFilm`/`toMedia` below rather than adding the
+// offset by hand at each call site.
+
+/**
+ * Where this media's own clock begins.
+ *
+ * Normally zero. A gateway session is remuxed with the source timestamps
+ * intact, so whether its clock starts at zero or at the film position depends
+ * on whether MSE rebases the timeline — which is not ours to decide and not
+ * worth guessing. It is simply measured: if the media's first seekable instant
+ * sits at the film offset, the clock is already film time and nothing needs
+ * adding; if it sits at zero, the offset does. Reading it rather than assuming
+ * makes the arithmetic right under either behaviour.
+ */
+const mediaOrigin = ref(0)
+
+function refreshMediaOrigin() {
+  const element = video.value
+  if (!element || props.timelineOffset <= 1) {
+    mediaOrigin.value = 0
+    return
+  }
+  const ranges = element.seekable.length ? element.seekable : element.buffered
+  if (!ranges.length) return
+  // Only two answers are possible, and they are a whole offset apart, so a
+  // generous tolerance cannot pick the wrong one.
+  mediaOrigin.value = Math.abs(ranges.start(0) - props.timelineOffset) < 2 ? props.timelineOffset : 0
+}
+
+/** Media clock → film clock. */
+function toFilm(mediaTime: number) {
+  return props.timelineOffset + (mediaTime - mediaOrigin.value)
+}
+
+/** Film clock → media clock. */
+function toMedia(filmTime: number) {
+  return mediaOrigin.value + (filmTime - props.timelineOffset)
+}
+
+/** The film's runtime, whether or not this media covers all of it. */
+const filmDuration = computed(() => (props.timelineTotal > 0 ? props.timelineTotal : duration.value))
+/** The playhead's position in the film. */
+const filmCurrentTime = computed(() => toFilm(currentTime.value))
+const progressPercent = computed(() => filmDuration.value > 0
+  ? Math.min(100, Math.max(0, filmCurrentTime.value / filmDuration.value * 100))
   : 0)
-const bufferedPercent = computed(() => duration.value > 0
-  ? Math.min(100, Math.max(0, bufferedEnd.value / duration.value * 100))
+const bufferedPercent = computed(() => filmDuration.value > 0
+  ? Math.min(100, Math.max(0, toFilm(bufferedEnd.value) / filmDuration.value * 100))
+  : 0)
+/** Where this media's window starts, as a fraction of the scrubber. */
+const windowStartPercent = computed(() => filmDuration.value > 0
+  ? Math.min(100, Math.max(0, props.timelineOffset / filmDuration.value * 100))
   : 0)
 const cueLines = computed(() => activeCueText.value.split('\n').filter(Boolean))
+const captionStyle = computed(() => ({
+  '--caption-bottom': `${subtitlePosition.value}%`,
+  '--caption-scale': String(subtitleScale.value / 100),
+}))
+// Text tracks muxed into the file itself. The remux engine reads them from the
+// same bytes it streams, so they need no server and are always in sync.
+const EMBEDDED_PREFIX = 'embedded-'
+const embeddedTracks = ref<EmbeddedSubtitleTrack[]>([])
+let embeddedSrc = ''
+let embeddedCueStore = new Map<number, { cues: SubtitleCue[], seen: Set<string> }>()
+// The viewer picked a subtitle (or «خاموش») by hand: never override it.
+let subtitleChosenByViewer = false
+const subtitleOptions = computed<PlaybackTextTrack[]>(() => [
+  ...embeddedTracks.value.map(track => ({
+    id: `${EMBEDDED_PREFIX}${track.number}`,
+    label: track.label,
+    language: track.language,
+    src: '',
+    provider: 'embedded',
+    source_priority: 0,
+  })),
+  ...props.subtitleTracks,
+])
+const activeSubtitleTrack = computed(() => (
+  selectedSubtitleId.value === 'off'
+    ? null
+    : subtitleOptions.value.find(track => track.id === selectedSubtitleId.value) || null
+))
 const fullscreenActive = computed(() => isFullscreen.value || isPseudoFullscreen.value)
 const selectableVersions = computed(() => props.playbackVersions.filter(version => Boolean(version.url)))
 const activeVersion = computed(() => (
@@ -172,6 +371,16 @@ const visibleEpisodes = computed(() => {
   const season = selectedSeason.value || activeEpisode.value?.season_number || episodeSeasons.value[0] || 0
   return episodeOptions.value.filter(episode => episode.season_number === season)
 })
+// Declared after episodeOptions: useReportOptions watches (reads) it during setup.
+// A series is inferred from an explicit type or from having episode options,
+// so «قسمت اشتباه» only appears where an episode can actually be wrong.
+const isSeriesContent = computed(() => props.contentType === 'series' || episodeOptions.value.length > 0)
+// The catalogue is the server's: each button exists because one distinct repair
+// stands behind it. The bundled copy paints instantly; the fetched one wins.
+const { groups: reportGroups, load: loadReportOptions } = useReportOptions(
+  () => (isSeriesContent.value ? 'series' : 'movie'),
+  () => Boolean(props.activeEpisodeId),
+)
 const qualityOptions = computed<PlaybackQuality[]>(() => {
   const values = new Set<PlaybackQuality>(['auto'])
   props.availableQualities.forEach(value => values.add(value))
@@ -243,6 +452,7 @@ function emitSourceFailure(code: number, message: string) {
   failedSourceEmitted = failedSrc
   loading.value = false
   errorMessage.value = message
+  reportClientDiag('source-failed', { code, message, src: describeMediaUrl(failedSrc), mediaError: video.value?.error?.code ?? null })
   emit('sourceFailed', { src: failedSrc, code })
 }
 
@@ -254,6 +464,8 @@ function destroyPlayer() {
   remoteRateResetTimer = undefined
   hls?.destroy()
   hls = null
+  remuxSession?.destroy()
+  remuxSession = null
   if (video.value) {
     video.value.pause()
     video.value.removeAttribute('src')
@@ -261,28 +473,34 @@ function destroyPlayer() {
   }
 }
 
+// Everything leaving this component speaks film time, so a windowed source is
+// invisible to the page, to watch-progress and to watch-party peers — whoever
+// is on a gateway stream and whoever is on the direct file agree on the clock.
+
 function currentProgress() {
   const element = video.value
-  if (!element?.duration || !Number.isFinite(element.duration)) return 0
-  return Math.round(element.currentTime / element.duration * 100)
+  if (!element || filmDuration.value <= 0) return 0
+  return Math.round(filmCurrentTime.value / filmDuration.value * 100)
 }
 
 function getPlaybackSnapshot(): PlaybackSnapshot {
   const element = video.value
   return {
     is_playing: Boolean(element && !element.paused && !element.ended),
-    position_seconds: element?.currentTime || 0,
-    duration_seconds: Number.isFinite(element?.duration) ? element?.duration || 0 : 0,
+    position_seconds: toFilm(element?.currentTime || 0),
+    duration_seconds: filmDuration.value,
     playback_rate: element?.playbackRate || 1,
   }
 }
 
+/** `seconds` is a point in the film; the media may start somewhere after 0. */
 function prepareResumeAt(seconds: number) {
   if (!Number.isFinite(seconds) || seconds < 0) return
   resumeAfterSourceSeconds = seconds
   const element = video.value
   if (element && element.readyState >= 1 && Number.isFinite(element.duration)) {
-    element.currentTime = Math.min(seconds, Math.max(0, element.duration - 0.25))
+    const local = Math.max(mediaOrigin.value, toMedia(seconds))
+    element.currentTime = Math.min(local, Math.max(0, element.duration - 0.25))
     resumeAfterSourceSeconds = null
   }
 }
@@ -309,15 +527,17 @@ async function applyRemotePlayback(state: PlaybackSnapshot) {
   const element = video.value
   if (!element) return
   const targetRate = Math.min(4, Math.max(0.25, state.playback_rate || 1))
+  // The packet is in film time; this element's clock may be offset into it.
+  const remoteLocal = toMedia(state.position_seconds)
   const currentPosition = Number.isFinite(element.currentTime) ? element.currentTime : 0
-  const drift = state.position_seconds - currentPosition
+  const drift = remoteLocal - currentPosition
   const seekThreshold = props.partySync && state.is_playing ? 0.6 : state.is_playing ? 1.25 : 0.12
   if (remoteRateResetTimer) clearTimeout(remoteRateResetTimer)
   remoteRateResetTimer = undefined
   applyingRemotePlayback = true
   try {
     if (Math.abs(drift) > seekThreshold) {
-      element.currentTime = Math.max(0, Math.min(state.position_seconds, element.duration || state.position_seconds))
+      element.currentTime = Math.max(mediaOrigin.value, Math.min(remoteLocal, element.duration || remoteLocal))
       element.playbackRate = targetRate
       emit('syncCorrection', { type: 'seek', drift })
     } else if (state.is_playing && Math.abs(drift) > 0.1 && !element.paused) {
@@ -342,7 +562,12 @@ async function applyRemotePlayback(state: PlaybackSnapshot) {
 
 defineExpose({ applyRemotePlayback, getPlaybackSnapshot, prepareResumeAt })
 
-function updateCue(time = currentTime.value) {
+/**
+ * `time` is a point in the *film*, never the media clock — a subtitle file is
+ * written against the film, so a windowed stream whose own clock starts at the
+ * session boundary would otherwise look its cues up a whole session-offset out.
+ */
+function updateCue(time = filmCurrentTime.value) {
   if (selectedSubtitleId.value === 'off') {
     activeCueText.value = ''
     return
@@ -357,18 +582,88 @@ function nudgeSubtitleOffset(delta: number) {
     SUBTITLE_OFFSET_MAX,
     Math.max(SUBTITLE_OFFSET_MIN, Math.round((subtitleOffset.value + delta) * 100) / 100),
   )
-  updateCue(video.value?.currentTime || 0)
+  updateCue()
+  scheduleSubtitleSyncReport()
 }
 
 function resetSubtitleOffset() {
   subtitleOffset.value = 0
-  updateCue(video.value?.currentTime || 0)
+  updateCue()
+  scheduleSubtitleSyncReport()
+}
+
+/**
+ * Report the timing offset a viewer settled on so the backend can converge a
+ * crowd consensus and bake it into the file. Debounced (fires once the viewer
+ * stops adjusting) and de-duplicated per track+value; only tracks that carry a
+ * file signature are reportable.
+ */
+function scheduleSubtitleSyncReport(delayMs = 2500) {
+  if (subtitleSyncTimer) clearTimeout(subtitleSyncTimer)
+  subtitleSyncTimer = setTimeout(reportSubtitleSyncFeedback, delayMs)
+}
+
+function reportSubtitleSyncFeedback() {
+  if (subtitleSyncTimer) {
+    clearTimeout(subtitleSyncTimer)
+    subtitleSyncTimer = undefined
+  }
+  const track = activeSubtitleTrack.value
+  const sig = track?.sync_sig
+  if (!track || !sig) return
+  const offset = Math.round((subtitleOffset.value || 0) * 100) / 100
+  const key = `${track.id}:${sig}`
+  // Skip repeats of the same settled value for the same file version.
+  if (key === lastReportedSyncKey && offset === lastReportedSyncOffset) return
+  lastReportedSyncKey = key
+  lastReportedSyncOffset = offset
+  emit('syncFeedback', { trackId: track.id, offset, sig })
+}
+
+function clampNumber(value: number, min: number, max: number) {
+  return Math.min(max, Math.max(min, value))
+}
+
+/** Restore the viewer's saved subtitle position/size (client-only). */
+function loadSubtitleAppearance() {
+  try {
+    const raw = localStorage.getItem(SUBTITLE_APPEARANCE_KEY)
+    if (!raw) return
+    const parsed = JSON.parse(raw) as { position?: unknown, scale?: unknown }
+    if (typeof parsed.position === 'number') {
+      subtitlePosition.value = clampNumber(Math.round(parsed.position), SUBTITLE_POS_MIN, SUBTITLE_POS_MAX)
+    }
+    if (typeof parsed.scale === 'number') {
+      subtitleScale.value = clampNumber(Math.round(parsed.scale), SUBTITLE_SCALE_MIN, SUBTITLE_SCALE_MAX)
+    }
+  } catch {
+    /* ignore malformed or unavailable storage */
+  }
+}
+
+function persistSubtitleAppearance() {
+  try {
+    localStorage.setItem(SUBTITLE_APPEARANCE_KEY, JSON.stringify({
+      position: subtitlePosition.value,
+      scale: subtitleScale.value,
+    }))
+  } catch {
+    /* storage may be unavailable (private mode) */
+  }
+}
+
+function resetSubtitleAppearance() {
+  subtitlePosition.value = SUBTITLE_POS_DEFAULT
+  subtitleScale.value = SUBTITLE_SCALE_DEFAULT
 }
 
 function syncBuffer() {
   const element = video.value
   if (!element?.buffered.length) return
   const end = element.buffered.end(element.buffered.length - 1)
+  // Something of this source has landed. A slow link is not a dead link, and
+  // the startup watchdog reads this before retiring anything.
+  if (end > 0) sawSourceProgress = true
   bufferedEnd.value = Math.max(0, end)
   emit('bufferHealth', Math.max(0, end - element.currentTime))
 }
@@ -376,10 +671,13 @@ function syncBuffer() {
 function handleTimeUpdate() {
   const element = video.value
   if (!element) return
+  refreshMediaOrigin()
   currentTime.value = element.currentTime || 0
   duration.value = Number.isFinite(element.duration) ? element.duration : 0
-  updateCue(element.currentTime)
+  lastFilmSeconds = toFilm(element.currentTime)
+  updateCue(lastFilmSeconds)
   syncBuffer()
+  watchForMissingPicture(element)
   if (!trackingReady) return
   const progress = currentProgress()
   if (progress !== lastPosition) {
@@ -398,6 +696,27 @@ function handleTimeUpdate() {
   }
 }
 
+/**
+ * A video track the browser cannot decode (HEVC in MKV on Chrome, 10-bit HEVC
+ * on an 8-bit decoder) raises no error: the sound plays over a black frame
+ * forever. Seconds of advancing playback with a zero-size picture are the only
+ * sign of it, and a decode failure is what lets the page move to another file.
+ */
+function watchForMissingPicture(element: HTMLVideoElement) {
+  if (element.paused || element.seeking || element.readyState < 2 || element.videoWidth > 0) {
+    pictureMissingSince = null
+    return
+  }
+  const now = element.currentTime || 0
+  if (pictureMissingSince === null || now < pictureMissingSince) {
+    pictureMissingSince = now
+    return
+  }
+  if (now - pictureMissingSince < 4) return
+  pictureMissingSince = null
+  emitSourceFailure(MEDIA_ERR_DECODE, 'تصویر این فایل در این مرورگر نمایش داده نمی‌شود؛ نسخهٔ دیگری امتحان می‌شود.')
+}
+
 function handleEnded() {
   isPlaying.value = false
   bumpControls(true)
@@ -413,8 +732,18 @@ function setReady() {
   const element = video.value
   if (!element) return
   duration.value = Number.isFinite(element.duration) ? element.duration : 0
-  if (resumeAfterSourceSeconds != null && duration.value > 0) {
-    element.currentTime = Math.min(resumeAfterSourceSeconds, Math.max(0, duration.value - 0.25))
+  // Before anything below seeks: the resume points are in film time, and
+  // translating them needs to know where this media's own clock starts.
+  refreshMediaOrigin()
+  if (props.sourceAtPlayhead) {
+    // The stream was opened at the playhead, so second zero of this media
+    // already *is* where the viewer was. Any seek here would skip twice.
+    resumeAfterSourceSeconds = null
+    resumeApplied = true
+  } else if (resumeAfterSourceSeconds != null && duration.value > 0) {
+    // The only crossing from film time back to this media's clock.
+    const local = Math.max(mediaOrigin.value, toMedia(resumeAfterSourceSeconds))
+    element.currentTime = Math.min(local, Math.max(0, duration.value - 0.25))
     resumeAfterSourceSeconds = null
     resumeApplied = true
   } else if (!resumeApplied && props.startAtSeconds > 0 && duration.value > 0) {
@@ -436,7 +765,7 @@ function setReady() {
   hasLoadedSource = true
   if (!readyEmitted && duration.value > 0) {
     readyEmitted = true
-    emit('ready', duration.value)
+    emit('ready', filmDuration.value || duration.value)
   }
   const shouldPlay = resumePlaybackAfterLoad || props.autoplay
   resumePlaybackAfterLoad = false
@@ -454,10 +783,43 @@ function handlePlaying() {
 function handleNativeError() {
   if (!video.value?.getAttribute('src') && !hls) return
   const code = video.value?.error?.code || MEDIA_ERR_SRC_NOT_SUPPORTED
+  const element = video.value
+  // The engine sees the same error and settles startup itself.
+  if (remuxStarting) return
+  if (remuxSession) {
+    abandonRemux('media_error_' + code)
+    return
+  }
+  // A file that played for twenty minutes and then lost the connection has
+  // proved it is the right file on a reachable host. Reporting that as a
+  // source failure retires it — and, because code 2 is read as an origin
+  // fault, every mirror on the same CDN with it. Reopen it once at the
+  // playhead first; only a second failure is a real verdict about the source.
+  // Windowed sources (a gateway session) are excluded: their media clock is
+  // not the film's, so a reload would land somewhere else entirely.
+  if (
+    code === MEDIA_ERR_NETWORK
+    && !nativeNetworkRetryDone
+    && !hls
+    && !isHlsSource(String(props.src || ''))
+    && !props.sourceAtPlayhead
+    && hasLoadedSource
+    && element
+    && element.currentTime > 1
+  ) {
+    nativeNetworkRetryDone = true
+    resumeAfterSourceSeconds = toFilm(element.currentTime)
+    resumeApplied = false
+    resumePlaybackAfterLoad = true
+    emit('notice', 'اتصال قطع شد؛ در حال ادامه از همان لحظه')
+    element.load()
+    beginLoading()
+    return
+  }
   const message = code === MEDIA_ERR_NETWORK
     ? 'ارتباط با منبع ویدیو برقرار نشد.'
     : code === MEDIA_ERR_DECODE
-      ? 'کُدک این فایل در مرورگر قابل رمزگشایی نیست.'
+      ? 'کُدک این فایل (احتمالاً HEVC/x265) در این مرورگر پشتیبانی نمی‌شود.'
       : 'فرمت یا آدرس این فایل برای پخش آنلاین پشتیبانی نمی‌شود.'
   emitSourceFailure(code, message)
 }
@@ -467,6 +829,18 @@ function armSourceStartupWatchdog(token: number) {
   sourceStartupTimer = setTimeout(() => {
     const current = video.value
     if (token !== loadToken || !current || current.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA) return
+    // Ten seconds is a deadline for a source that never answers, not for one
+    // that is answering slowly. On a thin connection a large file — or a
+    // gateway stream still being written — can take longer than that to reach
+    // its first decodable frame, and retiring it there costs the viewer the
+    // one source that was actually going to work. Bytes on the wire buy one
+    // more window; silence still fails on time.
+    if (sawSourceProgress && !startupGraceUsed) {
+      startupGraceUsed = true
+      emit('notice', 'اتصال کند است؛ کمی بیشتر صبر می‌کنیم')
+      armSourceStartupWatchdog(token)
+      return
+    }
     emit('notice', 'این منبع شروع نشد؛ در حال امتحان لینک بعدی')
     emitSourceFailure(MEDIA_ERR_NETWORK, 'این منبع در زمان مناسب شروع نشد.')
   }, SOURCE_STARTUP_TIMEOUT_MS)
@@ -493,8 +867,12 @@ function beginLoading() {
       beginLoading()
       return
     }
+    if (stallRecoveryAttempts === 2 && remuxSession) {
+      abandonRemux('stalled')
+      return
+    }
     if (stallRecoveryAttempts === 2 && !isHlsSource(failedSrc)) {
-      resumeAfterSourceSeconds = nowSeconds
+      resumeAfterSourceSeconds = toFilm(nowSeconds)
       current.load()
       beginLoading()
       return
@@ -538,14 +916,110 @@ function applyQuality() {
   hls.currentLevel = closestIndex
 }
 
+function remuxAudioPreference(): AudioPreference {
+  const kind = activeVersion.value?.kind
+  if (kind === 'dub') return 'fa'
+  if (kind === 'softsub' || kind === 'hardsub' || kind === 'original') return 'original'
+  return ''
+}
+
+/**
+ * MKV is what most of the catalogue is, and no iOS browser, desktop Safari or
+ * Firefox can open it. Remuxing it here, in the page, to fragmented MP4 plays
+ * the very same bytes from the very same CDN in all of them — and lets us pick
+ * the Persian audio track of a dubbed file, which Chrome's native MKV player
+ * ignores. Resolves false when this file or browser cannot be remuxed, and the
+ * caller carries on with plain `<video src>`.
+ */
+async function startRemux(token: number, element: HTMLVideoElement): Promise<boolean> {
+  const src = String(props.src || '').trim()
+  // Decide before pulling the engine chunk in: with the remuxer switched off
+  // (downloadMeta REMUX_ENABLED) the page never loads or runs it.
+  if (!remuxSupported()) {
+    reportEmbeddedProbe(src, [], false)
+    return false
+  }
+  let engine: typeof import('~/utils/remux/engine')
+  try {
+    engine = await import('~/utils/remux/engine')
+  }
+  catch {
+    reportEmbeddedProbe(src, [], false)
+    return false
+  }
+  const { isRemuxCandidate, startMkvRemux } = engine
+  if (token !== loadToken) return false
+  if (!isRemuxCandidate(src) || !remuxSupported()) {
+    reportEmbeddedProbe(src, [], false)
+    return false
+  }
+  const startTime = resumeAfterSourceSeconds ?? (props.startAtSeconds > 0 ? props.startAtSeconds : 0)
+  remuxStarting = true
+  try {
+    const session = await startMkvRemux(element, src, {
+      startTime,
+      audioPreference: remuxAudioPreference(),
+      onFatal: (error) => {
+        if (remuxSession !== session) return
+        abandonRemux(error.code)
+      },
+      onLog: import.meta.dev ? message => console.info(message) : undefined,
+      onSubtitleTracks: (tracks) => {
+        if (token === loadToken) reportEmbeddedProbe(src, tracks, true)
+      },
+      onSubtitleCues: (trackNumber, cues) => addEmbeddedCues(src, trackNumber, cues),
+    })
+    if (token !== loadToken || element !== video.value) {
+      session.destroy()
+      return true
+    }
+    remuxSession = session
+    sawSourceProgress = true
+    return true
+  }
+  catch (error) {
+    const code = (error as { code?: string } | null)?.code || 'failed'
+    if (token !== loadToken || code === 'destroyed') return true
+    if (import.meta.dev) console.info(`[remux] not used: ${code}`)
+    // Dead link: the native element would only spend its own timeout finding
+    // that out. Anything else (codec, CORS, parse) is ours — let it try.
+    if (code === 'expired' || code === 'http_error') {
+      emitSourceFailure(MEDIA_ERR_NETWORK, 'ارتباط با منبع ویدیو برقرار نشد.')
+      return true
+    }
+    remuxRefusedSrc = src
+    reportEmbeddedProbe(src, [], false)
+    element.removeAttribute('src')
+    element.load()
+    return false
+  }
+  finally {
+    remuxStarting = false
+  }
+}
+
+/** Remux broke mid-film: carry on natively from the same moment. */
+function abandonRemux(reason: string) {
+  if (import.meta.dev) console.info(`[remux] abandoned: ${reason}`)
+  remuxRefusedSrc = String(props.src || '').trim()
+  if (lastFilmSeconds > 1) resumeAfterSourceSeconds = lastFilmSeconds
+  void loadSource()
+}
+
 async function loadSource() {
   const token = ++loadToken
   const previous = video.value
   resumePlaybackAfterLoad = hasLoadedSource
     ? Boolean(previous && !previous.paused && !previous.ended)
     : props.autoplay
-  if (resumeAfterSourceSeconds == null && hasLoadedSource && previous && previous.currentTime > 1) {
-    resumeAfterSourceSeconds = previous.currentTime
+  // A windowed source opened at the playhead carries no position over: the new
+  // media starts exactly where the old one stopped, on its own zero-based clock.
+  if (props.sourceAtPlayhead) resumeAfterSourceSeconds = null
+  else if (resumeAfterSourceSeconds == null && hasLoadedSource && lastFilmSeconds > 1) {
+    // `previous.currentTime` would be the outgoing media's own clock, which is
+    // the film's only when that media began at zero. Falling back from a
+    // gateway window to a direct mirror is exactly when it does not.
+    resumeAfterSourceSeconds = lastFilmSeconds
   }
   destroyPlayer()
   lastProgressBucket = 0
@@ -558,6 +1032,16 @@ async function loadSource() {
   stallRecoveryAttempts = 0
   hlsFatalNetworkRetries = 0
   hlsMediaRecoveryDone = false
+  hlsRecoveryTotal = 0
+  sawSourceProgress = false
+  startupGraceUsed = false
+  nativeNetworkRetryDone = false
+  pictureMissingSince = null
+  // Measured per media, never inherited: `refreshMediaOrigin` keeps its last
+  // answer when there is nothing to measure yet, and that answer belonged to
+  // the source being replaced. Zero is right for every whole-file source and
+  // is corrected within the first frames of a windowed one.
+  mediaOrigin.value = 0
   currentStreamQuality.value = ''
   const element = video.value
   if (!element || !props.src) {
@@ -565,14 +1049,21 @@ async function loadSource() {
     loading.value = false
     return
   }
+  // A new file brings its own tracks; the same file (native fallback after a
+  // remux) keeps the cues already read from it.
+  if (embeddedSrc && embeddedSrc !== String(props.src).trim()) clearEmbeddedSubtitles()
 
   if (!isHlsSource(props.src)) {
+    if (props.src !== remuxRefusedSrc && await startRemux(token, element)) return
+    if (token !== loadToken || element !== video.value) return
+    reportEmbeddedProbe(String(props.src).trim(), [], false)
     element.src = props.src
     element.load()
     armSourceStartupWatchdog(token)
     return
   }
 
+  reportEmbeddedProbe(String(props.src).trim(), [], false)
   // Native HLS first (Safari, iOS, some WebViews); both MIME variants for wider detection.
   if (element.canPlayType('application/vnd.apple.mpegurl') || element.canPlayType('application/x-mpegurl')) {
     element.src = props.src
@@ -603,6 +1094,16 @@ async function loadSource() {
       armSourceStartupWatchdog(token)
       void safePlay()
     })
+    instance.on(HlsClass.Events.FRAG_BUFFERED, () => {
+      if (hls !== instance) return
+      // A fragment landed, so whatever broke before is over. The budgets below
+      // are meant to stop a source that cannot recover — not to add up three
+      // unrelated blips over a two-hour film into a dead stream. Only
+      // hlsRecoveryTotal keeps counting, and it is what ends a genuine loop.
+      sawSourceProgress = true
+      hlsFatalNetworkRetries = 0
+      hlsMediaRecoveryDone = false
+    })
     instance.on(HlsClass.Events.LEVEL_SWITCHED, (_, data) => {
       if (hls !== instance) return
       const height = instance.levels[data.level]?.height
@@ -612,17 +1113,19 @@ async function loadSource() {
       if (!data.fatal || token !== loadToken || hls !== instance) return
       if (data.type === HlsClass.ErrorTypes.NETWORK_ERROR) {
         // Transient network drops: resume loading before giving up on the source.
-        if (hlsFatalNetworkRetries < 2) {
+        if (hlsFatalNetworkRetries < 2 && hlsRecoveryTotal < MAX_HLS_RECOVERIES) {
           hlsFatalNetworkRetries += 1
+          hlsRecoveryTotal += 1
           emit('notice', 'اتصال قطع شد؛ در حال تلاش دوباره')
           instance.startLoad()
           return
         }
         emitSourceFailure(MEDIA_ERR_NETWORK, 'ارتباط با جریان ویدیو برقرار نشد.')
       } else if (data.type === HlsClass.ErrorTypes.MEDIA_ERROR) {
-        // Decoder hiccups are usually recoverable once per stream.
-        if (!hlsMediaRecoveryDone) {
+        // Decoder hiccups are usually recoverable once per stretch of playback.
+        if (!hlsMediaRecoveryDone && hlsRecoveryTotal < MAX_HLS_RECOVERIES) {
           hlsMediaRecoveryDone = true
+          hlsRecoveryTotal += 1
           instance.recoverMediaError()
           return
         }
@@ -640,6 +1143,11 @@ async function loadSource() {
   emitSourceFailure(MEDIA_ERR_SRC_NOT_SUPPORTED, 'پخش HLS در این مرورگر پشتیبانی نمی‌شود.')
 }
 
+function chooseSubtitle(trackId: string) {
+  subtitleChosenByViewer = true
+  void selectSubtitle(trackId)
+}
+
 async function selectSubtitle(trackId: string) {
   selectedSubtitleId.value = trackId
   subtitleLoadToken += 1
@@ -648,7 +1156,14 @@ async function selectSubtitle(trackId: string) {
   activeCueText.value = ''
   subtitleError.value = ''
   subtitleOffset.value = 0
+  subtitleLoading.value = false
   if (trackId === 'off') return
+  if (trackId.startsWith(EMBEDDED_PREFIX)) {
+    // Cues arrive as the stream reaches them; addEmbeddedCues keeps this fed.
+    subtitleCues.value = embeddedCueStore.get(Number(trackId.slice(EMBEDDED_PREFIX.length)))?.cues.slice() || []
+    updateCue()
+    return
+  }
   const track = props.subtitleTracks.find(candidate => candidate.id === trackId)
   if (!track?.src) return
   subtitleLoading.value = true
@@ -656,7 +1171,7 @@ async function selectSubtitle(trackId: string) {
     const cues = await loadSubtitleCues(track.src)
     if (token !== subtitleLoadToken) return
     subtitleCues.value = cues
-    updateCue(video.value?.currentTime || 0)
+    updateCue()
     if (!cues.length) subtitleError.value = 'متن قابل نمایش در این زیرنویس پیدا نشد.'
   } catch {
     if (token === subtitleLoadToken) subtitleError.value = 'بارگذاری زیرنویس انجام نشد.'
@@ -666,10 +1181,77 @@ async function selectSubtitle(trackId: string) {
 }
 
 function syncSubtitleTracks() {
+  const current = selectedSubtitleId.value
+  // The file's own track stays on while it exists; a sidecar landing later
+  // (ensure flow) is offered in the menu, not forced over it.
+  if (current.startsWith(EMBEDDED_PREFIX) && subtitleOptions.value.some(track => track.id === current)) return
+  const currentStillExists = props.subtitleTracks.some(track => track.id === current && track.src)
   const preferred = pickDefaultSubtitleTrack(props.subtitleTracks)
-  const currentStillExists = props.subtitleTracks.some(track => track.id === selectedSubtitleId.value && track.src)
-  const next = currentStillExists ? selectedSubtitleId.value : preferred?.id || 'off'
+  const embedded = subtitleChosenByViewer ? '' : embeddedPersianOptionId()
+  const next = currentStillExists ? current : preferred?.id || embedded || 'off'
   void selectSubtitle(next)
+}
+
+function embeddedPersianOptionId(): string {
+  if (activeVersion.value?.kind === 'dub') return ''
+  const persian = embeddedTracks.value.find(track => track.persian && !track.forced)
+    || embeddedTracks.value.find(track => track.persian)
+  return persian ? `${EMBEDDED_PREFIX}${persian.number}` : ''
+}
+
+function clearEmbeddedSubtitles() {
+  embeddedSrc = ''
+  embeddedCueStore = new Map()
+  if (!embeddedTracks.value.length) return
+  embeddedTracks.value = []
+  if (selectedSubtitleId.value.startsWith(EMBEDDED_PREFIX)) syncSubtitleTracks()
+}
+
+/** Tell the page what this source carries — once per source. */
+function reportEmbeddedProbe(src: string, tracks: EmbeddedSubtitleTrack[], probed: boolean) {
+  if (embeddedSrc === src) return
+  embeddedSrc = src
+  embeddedCueStore = new Map()
+  embeddedTracks.value = tracks
+  emit('embeddedSubtitles', {
+    src,
+    probed,
+    count: tracks.length,
+    persian: tracks.some(track => track.persian),
+  })
+  if (!tracks.length) return
+  // The file's own Persian track is timed to this exact encode, so it beats a
+  // provider sidecar matched by title — but never what the viewer picked, and
+  // never a sidecar cut from this same file (source_priority 1).
+  const embeddedId = embeddedPersianOptionId()
+  if (!embeddedId || subtitleChosenByViewer) return
+  const current = activeSubtitleTrack.value
+  if (current && (current.source_priority || 99) <= 1) return
+  void selectSubtitle(embeddedId)
+}
+
+function addEmbeddedCues(src: string, trackNumber: number, cues: EmbeddedSubtitleCue[]) {
+  if (src !== embeddedSrc) return
+  let store = embeddedCueStore.get(trackNumber)
+  if (!store) embeddedCueStore.set(trackNumber, store = { cues: [], seen: new Set() })
+  let added = false
+  let ordered = true
+  for (const cue of cues) {
+    // A seek re-streams stretches already read: keep each cue once.
+    const key = `${Math.round(cue.start * 1000)}|${cue.text}`
+    if (store.seen.has(key)) continue
+    store.seen.add(key)
+    const last = store.cues[store.cues.length - 1]
+    if (last && cue.start < last.start) ordered = false
+    store.cues.push({ start: cue.start, end: cue.end, text: cue.text })
+    added = true
+  }
+  if (!added) return
+  if (!ordered) store.cues.sort((left, right) => left.start - right.start)
+  if (selectedSubtitleId.value === `${EMBEDDED_PREFIX}${trackNumber}`) {
+    subtitleCues.value = store.cues.slice()
+    updateCue()
+  }
 }
 
 async function togglePlayback() {
@@ -686,16 +1268,60 @@ async function togglePlayback() {
   }
 }
 
+/** Is this media-time already decoded in the browser? Then a seek costs nothing. */
+function isLocallyBuffered(element: HTMLMediaElement, local: number) {
+  const ranges = element.buffered
+  for (let index = 0; index < ranges.length; index += 1) {
+    if (local >= ranges.start(index) - 0.25 && local <= ranges.end(index)) return true
+  }
+  return false
+}
+
+/**
+ * Move the playhead to a point in the *film*.
+ *
+ * Inside the loaded window this is an ordinary seek. Outside it — only possible
+ * for a windowed source — the media simply does not contain that moment, so the
+ * owner is asked to reopen the stream there.
+ */
+function seekToFilmSeconds(target: number) {
+  const element = video.value
+  if (!element) return
+  const bounded = Math.max(0, Math.min(target, filmDuration.value || target))
+  const local = toMedia(bounded)
+  const mediaEnd = duration.value > mediaOrigin.value ? duration.value : mediaOrigin.value + duration.value
+  const hasWindow = props.timelineOffset > 0 || (props.timelineTotal > 0 && props.timelineTotal > duration.value + 1)
+  // A second of slack at each edge: landing exactly on the boundary would
+  // reopen a stream the viewer is already watching.
+  if (hasWindow && (local < mediaOrigin.value - 1 || local > mediaEnd + 1)) {
+    emit('seekBeyondWindow', bounded)
+    return
+  }
+  // Behind the playhead a windowed source keeps only a short tail, pruned as
+  // far back as the furthest point already fetched. A rewind past that still
+  // works for as long as the browser holds the frames itself — only once both
+  // are gone does the moment have to be fetched again, which means reopening.
+  if (props.timelineBackSeconds > 0) {
+    const fetchedTo = Math.max(element.currentTime, bufferedEnd.value)
+    if (local < fetchedTo - props.timelineBackSeconds && !isLocallyBuffered(element, local)) {
+      emit('seekBeyondWindow', bounded)
+      return
+    }
+  }
+  if (!Number.isFinite(element.duration) || element.duration <= 0) return
+  element.currentTime = Math.min(element.duration, Math.max(mediaOrigin.value, local))
+  currentTime.value = element.currentTime
+  lastFilmSeconds = toFilm(element.currentTime)
+  updateCue(lastFilmSeconds)
+}
+
 function seekToPercent(percent: number) {
   if (props.locked) {
     emit('notice', 'جابه‌جایی زمان با میزبان هماهنگ می‌شود')
     return
   }
-  const element = video.value
-  if (!element || !Number.isFinite(element.duration) || element.duration <= 0) return
-  element.currentTime = Math.min(element.duration, Math.max(0, element.duration * percent / 100))
-  currentTime.value = element.currentTime
-  updateCue(element.currentTime)
+  if (filmDuration.value <= 0) return
+  seekToFilmSeconds(filmDuration.value * percent / 100)
 }
 
 function handleProgressInput(event: Event) {
@@ -709,7 +1335,7 @@ function skip(seconds: number) {
   }
   const element = video.value
   if (!element) return
-  element.currentTime = Math.min(element.duration || Number.POSITIVE_INFINITY, Math.max(0, element.currentTime + seconds))
+  seekToFilmSeconds(toFilm(element.currentTime) + seconds)
 }
 
 function setVolume(value: number) {
@@ -909,6 +1535,7 @@ onMounted(() => {
   video.value?.addEventListener('webkitbeginfullscreen', () => handleIosVideoFullscreen(true))
   video.value?.addEventListener('webkitendfullscreen', () => handleIosVideoFullscreen(false))
   setupMediaSession()
+  loadSubtitleAppearance()
   syncSubtitleTracks()
   void loadSource()
   bumpControls(true)
@@ -923,9 +1550,12 @@ watch(showSettings, (open) => {
   if (open) bumpControls(true)
   else bumpControls()
 })
+watch([subtitlePosition, subtitleScale], persistSubtitleAppearance)
 
 onBeforeUnmount(() => {
   subtitleLoadToken += 1
+  // Flush any pending crowd-sync feedback the debounce hasn't sent yet.
+  if (subtitleSyncTimer) reportSubtitleSyncFeedback()
   destroyPlayer()
   cancelControlsTimer()
   document.removeEventListener('fullscreenchange', handleFullscreenChange)
@@ -988,7 +1618,7 @@ onBeforeUnmount(() => {
     <div
       v-if="partySync"
       data-player-ui
-      class="absolute end-3 top-3 z-20 inline-flex items-center gap-2 rounded-full bg-black/65 px-3 py-1.5 text-[10px] font-black text-white/80 ring-1 ring-white/15 backdrop-blur-md sm:end-4 sm:top-4 sm:text-xs"
+      class="absolute end-3 top-3 z-20 inline-flex items-center gap-2 rounded-full bg-black/65 px-3 py-1.5 text-[11px] font-black text-white/80 ring-1 ring-white/15 backdrop-blur-md sm:end-4 sm:top-4 sm:text-xs"
     >
       <span class="size-1.5 animate-pulse rounded-full bg-success" />
       {{ locked ? 'هماهنگ با میزبان' : 'میزبان اتاق' }}
@@ -1010,6 +1640,7 @@ onBeforeUnmount(() => {
     <div
       v-if="cueLines.length"
       class="revayato-player__captions pointer-events-none absolute inset-x-4 z-20 mx-auto text-center"
+      :style="captionStyle"
       aria-live="off"
     >
       <span v-for="(line, index) in cueLines" :key="`${index}-${line}`" class="block">
@@ -1019,9 +1650,8 @@ onBeforeUnmount(() => {
 
     <Transition name="player-fade">
       <div v-if="loading && !errorMessage" class="pointer-events-none absolute inset-0 z-20 grid place-items-center bg-black/35">
-        <div class="rounded-2xl bg-black/55 px-5 py-4 text-center ring-1 ring-white/10 backdrop-blur-md">
-          <span class="mx-auto block size-9 animate-spin rounded-full border-2 border-white/20 border-t-primary-400" />
-          <p class="mt-3 text-xs font-black text-white/85 sm:text-sm">در حال آماده‌سازی پخش…</p>
+        <div class="rounded-2xl bg-black/55 px-5 py-4 text-center ring-1 ring-white/10 backdrop-blur-md" style="--spinner-color: #fff;">
+          <LoadingSpinnerA size="large" class="!text-white/85">در حال آماده‌سازی پخش…</LoadingSpinnerA>
         </div>
       </div>
     </Transition>
@@ -1048,7 +1678,10 @@ onBeforeUnmount(() => {
       >
         <div class="revayato-player__timeline relative mb-2.5 flex h-5 items-center sm:mb-3">
           <div class="pointer-events-none absolute inset-x-0 h-1.5 overflow-hidden rounded-full bg-white/20">
-            <span class="absolute inset-y-0 start-0 bg-white/25" :style="{ width: `${bufferedPercent}%` }" />
+            <span
+              class="absolute inset-y-0 bg-white/25"
+              :style="{ insetInlineStart: `${windowStartPercent}%`, width: `${Math.max(0, bufferedPercent - windowStartPercent)}%` }"
+            />
             <span class="absolute inset-y-0 start-0 bg-primary-500" :style="{ width: `${progressPercent}%` }" />
           </div>
           <input
@@ -1093,8 +1726,8 @@ onBeforeUnmount(() => {
             >
           </div>
 
-          <span class="ms-1 shrink-0 font-latin text-[10px] font-bold tabular-nums text-white/65 sm:text-xs">
-            {{ formatTime(currentTime) }} <span class="hidden sm:inline">/ {{ formatTime(duration) }}</span>
+          <span class="ms-1 shrink-0 font-latin text-[11px] font-bold tabular-nums text-white/65 sm:text-xs">
+            {{ formatTime(filmCurrentTime) }} <span class="hidden sm:inline">/ {{ formatTime(filmDuration) }}</span>
           </span>
 
           <div class="min-w-0 flex-1" />
@@ -1106,11 +1739,14 @@ onBeforeUnmount(() => {
             <CinematicIcon name="chevron-left" class="size-5" />
           </button>
 
-          <button v-if="subtitleTracks.length" class="revayato-player__btn" type="button" :class="selectedSubtitleId !== 'off' && 'is-active'" aria-label="زیرنویس" @click="openSettings('subtitle')">
+          <button v-if="subtitleOptions.length" class="revayato-player__btn" type="button" :class="selectedSubtitleId !== 'off' && 'is-active'" aria-label="زیرنویس" @click="openSettings('subtitle')">
             <CinematicIcon name="captions" class="size-5" />
           </button>
           <button class="revayato-player__quality hidden min-w-12 sm:inline-flex" type="button" @click="openSettings('quality')">
             {{ qualityLabel }}
+          </button>
+          <button v-if="canReport" class="revayato-player__btn" type="button" aria-label="گزارش خطا" @click="openReport">
+            <CinematicIcon name="flag" class="size-5" />
           </button>
           <button class="revayato-player__btn" type="button" aria-label="تنظیمات پخش" @click="openSettings(selectableVersions.length > 1 ? 'version' : episodeOptions.length ? 'episodes' : 'quality')">
             <CinematicIcon name="settings" class="size-5" />
@@ -1132,7 +1768,7 @@ onBeforeUnmount(() => {
           <header class="flex items-center justify-between border-b border-white/10 px-4 py-3">
             <div class="min-w-0">
               <p class="text-sm font-black">تنظیمات پخش</p>
-              <p v-if="locked" class="mt-0.5 text-[10px] text-primary-300">گزینه‌های مشترک در اختیار میزبان است</p>
+              <p v-if="locked" class="mt-0.5 text-[11px] text-primary-300">گزینه‌های مشترک در اختیار میزبان است</p>
             </div>
             <button class="revayato-player__btn" type="button" aria-label="بستن" @click="showSettings = false"><CinematicIcon name="x" class="size-5" /></button>
           </header>
@@ -1142,7 +1778,7 @@ onBeforeUnmount(() => {
             <button v-if="selectableVersions.length > 1" type="button" class="revayato-player__tab" :class="settingsTab === 'version' && 'is-active'" @click="settingsTab = 'version'">نسخه</button>
             <button type="button" class="revayato-player__tab" :class="settingsTab === 'quality' && 'is-active'" @click="settingsTab = 'quality'">کیفیت</button>
             <button type="button" class="revayato-player__tab" :class="settingsTab === 'speed' && 'is-active'" @click="settingsTab = 'speed'">سرعت</button>
-            <button v-if="subtitleTracks.length" type="button" class="revayato-player__tab" :class="settingsTab === 'subtitle' && 'is-active'" @click="settingsTab = 'subtitle'">زیرنویس</button>
+            <button v-if="subtitleOptions.length" type="button" class="revayato-player__tab" :class="settingsTab === 'subtitle' && 'is-active'" @click="settingsTab = 'subtitle'">زیرنویس</button>
           </nav>
 
           <div class="max-h-[48dvh] overflow-y-auto p-3 sm:max-h-80">
@@ -1181,10 +1817,10 @@ onBeforeUnmount(() => {
             </div>
 
             <div v-else class="grid gap-1.5">
-              <button type="button" class="revayato-player__option" :class="selectedSubtitleId === 'off' && 'is-active'" @click="selectSubtitle('off')">
+              <button type="button" class="revayato-player__option" :class="selectedSubtitleId === 'off' && 'is-active'" @click="chooseSubtitle('off')">
                 <CinematicIcon name="captions" class="size-5" /><span class="flex-1 text-start">خاموش</span><CinematicIcon v-if="selectedSubtitleId === 'off'" name="check" class="size-4 text-primary-300" />
               </button>
-              <button v-for="track in subtitleTracks" :key="track.id" type="button" class="revayato-player__option" :class="selectedSubtitleId === track.id && 'is-active'" @click="selectSubtitle(track.id)">
+              <button v-for="track in subtitleOptions" :key="track.id" type="button" class="revayato-player__option" :class="selectedSubtitleId === track.id && 'is-active'" @click="chooseSubtitle(track.id)">
                 <CinematicIcon name="subtitle" class="size-5" /><span class="min-w-0 flex-1 truncate text-start">{{ track.label || track.language }}</span><CinematicIcon v-if="selectedSubtitleId === track.id" name="check" class="size-4 text-primary-300" />
               </button>
               <p v-if="subtitleLoading" class="px-2 py-1 text-xs text-white/45">در حال آماده‌سازی زیرنویس…</p>
@@ -1192,8 +1828,8 @@ onBeforeUnmount(() => {
 
               <div v-if="selectedSubtitleId !== 'off'" class="mt-1 rounded-xl bg-white/[.03] p-3 ring-1 ring-white/10">
                 <div class="flex items-center justify-between gap-2">
-                  <p class="text-[11px] font-black text-white/70">هماهنگ‌سازی زیرنویس</p>
-                  <button type="button" class="text-[10px] font-bold text-white/40 transition hover:text-white/80" :disabled="subtitleOffset === 0" @click="resetSubtitleOffset">
+                  <p class="text-xs font-black text-white/70">هماهنگ‌سازی زیرنویس</p>
+                  <button type="button" class="text-[11px] font-bold text-white/40 transition hover:text-white/80" :disabled="subtitleOffset === 0" @click="resetSubtitleOffset">
                     {{ subtitleOffset === 0 ? 'در وضعیت عادی' : 'بازگردانی' }}
                   </button>
                 </div>
@@ -1205,7 +1841,7 @@ onBeforeUnmount(() => {
                     <p class="font-latin text-sm font-black tabular-nums" :class="subtitleOffset === 0 ? 'text-white/50' : subtitleOffset > 0 ? 'text-primary-300' : 'text-sky-300'">
                       {{ subtitleOffset > 0 ? '+' : '' }}{{ subtitleOffset }}s
                     </p>
-                    <p class="text-[9px] leading-relaxed text-white/35">
+                    <p class="text-[11px] leading-relaxed text-white/35">
                       {{ subtitleOffset > 0 ? 'زیرنویس جلوتر' : subtitleOffset < 0 ? 'زیرنویس عقب‌تر' : 'هماهنگ' }}
                     </p>
                   </div>
@@ -1213,11 +1849,129 @@ onBeforeUnmount(() => {
                     <CinematicIcon name="plus" class="size-4" />
                   </button>
                 </div>
-                <p class="mt-1.5 text-center text-[9px] leading-relaxed text-white/30">
+                <p class="mt-1.5 text-center text-[11px] leading-relaxed text-white/30">
                   اگر زیرنویس دیر ظاهر می‌شود، {{ SUBTITLE_OFFSET_STEP }} به جلو بزنید.
                 </p>
               </div>
+
+              <div v-if="selectedSubtitleId !== 'off'" class="mt-1.5 rounded-xl bg-white/[.03] p-3 ring-1 ring-white/10">
+                <div class="flex items-center justify-between gap-2">
+                  <p class="text-xs font-black text-white/70">ظاهر زیرنویس</p>
+                  <button
+                    type="button"
+                    class="text-[11px] font-bold text-white/40 transition hover:text-white/80"
+                    :disabled="subtitlePosition === SUBTITLE_POS_DEFAULT && subtitleScale === SUBTITLE_SCALE_DEFAULT"
+                    @click="resetSubtitleAppearance"
+                  >
+                    {{ (subtitlePosition === SUBTITLE_POS_DEFAULT && subtitleScale === SUBTITLE_SCALE_DEFAULT) ? 'پیش‌فرض' : 'بازگردانی' }}
+                  </button>
+                </div>
+                <label class="mt-2.5 block">
+                  <span class="mb-1 flex items-center justify-between text-[11px] text-white/45">
+                    <span>فاصله از پایین</span>
+                    <span class="font-latin tabular-nums text-white/60">٪{{ subtitlePosition }}</span>
+                  </span>
+                  <input
+                    v-model.number="subtitlePosition"
+                    type="range"
+                    class="revayato-player__setting-range"
+                    :min="SUBTITLE_POS_MIN"
+                    :max="SUBTITLE_POS_MAX"
+                    step="1"
+                    aria-label="فاصله زیرنویس از پایین"
+                  >
+                </label>
+                <label class="mt-2 block">
+                  <span class="mb-1 flex items-center justify-between text-[11px] text-white/45">
+                    <span>اندازه متن</span>
+                    <span class="font-latin tabular-nums text-white/60">٪{{ subtitleScale }}</span>
+                  </span>
+                  <input
+                    v-model.number="subtitleScale"
+                    type="range"
+                    class="revayato-player__setting-range"
+                    :min="SUBTITLE_SCALE_MIN"
+                    :max="SUBTITLE_SCALE_MAX"
+                    step="5"
+                    aria-label="اندازه متن زیرنویس"
+                  >
+                </label>
+              </div>
             </div>
+          </div>
+        </section>
+      </div>
+    </Transition>
+
+    <Transition name="player-settings">
+      <div v-if="showReport" data-player-ui class="revayato-player__settings-layer absolute inset-0 z-[29]" @click.stop>
+        <button type="button" class="absolute inset-0 bg-black/40" aria-label="بستن گزارش خطا" @click="showReport = false" />
+        <section class="revayato-player__settings absolute bottom-3 end-3 start-3 max-h-[80%] overflow-hidden rounded-2xl bg-slate-950/95 text-white shadow-2xl ring-1 ring-white/15 backdrop-blur-xl sm:bottom-20 sm:end-5 sm:start-auto sm:w-[26rem]">
+          <header class="flex items-center justify-between border-b border-white/10 px-4 py-3">
+            <div class="flex min-w-0 items-center gap-2.5">
+              <span class="grid size-9 shrink-0 place-items-center rounded-xl bg-amber-400/15 text-amber-300 ring-1 ring-amber-300/25">
+                <CinematicIcon name="flag" class="size-4.5" />
+              </span>
+              <div class="min-w-0">
+                <p class="text-sm font-black">گزارش خطا</p>
+                <p class="mt-0.5 text-[11px] text-white/50">مشکل را انتخاب کن تا خودکار بررسی و رفع شود</p>
+              </div>
+            </div>
+            <button class="revayato-player__btn" type="button" aria-label="بستن" @click="showReport = false"><CinematicIcon name="x" class="size-5" /></button>
+          </header>
+
+          <div class="max-h-[58dvh] overflow-y-auto p-3 sm:max-h-96">
+            <Transition name="player-settings" mode="out-in">
+              <div v-if="reportDone" key="done" class="grid place-items-center gap-3 px-4 py-9 text-center">
+                <span class="grid size-14 place-items-center rounded-full bg-emerald-400/15 text-emerald-300 ring-1 ring-emerald-300/30">
+                  <CinematicIcon name="check-circle" class="size-7" />
+                </span>
+                <p class="text-sm font-black">گزارشت ثبت شد</p>
+                <p class="max-w-xs text-xs leading-6 text-white/55">سیستم به‌صورت خودکار در حال بررسی و رفع مشکل است. اگر لازم باشد تیم روایتو هم می‌بیند. ممنون که کمک کردی!</p>
+                <button type="button" class="mt-1 rounded-xl bg-white/10 px-4 py-2 text-xs font-bold transition hover:bg-white/15" @click="showReport = false">بستن</button>
+              </div>
+
+              <div v-else key="compose" class="grid gap-1.5">
+                <p class="px-1 pb-1 text-xs font-bold text-white/55">چه مشکلی دیدی؟</p>
+                <div v-for="group in reportGroups" :key="group.key" class="grid gap-1.5">
+                  <p class="px-1 pt-1.5 text-[11px] font-black tracking-wide text-white/35">{{ group.label }}</p>
+                  <button
+                    v-for="option in group.options"
+                    :key="option.value"
+                    type="button"
+                    class="revayato-player__option items-start !py-2.5"
+                    :class="reportProblem === option.value && 'is-active'"
+                    @click="reportProblem = option.value"
+                  >
+                    <span class="grid size-9 shrink-0 place-items-center rounded-lg bg-white/8"><CinematicIcon :name="(option.icon as CinematicIconName)" class="size-4.5" /></span>
+                    <span class="min-w-0 flex-1 text-start">
+                      <strong class="block truncate text-[13px]">{{ option.label }}</strong>
+                      <small class="mt-0.5 block leading-4 text-white/40">{{ option.hint }}</small>
+                    </span>
+                    <CinematicIcon v-if="reportProblem === option.value" name="check" class="mt-1 size-4 text-primary-300" />
+                  </button>
+                </div>
+
+                <textarea
+                  v-model="reportDetail"
+                  rows="2"
+                  maxlength="500"
+                  class="mt-1 w-full resize-none rounded-xl bg-white/[.04] px-3 py-2.5 text-[13px] leading-6 text-white outline-none ring-1 ring-white/10 transition placeholder:text-white/30 focus:ring-primary-400/50"
+                  placeholder="توضیح اختیاری… (مثلاً «زیرنویس از دقیقه ۱۰ عقب می‌افتد»)"
+                  aria-label="توضیح مشکل"
+                />
+
+                <button
+                  type="button"
+                  class="mt-1 inline-flex min-h-11 items-center justify-center gap-2 rounded-xl bg-gradient-to-l from-amber-400 to-amber-300 px-4 text-[13px] font-black text-amber-950 transition enabled:hover:brightness-105 disabled:opacity-40"
+                  :disabled="!reportProblem || reportSubmitting"
+                  @click="submitReport"
+                >
+                  <CinematicIcon name="send" class="size-4" />
+                  {{ reportSubmitting ? 'در حال ارسال…' : 'ارسال گزارش' }}
+                </button>
+              </div>
+            </Transition>
           </div>
         </section>
       </div>
@@ -1292,7 +2046,7 @@ onBeforeUnmount(() => {
   background: rgb(255 255 255 / 8%);
   padding-inline: .65rem;
   color: rgb(255 255 255 / 76%);
-  font-size: .65rem;
+  font-size: 0.75rem;
   font-weight: 900;
 }
 
@@ -1331,13 +2085,20 @@ onBeforeUnmount(() => {
 .revayato-player__volume-range::-webkit-slider-thumb { appearance: none; width: .7rem; height: .7rem; margin-top: -.24rem; border-radius: 999px; background: white; }
 .revayato-player__volume-range::-moz-range-thumb { width: .7rem; height: .7rem; border: 0; border-radius: 999px; background: white; }
 
+.revayato-player__setting-range { appearance: none; width: 100%; height: 1.1rem; border: 0; outline: 0; background: transparent; }
+.revayato-player__setting-range::-webkit-slider-runnable-track { height: .28rem; border-radius: 999px; background: rgb(255 255 255 / 22%); }
+.revayato-player__setting-range::-moz-range-track { height: .28rem; border-radius: 999px; background: rgb(255 255 255 / 22%); }
+.revayato-player__setting-range::-webkit-slider-thumb { appearance: none; width: .85rem; height: .85rem; margin-top: -.29rem; border: 2px solid #0a0a0a; border-radius: 999px; background: var(--player-accent); }
+.revayato-player__setting-range::-moz-range-thumb { width: .8rem; height: .8rem; border: 2px solid #0a0a0a; border-radius: 999px; background: var(--player-accent); }
+
 .revayato-player__captions {
-  bottom: 5.75rem;
+  bottom: var(--caption-bottom, 9%);
   max-width: min(58rem, calc(100% - 2rem));
-  font-size: clamp(1rem, 2.1vw, 1.75rem);
+  font-size: calc(clamp(1rem, 2.1vw, 1.75rem) * var(--caption-scale, 1));
   font-weight: 800;
   line-height: 1.85;
   text-shadow: 0 2px 3px #000, 0 0 8px #000;
+  transition: bottom 160ms ease;
 }
 
 .revayato-player__captions span > span {
@@ -1404,7 +2165,7 @@ onBeforeUnmount(() => {
   color: rgb(255 255 255 / 68%);
 }
 
-.revayato-player__tile small { font-size: .58rem; color: rgb(255 255 255 / 35%); }
+.revayato-player__tile small { font-size: 0.75rem; color: rgb(255 255 255 / 35%); }
 .revayato-player__tile.is-active { border-color: rgb(228 255 63 / 28%); background: rgb(228 255 63 / 10%); color: var(--player-accent); }
 .revayato-player__tile:disabled { cursor: not-allowed; opacity: .5; }
 
@@ -1422,7 +2183,7 @@ onBeforeUnmount(() => {
 .player-settings-leave-to { opacity: 0; }
 
 @media (max-width: 639px) {
-  .revayato-player__captions { bottom: 4.8rem; font-size: clamp(.9rem, 4vw, 1.15rem); line-height: 1.75; }
+  .revayato-player__captions { bottom: var(--caption-bottom, 9%); font-size: calc(clamp(.9rem, 4vw, 1.15rem) * var(--caption-scale, 1)); line-height: 1.75; }
   .revayato-player__center-play { display: none; }
   .revayato-player__btn { width: 2.25rem; height: 2.25rem; }
 }

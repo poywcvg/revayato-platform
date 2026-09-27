@@ -1,7 +1,7 @@
-"""Multi-provider download crawl: Film2Media (myf2m) + Dornatv.
+"""Multi-provider download crawl: Film2Media (myf2m) + Dornatv + Kargadan.
 
-Always merges public download links from both sites so qualities / dub / softsub
-coverage is as complete as possible without wiping either source's encodes.
+Always merges download links from every site so qualities / dub / softsub
+coverage is as complete as possible without wiping any source's encodes.
 """
 
 from __future__ import annotations
@@ -15,7 +15,7 @@ from apps.catalog.provider_import.exceptions import ProviderImportError
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_LINK_PROVIDERS = ('myf2m', 'dornatv')
+DEFAULT_LINK_PROVIDERS = ('myf2m', 'dornatv', 'kargadan')
 
 
 def catalog_link_providers() -> list[str]:
@@ -54,6 +54,11 @@ def _crawl_one_movie(slug: str, movie: Movie, *, replace: bool, queue_softsub: b
         return crawl_dornatv_downloads_for_movie(
             movie=movie, replace=replace, queue_softsub_extract=queue_softsub,
         )
+    if slug == 'kargadan':
+        from apps.catalog.provider_import.kargadan_sync import crawl_kargadan_downloads_for_movie
+        return crawl_kargadan_downloads_for_movie(
+            movie=movie, replace=replace, queue_softsub_extract=queue_softsub,
+        )
     raise ProviderImportError(f'Unsupported link provider "{slug}".', code='provider_unsupported')
 
 
@@ -66,6 +71,11 @@ def _crawl_one_series(slug: str, series: Series, *, replace: bool, queue_softsub
     if slug == 'dornatv':
         from apps.catalog.provider_import.dornatv_sync import crawl_dornatv_downloads_for_series
         return crawl_dornatv_downloads_for_series(
+            series=series, replace=replace, queue_softsub_extract=queue_softsub,
+        )
+    if slug == 'kargadan':
+        from apps.catalog.provider_import.kargadan_sync import crawl_kargadan_downloads_for_series
+        return crawl_kargadan_downloads_for_series(
             series=series, replace=replace, queue_softsub_extract=queue_softsub,
         )
     raise ProviderImportError(f'Unsupported link provider "{slug}".', code='provider_unsupported')
@@ -122,7 +132,7 @@ def crawl_catalog_downloads_for_movie(
 
     if not any_ok:
         raise ProviderImportError(
-            'No download links found on myf2m or dornatv.',
+            'No download links found on myf2m, dornatv or kargadan.',
             code='catalog_links_empty',
         )
 
@@ -196,7 +206,7 @@ def crawl_catalog_downloads_for_series(
 
     if not any_ok:
         raise ProviderImportError(
-            'No download links found on myf2m or dornatv.',
+            'No download links found on myf2m, dornatv or kargadan.',
             code='catalog_links_empty',
         )
 

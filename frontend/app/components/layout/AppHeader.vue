@@ -7,23 +7,18 @@ const authStore = useAuthStore()
 const isDesktop = useMediaQuery('(min-width: 1024px)')
 
 const sidebarOpen = ref(false)
-// The drawer is only mounted once the user actually reaches for it, so its gsap
-// entrance never costs a visit that stays on the page it landed on.
+// The drawer is only mounted once the user reaches for it, so its code and CSS
+// never cost a visit that does not open the menu.
 const sidebarEverOpened = ref(false)
 const searchOpen = ref(false)
 const searchRoot = useTemplateRef<HTMLElement>('searchRoot')
+// Transparent over the page at rest; a floating glass capsule once scrolled.
+const { y: scrollY } = useWindowScroll()
+const isScrolled = computed(() => scrollY.value > 8)
 
 const profilePath = computed(() => authStore.isAuthenticated
   ? '/profile'
   : `/auth/login?redirect=${encodeURIComponent(route.fullPath)}`)
-
-const activeBottomItem = computed<'home' | 'movies' | 'series' | 'menu'>(() => {
-  if (sidebarOpen.value) return 'menu'
-  if (route.path === '/' || route.path === '/welcome') return 'home'
-  if (route.path.startsWith('/movies')) return 'movies'
-  if (route.path.startsWith('/series')) return 'series'
-  return 'menu'
-})
 
 watch(isDesktop, (desktop) => {
   if (desktop) sidebarOpen.value = false
@@ -101,7 +96,11 @@ function handleSwipeEnd() {
 
 <template>
   <div class="site-header-root" dir="rtl">
-    <header ref="searchRoot" class="site-header sticky top-0 z-[60] lg:hidden" :class="searchOpen && 'site-header--search-open'">
+    <header
+      ref="searchRoot"
+      class="site-header sticky top-0 z-[60] lg:hidden"
+      :class="{ 'site-header--search-open': searchOpen, 'site-header--scrolled': isScrolled || searchOpen }"
+    >
       <a href="#main-content" class="site-header__skip-link">پرش به محتوای اصلی</a>
 
       <div class="site-header__bar">
@@ -112,23 +111,27 @@ function handleSwipeEnd() {
             type="button"
             class="site-header__search-button"
             :class="searchOpen && 'site-header__search-button--active'"
-            aria-label="جستجو"
+            :aria-label="searchOpen ? 'بستن جستجو' : 'جستجو'"
             :aria-expanded="searchOpen"
             aria-controls="header-search-panel"
             @click="toggleSearch"
           >
-            <CinematicIcon :name="searchOpen ? 'x' : 'search'" class="size-6" />
+            <CinematicIcon :name="searchOpen ? 'x' : 'search'" class="size-[1.15rem]" />
+            <span class="site-header__search-label" aria-hidden="true">جستجو</span>
           </button>
 
-          <NuxtLink
-            :to="profilePath"
+          <button
+            type="button"
             class="site-header__login"
-            :aria-label="authStore.isAuthenticated ? 'رفتن به حساب کاربری' : 'ورود به حساب'"
-            :title="authStore.isAuthenticated ? 'حساب کاربری' : 'ورود و ثبت‌نام'"
-            :aria-current="route.path.startsWith('/profile') ? 'page' : undefined"
+            :class="sidebarOpen && 'site-header__login--active'"
+            aria-label="باز کردن منو"
+            aria-controls="mobile-sidebar"
+            :aria-expanded="sidebarOpen"
+            title="منو"
+            @click="toggleSidebar"
           >
-            <CinematicIcon :name="authStore.isAuthenticated ? 'user' : 'login'" class="size-6" aria-hidden="true" />
-          </NuxtLink>
+            <CinematicIcon :name="sidebarOpen ? 'x' : 'menu'" class="size-[1.3rem]" aria-hidden="true" />
+          </button>
         </div>
       </div>
 
@@ -153,55 +156,11 @@ function handleSwipeEnd() {
 
     <DesktopHeader class="hidden lg:block" />
 
-    <nav class="mobile-bottom-nav" aria-label="ناوبری اصلی موبایل">
-      <NuxtLink
-        to="/"
-        class="mobile-bottom-nav__item"
-        :class="activeBottomItem === 'home' && 'mobile-bottom-nav__item--active'"
-        :aria-current="activeBottomItem === 'home' ? 'page' : undefined"
-      >
-        <CinematicIcon name="home" class="mobile-bottom-nav__icon" :stroke-width="activeBottomItem === 'home' ? 2.25 : 1.8" />
-        <span>خانه</span>
-      </NuxtLink>
-
-      <NuxtLink
-        to="/movies"
-        class="mobile-bottom-nav__item"
-        :class="activeBottomItem === 'movies' && 'mobile-bottom-nav__item--active'"
-        :aria-current="activeBottomItem === 'movies' ? 'page' : undefined"
-      >
-        <CinematicIcon name="movie" class="mobile-bottom-nav__icon" :stroke-width="activeBottomItem === 'movies' ? 2.25 : 1.8" />
-        <span>فیلم‌ها</span>
-      </NuxtLink>
-
-      <NuxtLink
-        to="/series"
-        class="mobile-bottom-nav__item"
-        :class="activeBottomItem === 'series' && 'mobile-bottom-nav__item--active'"
-        :aria-current="activeBottomItem === 'series' ? 'page' : undefined"
-      >
-        <CinematicIcon name="series" class="mobile-bottom-nav__icon" :stroke-width="activeBottomItem === 'series' ? 2.25 : 1.8" />
-        <span>سریال‌ها</span>
-      </NuxtLink>
-
-      <button
-        type="button"
-        class="mobile-bottom-nav__item"
-        :class="activeBottomItem === 'menu' && 'mobile-bottom-nav__item--active'"
-        aria-label="باز کردن منو"
-        aria-controls="mobile-sidebar"
-        :aria-expanded="sidebarOpen"
-        @click="toggleSidebar"
-      >
-        <CinematicIcon :name="sidebarOpen ? 'x' : 'menu'" class="mobile-bottom-nav__icon" :stroke-width="activeBottomItem === 'menu' ? 2.25 : 1.8" />
-        <span>منو</span>
-      </button>
-    </nav>
+    <MobileBottomNavigation :profile-path="profilePath" />
 
     <ClientOnly>
-      <!-- Lazy on purpose: the drawer pulls in gsap (~27 kB gzip). Statically
-           imported here it landed in the entry chunk and every page paid for a
-           menu most visits never open. -->
+      <!-- Lazy on purpose: most visits never open the drawer, so keep its UI
+           and motion chunk out of the initial page payload. -->
       <LazyMobileSidebar
         v-if="!isDesktop && sidebarEverOpened"
         v-model:open="sidebarOpen"
@@ -225,13 +184,15 @@ function handleSwipeEnd() {
 </template>
 
 <style scoped>
+/* Mobile / tablet header (below lg). Same language as the desktop bar:
+   soft glass rails, mint for anything active, every control a pill. */
 .site-header-root {
-  --stream-chrome: #0b0d12;
-  --stream-chrome-elevated: #12151c;
-  --stream-border: rgb(255 255 255 / 8%);
-  --stream-text: #f7f7f8;
-  --stream-muted: #a5a8b0;
-  --stream-active: #e4ad49;
+  --mh-accent: var(--theme-accent-primary, #b0e4cc);
+  --mh-ink: var(--theme-text-primary, #fff);
+  --mh-ink-soft: var(--theme-text-secondary, #c4c4c4);
+  --mh-rail: color-mix(in srgb, var(--mh-ink) 6%, transparent);
+  --mh-rail-line: color-mix(in srgb, var(--mh-ink) 10%, transparent);
+  --mh-tint: color-mix(in srgb, var(--mh-accent) 15%, transparent);
   display: contents;
 }
 
@@ -241,7 +202,7 @@ function handleSwipeEnd() {
   padding-top: env(safe-area-inset-top, 0px);
   border-bottom: 0;
   background: none;
-  color: var(--stream-text);
+  color: var(--mh-ink);
   box-shadow: none;
   -webkit-backdrop-filter: none;
   backdrop-filter: none;
@@ -255,63 +216,117 @@ function handleSwipeEnd() {
   margin-inline: auto;
   align-items: center;
   justify-content: space-between;
-  gap: 1rem;
+  gap: .75rem;
   padding-inline: var(--layout-gutter);
+  border: 1px solid transparent;
+  transition:
+    background-color 280ms ease,
+    border-color 280ms ease,
+    border-radius 280ms cubic-bezier(.22, 1, .36, 1),
+    box-shadow 280ms ease,
+    margin 280ms cubic-bezier(.22, 1, .36, 1),
+    padding 280ms cubic-bezier(.22, 1, .36, 1);
+}
+
+/* Scrolled: the bar lifts into a floating glass capsule. */
+.site-header--scrolled .site-header__bar {
+  width: auto;
+  height: calc(var(--header-height) - .5rem);
+  margin: .35rem var(--layout-gutter) 0;
+  padding-inline: .9rem .35rem;
+  border-color: var(--mh-rail-line);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--theme-bg-soft, #161518) 86%, transparent);
+  box-shadow: 0 .75rem 1.8rem rgb(0 0 0 / 30%);
+  -webkit-backdrop-filter: blur(14px) saturate(1.3);
+  backdrop-filter: blur(14px) saturate(1.3);
 }
 
 .site-header__logo {
-  color: var(--stream-text);
+  color: var(--mh-ink);
 }
 
 .site-header__actions {
   display: flex;
   flex: none;
   align-items: center;
-  gap: .25rem;
+  gap: .4rem;
 }
 
-.site-header__search-button {
-  display: grid;
-  width: var(--touch-target);
-  height: var(--touch-target);
+.site-header__search-button,
+.site-header__login {
+  display: inline-flex;
+  height: 2.6rem;
   flex: none;
-  place-items: center;
-  border: 1px solid rgb(255 255 255 / 6%);
-  border-radius: .7rem;
-  background: rgb(255 255 255 / 3%);
-  color: #fff;
-  box-shadow: inset 0 1px 0 rgb(255 255 255 / 5%);
-  transition: color var(--motion-fast) var(--ease-out), background-color var(--motion-fast) var(--ease-out);
+  align-items: center;
+  justify-content: center;
+  gap: .45rem;
+  border: 0;
+  border-radius: 999px;
+  background: var(--mh-rail);
+  box-shadow: inset 0 0 0 1px var(--mh-rail-line);
+  color: var(--mh-ink-soft);
+  transition:
+    background-color 180ms ease,
+    color 180ms ease,
+    box-shadow 180ms ease,
+    transform 200ms cubic-bezier(.34, 1.56, .64, 1);
   -webkit-tap-highlight-color: transparent;
 }
 
-.site-header__search-button:hover,
-.site-header__search-button:focus-visible,
-.site-header__search-button--active {
-  background: rgb(255 255 255 / 6%);
-  color: #fff;
+/* Search reads as a field, not an icon: a short pill with its label. */
+.site-header__search-button {
+  padding-inline: .85rem 1rem;
+}
+
+.site-header__search-label {
+  font-size: .82rem;
+  font-weight: 600;
 }
 
 .site-header__login {
-  display: grid;
-  width: var(--touch-target);
-  height: var(--touch-target);
-  flex: none;
-  place-items: center;
-  border: 1px solid rgb(255 255 255 / 6%);
-  border-radius: .7rem;
-  background: rgb(255 255 255 / 3%);
-  color: #fff;
-  box-shadow: inset 0 1px 0 rgb(255 255 255 / 5%);
-  transition: color var(--motion-fast) var(--ease-out), background-color var(--motion-fast) var(--ease-out);
-  -webkit-tap-highlight-color: transparent;
+  width: 2.6rem;
 }
 
-.site-header__login:hover,
-.site-header__login:focus-visible,
-.site-header__login[aria-current='page'] {
-  background: rgb(255 255 255 / 6%);
-  color: #fff;
+.site-header__search-button:active,
+.site-header__login:active {
+  transform: scale(.94);
+}
+
+.site-header__search-button:focus-visible,
+.site-header__login:focus-visible {
+  outline: 2px solid var(--mh-accent);
+  outline-offset: 2px;
+}
+
+.site-header__search-button--active,
+.site-header__login--active {
+  background: var(--mh-tint);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--mh-accent) 32%, transparent);
+  color: var(--mh-accent);
+}
+
+/* Open search collapses the trigger to a round close button. */
+.site-header__search-button--active {
+  width: 2.6rem;
+  padding: 0;
+}
+
+.site-header__search-button--active .site-header__search-label {
+  display: none;
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .site-header__search-button:hover,
+  .site-header__login:hover {
+    background: var(--mh-tint);
+    color: var(--mh-accent);
+  }
+}
+
+@media (max-width: 359px) {
+  .site-header__search-button { width: 2.6rem; padding: 0; }
+  .site-header__search-label { display: none; }
 }
 
 .site-header__skip-link {
@@ -320,10 +335,10 @@ function handleSwipeEnd() {
   top: .35rem;
   z-index: 90;
   transform: translateY(-5rem);
-  border-radius: .5rem;
-  background: var(--stream-active);
-  padding: .45rem .75rem;
-  color: #181006;
+  border-radius: 999px;
+  background: var(--mh-accent);
+  padding: .45rem .9rem;
+  color: var(--theme-on-accent, #07110d);
   font-size: .75rem;
   font-weight: 800;
   transition: transform var(--motion-fast) var(--ease-out);
@@ -333,102 +348,55 @@ function handleSwipeEnd() {
   transform: translateY(0);
 }
 
+/* The search sheet: just the search pill, floating under the bar. Its result
+   list is the HeaderSearch panel itself, so there is one surface, not two. */
 .site-header__search-panel {
   position: absolute;
   inset-inline: var(--layout-gutter);
-  top: calc(100% + .5rem);
+  top: calc(100% + .45rem);
   z-index: 75;
-  width: auto;
-  max-width: 30rem;
+  max-width: 34rem;
   margin-inline: auto;
-  border: 1px solid var(--stream-border);
-  border-radius: 1rem;
-  padding: .65rem;
-  background: color-mix(in srgb, var(--stream-chrome-elevated) 97%, transparent);
-  box-shadow: 0 20px 48px rgb(0 0 0 / 42%);
+  padding: .4rem;
+  border: 1px solid var(--mh-rail-line);
+  border-radius: 1.9rem;
+  background: color-mix(in srgb, var(--theme-bg-elevated, #141414) 96%, transparent);
+  box-shadow: 0 1.25rem 3rem rgb(0 0 0 / 42%);
+  -webkit-backdrop-filter: blur(16px) saturate(1.3);
+  backdrop-filter: blur(16px) saturate(1.3);
 }
 
-.site-header__search-panel :deep(.header-search) {
-  height: 2.75rem;
-  border-radius: .8rem;
-  background: rgb(255 255 255 / 5%);
-}
-
-.site-header__search-panel :deep(.header-search--open) {
-  border-radius: .8rem .8rem .25rem .25rem;
-}
-
-.site-header__search-panel :deep(.header-search__kbd) {
-  display: none;
-}
-
-.mobile-bottom-nav {
-  position: fixed;
-  inset-inline: 0;
-  bottom: 0;
-  z-index: 70;
-  display: grid;
-  min-height: calc(var(--mobile-bottom-nav-height) + env(safe-area-inset-bottom, 0px));
-  grid-template-columns: repeat(4, minmax(0, 1fr));
-  padding: .15rem max(.35rem, env(safe-area-inset-right, 0px)) env(safe-area-inset-bottom, 0px) max(.35rem, env(safe-area-inset-left, 0px));
-  border-top: 1px solid var(--stream-border);
-  background: var(--stream-chrome);
-  box-shadow: 0 -10px 28px rgb(0 0 0 / 24%);
-}
-
-.mobile-bottom-nav__item {
-  display: flex;
-  min-width: 0;
-  min-height: 3rem;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  gap: .18rem;
-  border-radius: .65rem;
-  color: var(--stream-muted);
-  font-size: .65rem;
-  font-weight: 650;
-  line-height: 1.15;
-  transition: color var(--motion-fast) var(--ease-out);
-  -webkit-tap-highlight-color: transparent;
-}
-
-.mobile-bottom-nav__icon {
-  width: 1.25rem;
-  height: 1.25rem;
-}
-
-.mobile-bottom-nav__item--active {
-  color: var(--stream-active);
-}
-
-.mobile-bottom-nav__item:focus-visible {
-  outline: 2px solid color-mix(in srgb, var(--stream-active) 72%, transparent);
-  outline-offset: -2px;
+.site-header__search-panel :deep(.header-search__panel) {
+  inset-inline: -.4rem;
+  top: calc(100% + .8rem);
 }
 
 .search-drop-enter-active,
 .search-drop-leave-active {
-  transition: opacity var(--motion-fast) var(--ease-out), transform var(--motion-base) var(--ease-emphasized);
+  transition: opacity 160ms ease, transform 260ms cubic-bezier(.22, 1, .36, 1);
+  transform-origin: top center;
 }
 
 .search-drop-enter-from,
 .search-drop-leave-to {
   opacity: 0;
-  transform: translateY(-.35rem) scale(.985);
+  transform: translateY(-.4rem) scale(.97);
 }
 
-@media (min-width: 1024px) {
-  .mobile-bottom-nav {
-    display: none;
-  }
+:global(html[data-theme="light"]) .site-header--scrolled .site-header__bar {
+  background: color-mix(in srgb, var(--theme-bg-surface, #fff) 88%, transparent);
+  box-shadow: 0 .75rem 1.8rem rgb(23 50 38 / 12%);
+}
 
+:global(html[data-theme="light"]) .site-header__search-panel {
+  background: var(--theme-bg-surface, #fff);
+  box-shadow: var(--theme-shadow-float, 0 18px 40px rgb(23 50 38 / 14%));
 }
 
 @media (prefers-reduced-motion: reduce) {
+  .site-header__bar,
   .site-header__search-button,
   .site-header__login,
-  .mobile-bottom-nav__item,
   .search-drop-enter-active,
   .search-drop-leave-active {
     transition: none;

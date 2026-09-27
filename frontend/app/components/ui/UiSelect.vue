@@ -181,7 +181,7 @@ watch(() => props.modelValue, () => {
           <span class="ui-select__option-mark"><CinematicIcon v-if="option.value === modelValue" name="check" class="size-3.5" /></span>
           <span class="min-w-0 flex-1 text-right">
             <strong class="block truncate text-xs">{{ option.label }}</strong>
-            <span v-if="option.description" class="mt-0.5 block truncate text-[10px] text-muted">{{ option.description }}</span>
+            <span v-if="option.description" class="mt-0.5 block truncate text-[11px] text-muted">{{ option.description }}</span>
           </span>
         </button>
       </div>

@@ -215,7 +215,7 @@ onBeforeUnmount(() => {
         <MovieCard v-for="(item, index) in items" :key="`${item.type}:${item.id}`" data-carousel-card role="group" aria-roledescription="slide" :aria-label="`${index + 1} از ${items.length}: ${englishCatalogTitle(item)}`" :item="item" :dark="dark" :reason="showReasons ? item.recommendation_reason : ''" class="cinema-rail-card" />
       </div>
       <div v-if="hasOverflow" class="mt-1.5 hidden items-center justify-between gap-4 px-1 sm:mt-2 sm:flex">
-        <span class="font-latin text-[10px] font-bold tabular-nums text-muted">{{ currentPage + 1 }} / {{ totalPages }}</span>
+        <span class="font-latin text-[11px] font-bold tabular-nums text-muted">{{ currentPage + 1 }} / {{ totalPages }}</span>
         <div class="flex max-w-44 flex-1 gap-1" aria-label="صفحه‌های اسلایدر">
           <button v-for="page in totalPages" :key="page" type="button" class="group flex min-h-6 flex-1 items-center rounded-full focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500" :aria-label="`رفتن به صفحه ${page} از ${totalPages}`" :aria-current="page - 1 === currentPage ? 'true' : undefined" @click="scrollToIndex((page - 1) * visibleCount)"><span class="h-1.5 w-full rounded-full transition-colors" :class="page - 1 === currentPage ? 'bg-primary-500' : 'bg-line group-hover:bg-disabled'" /></button>
         </div>

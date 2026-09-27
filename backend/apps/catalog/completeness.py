@@ -28,6 +28,8 @@ PUBLISH_BLOCKING_GAPS = frozenset({
     'missing_genres',
     'missing_poster',
     'missing_backdrop',
+    # An IMDb-facing score is mandatory: every published card must carry one.
+    'missing_imdb_rating',
 })
 
 _CAST_RELATIONS = ('movie_actors', 'series_actors')
@@ -100,8 +102,15 @@ def metadata_gaps(item) -> list[str]:
     if not year:
         gaps.append('missing_release_year')
 
-    if getattr(item, 'imdb_rating', None) is None and getattr(item, 'rating_average', None) is None:
+    imdb_rating = getattr(item, 'imdb_rating', None)
+    rating_average = getattr(item, 'rating_average', None)
+    if imdb_rating is None and rating_average is None:
         gaps.append('missing_rating')
+    # Every published title must carry a real IMDb-facing score, even when a
+    # TMDB average is present. A null or zero value is treated as unrated. This
+    # is enforced as a publication blocker.
+    if imdb_rating is None or float(imdb_rating) <= 0:
+        gaps.append('missing_imdb_rating')
 
     if not _has_poster(item):
         gaps.append('missing_poster')

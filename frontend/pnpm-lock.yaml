@@ -11,9 +11,6 @@ importers:
       '@fontsource/plus-jakarta-sans':
         specifier: ^5.3.0
         version: 5.3.0
-      '@fontsource/vazirmatn':
-        specifier: ^5.3.0
-        version: 5.3.0
       '@iconify/vue':
         specifier: ^5.0.1
         version: 5.0.1(vue@3.5.39(typescript@5.9.3))
@@ -708,9 +705,6 @@ packages:
 
   '@fontsource/plus-jakarta-sans@5.3.0':
     resolution: {integrity: sha512-9WRw3G74Ve4cyPApAZSXLPY5DiLOZXDn7Q7dIBjFBpA0Pj56ljDItEdy2UUajjJxRuTg2HkMLO5C3K2nAQORWg==}
-
-  '@fontsource/vazirmatn@5.3.0':
-    resolution: {integrity: sha512-XC/2yN2r5gwhFT3klSuWaqncODX2DOfRYfNmbyzgtWYxHxMC+tcoaX+tgggrm6hSkEgpR1TuSDEf1PiI91G7qg==}
 
   '@humanfs/core@0.19.2':
     resolution: {integrity: sha512-UhXNm+CFMWcbChXywFwkmhqjs3PRCmcSa/hfBgLIb7oQ5HNb1wS0icWsGtSAUNgefHeI+eBrA8I1fxmbHsGdvA==}
@@ -5512,8 +5506,6 @@ snapshots:
     optional: true
 
   '@fontsource/plus-jakarta-sans@5.3.0': {}
-
-  '@fontsource/vazirmatn@5.3.0': {}
 
   '@humanfs/core@0.19.2':
     dependencies:

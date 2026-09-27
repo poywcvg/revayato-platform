@@ -50,6 +50,7 @@ android-app/
 **/debug.keystore
 **/*.keystore
 **/*.jks
+**/keystore.properties
 .nuxt/
 **/.nuxt/
 .output/

@@ -26,6 +26,20 @@ class Rating(models.Model):
     is_spoiler = models.BooleanField(default=False)
     is_hidden = models.BooleanField(default=False, db_index=True)
 
+    # Admin ↔ user interaction: an official public reply the team can leave under
+    # a user's review ("پاسخ تیم روایتو"), plus an editor's-pick flag that lifts a
+    # standout review to the top of the list with a badge.
+    admin_reply = models.TextField(blank=True)
+    admin_reply_at = models.DateTimeField(null=True, blank=True)
+    admin_reply_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True, blank=True,
+        related_name='engagement_review_replies',
+    )
+    is_featured = models.BooleanField(default=False, db_index=True)
+    featured_at = models.DateTimeField(null=True, blank=True)
+
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -127,6 +141,10 @@ class UserActivityEvent(models.Model):
         ('share', 'Share'),
         ('comment', 'Comment'),
         ('download_click', 'Download Click'),
+        # Installation funnel (shown only after a user opts in to analytics).
+        ('app_install_prompt', 'App Install Prompt'),
+        ('app_install_click', 'App Install Click'),
+        ('app_install_dismiss', 'App Install Dismiss'),
         ('trailer_watch', 'Trailer Watch'),
     ]
 
@@ -255,3 +273,81 @@ class SupportMessage(models.Model):
     def __str__(self):
         who = 'staff' if self.is_staff_reply else 'user'
         return f'{self.ticket.tracking_code} [{who}]'
+
+
+def _new_share_token():
+    """Short, URL-safe, unguessable token for unlisted share links."""
+    import secrets
+    alphabet = 'abcdefghijkmnpqrstuvwxyz23456789'  # no look-alike chars
+    return ''.join(secrets.choice(alphabet) for _ in range(10))
+
+
+class UserCollection(models.Model):
+    """A user-curated list that can mix movies and series ("کالکشن")."""
+
+    class Visibility(models.TextChoices):
+        PUBLIC = 'public', 'عمومی'        # listed on the owner's profile, anyone can open
+        UNLISTED = 'unlisted', 'با لینک'  # not listed, but openable via share link/token
+        PRIVATE = 'private', 'خصوصی'      # only the owner
+
+    owner = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name='collections',
+    )
+    title = models.CharField(max_length=120)
+    description = models.TextField(blank=True)
+    slug = models.SlugField(max_length=140, allow_unicode=True)
+    share_token = models.CharField(
+        max_length=16, unique=True, db_index=True, default=_new_share_token, editable=False,
+    )
+    visibility = models.CharField(
+        max_length=10, choices=Visibility.choices, default=Visibility.PUBLIC, db_index=True,
+    )
+    # Optional accent so the owner can style the cover; falls back to a hash of the id.
+    accent = models.CharField(max_length=7, blank=True)  # e.g. '#7c5cff'
+
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ['-updated_at']
+        constraints = [
+            models.UniqueConstraint(fields=['owner', 'slug'], name='uq_collection_owner_slug'),
+        ]
+        indexes = [
+            models.Index(fields=['owner', 'visibility', '-updated_at']),
+        ]
+
+    def __str__(self):
+        return f'{self.owner} · {self.title}'
+
+    @property
+    def is_public(self):
+        return self.visibility == self.Visibility.PUBLIC
+
+
+class UserCollectionItem(models.Model):
+    collection = models.ForeignKey(
+        UserCollection, on_delete=models.CASCADE, related_name='items',
+    )
+    content_type = models.CharField(max_length=20, choices=RATEABLE_CONTENT_TYPES)
+    object_id = models.PositiveBigIntegerField(db_index=True)
+    note = models.CharField(max_length=280, blank=True)
+    position = models.PositiveIntegerField(default=0)
+    added_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ['position', '-added_at']
+        constraints = [
+            models.UniqueConstraint(
+                fields=['collection', 'content_type', 'object_id'],
+                name='uq_collection_item_content',
+            ),
+        ]
+        indexes = [
+            models.Index(fields=['collection', 'position']),
+        ]
+
+    def __str__(self):
+        return f'{self.collection_id} → {self.content_type}#{self.object_id}'

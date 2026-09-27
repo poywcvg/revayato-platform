@@ -6,6 +6,7 @@ Does not bypass CAPTCHA/Cloudflare challenges when present.
 
 from __future__ import annotations
 
+import html
 import re
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -148,6 +149,15 @@ def enrich_download_link_metadata(
     }
 
 
+# A link to IMDb's title page, not any bare tt-number. The current page layout
+# links none (only an IMDb icon beside the score), so this is the stronger signal
+# when present and the heading below is the one every page carries.
+IMDB_TITLE_LINK_RE = re.compile(r'imdb\.com/title/(tt\d{7,10})', re.I)
+# ``<h1 class="entry-title ...">Masters of the Universe 2026</h1>`` — the page's
+# own statement of which title and year it is.
+PAGE_HEADING_RE = re.compile(r'<h1[^>]*class="[^"]*entry-title[^"]*"[^>]*>(.*?)</h1>', re.I | re.S)
+
+
 @dataclass
 class ProviderTitleCandidate:
     provider_item_id: str
@@ -177,7 +187,7 @@ class MyF2MConnector:
 
     def __init__(self, provider_source=None):
         self.provider = provider_source
-        self.base_url = getattr(settings, 'MYF2M_BASE_URL', 'https://www.myf2m.info').rstrip('/')
+        self.base_url = getattr(settings, 'MYF2M_BASE_URL', 'https://www.myf2ms.top').rstrip('/')
         self.timeout = int(getattr(settings, 'MYF2M_TIMEOUT_SECONDS', 30))
         self.rate_limit = max(1, int(getattr(settings, 'MYF2M_RATE_LIMIT_PER_MINUTE', 30)))
         self.verify_ssl = bool(getattr(settings, 'MYF2M_VERIFY_SSL', True))
@@ -651,6 +661,14 @@ class MyF2MConnector:
                 code='myf2m_page_required',
             )
         parsed = parse_download_links(response.text or '', page_path=final_path)
+        # Which title the page says it is. The crawl only ever found the page by
+        # title + year, so this is what lets the caller check it against the
+        # IMDb id it already holds (see catalog_lookup._crawl_with_healed_path).
+        parsed['imdb_ids'] = sorted({m.lower() for m in IMDB_TITLE_LINK_RE.findall(response.text or '')})
+        heading = PAGE_HEADING_RE.search(response.text or '')
+        parsed['page_heading'] = (
+            html.unescape(re.sub(r'<[^>]+>|\s+', ' ', heading.group(1))).strip() if heading else ''
+        )
         parsed['page_path'] = final_path
         parsed['page_url'] = urljoin(self.base_url + '/', final_path.lstrip('/'))
         return parsed
