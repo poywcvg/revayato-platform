@@ -346,3 +346,86 @@ class CatalogYearImportRequestTests(SimpleTestCase):
 
         with self.assertRaises(ValidationError):
             self._validated({'providers': ['pirate-site']})
+
+
+class Myf2MPageCacheTests(SimpleTestCase):
+    """The myf2m detail-page cache: second GET served without network.
+
+    Mirrors the dornatv page-cache contract — listings/search always stay
+    live, only exact detail pages are cached, and a cache outage never
+    breaks the crawl.
+    """
+
+    DETAIL_HTML = (
+        '<h1 class="entry-title">Some Film 2024</h1>'
+        '<div class="download-list">'
+        '<a href="https://cdn.example.com/Some.2024.1080p.Dubbed.mp4">1080p</a>'
+        '</div>'
+    )
+
+    class _LiveResp:
+        def __init__(self, text, url):
+            self.status_code = 200
+            self.text = text
+            self.url = url
+
+    def test_second_detail_get_is_served_from_cache(self):
+        from django.core.cache import cache
+
+        from apps.catalog.provider_import.providers.myf2m import MyF2MConnector
+
+        calls = {'n': 0}
+        html = self.DETAIL_HTML
+
+        def fake_urllib(_self, method, path):
+            calls['n'] += 1
+            return self._LiveResp(html, f'https://www.myf2ms.top{path}')
+
+        with override_settings(
+            MYF2M_PAGE_CACHE_TTL_SECONDS=300,
+            MYF2M_RATE_LIMIT_PER_MINUTE=6000,
+        ):
+            cache.clear()
+            conn = MyF2MConnector()
+            try:
+                with patch.object(MyF2MConnector, '_request_urllib', fake_urllib):
+                    first = conn._request('GET', '/12345/some-film/')
+                    self.assertEqual(first.status_code, 200)
+                    self.assertIn('download-list', first.text)
+                    self.assertEqual(calls['n'], 1)
+                    second = conn._request('GET', '/12345/some-film/')
+                    self.assertEqual(calls['n'], 1)
+                    self.assertEqual(second.text, first.text)
+                    self.assertEqual(second.status_code, 200)
+                    # Listings and search are never cached.
+                    conn._request('GET', '/movies/')
+                    conn._request('GET', '/?s=some+film')
+                    self.assertEqual(calls['n'], 3)
+            finally:
+                cache.clear()
+
+    def test_markerless_page_is_never_cached(self):
+        """A truncated body without download markers must not poison later lanes."""
+        from django.core.cache import cache
+
+        from apps.catalog.provider_import.providers.myf2m import MyF2MConnector
+
+        calls = {'n': 0}
+
+        def fake_urllib(_self, method, path):
+            calls['n'] += 1
+            return self._LiveResp('<html><body>half a page…', f'https://www.myf2ms.top{path}')
+
+        with override_settings(
+            MYF2M_PAGE_CACHE_TTL_SECONDS=300,
+            MYF2M_RATE_LIMIT_PER_MINUTE=6000,
+        ):
+            cache.clear()
+            conn = MyF2MConnector()
+            try:
+                with patch.object(MyF2MConnector, '_request_urllib', fake_urllib):
+                    conn._request('GET', '/99999/truncated-film/')
+                    conn._request('GET', '/99999/truncated-film/')
+                    self.assertEqual(calls['n'], 2)
+            finally:
+                cache.clear()

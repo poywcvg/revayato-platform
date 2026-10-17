@@ -1,4 +1,5 @@
 import math
+import re
 import time
 from collections import deque
 
@@ -31,6 +32,15 @@ class WatchPartyConsumer(AsyncJsonWebsocketConsumer):
     # Ephemeral "float over the video" reactions. Kept to a fixed emoji set so a
     # client can't smuggle arbitrary text through this un-persisted channel.
     ALLOWED_REACTIONS = frozenset({'❤️', '😂', '😮', '😢', '👏', '🔥', '🎉', '👍'})
+
+    # A gateway session URL (/api/stream/<sid>/index.m3u8) is a per-viewer HLS
+    # rewrap, not a shared catalog mirror. It must never be rejected as an
+    # "invalid stream" nor broadcast to guests (whose own session differs).
+    _GATEWAY_STREAM_RE = re.compile(r'/api/stream/[A-Za-z0-9]+/(index\.m3u8|seg\d+\.m4s|init\.mp4)', re.IGNORECASE)
+
+    @staticmethod
+    def _is_gateway_stream_url(url: str) -> bool:
+        return bool(WatchPartyConsumer._GATEWAY_STREAM_RE.search(str(url or '')))
 
     async def connect(self):
         self.user = self.scope.get('user')
@@ -106,6 +116,9 @@ class WatchPartyConsumer(AsyncJsonWebsocketConsumer):
         if event_type in {'playback.play', 'playback.pause', 'playback.seek', 'playback.sync'}:
             await self._handle_playback(event_type, content)
             return
+        if event_type == 'playback.failed':
+            await self._handle_playback_failed(content)
+            return
         if event_type == 'playback.sync.request':
             playback = await self._current_playback()
             if playback:
@@ -170,6 +183,50 @@ class WatchPartyConsumer(AsyncJsonWebsocketConsumer):
             'type': 'watchparty.event',
             'payload': {'type': event_type, 'playback_state': playback},
             'sender_channel': self.channel_name,
+        })
+
+    async def _handle_playback_failed(self, content):
+        """A member's player just failed — tell the room, heal via REST.
+
+        The single write path stays ``POST /api/catalog/playback-failure/``
+        (dedupe + remediation + ticket). The socket only fans the failure out
+        so the host's client can file that REST call once for everybody, and
+        every member sees a Persian notice immediately instead of a black
+        frame. Any member may report; rate-limited like playback.
+        """
+        if not self._allow('playback', *self.PLAYBACK_LIMIT):
+            return
+        try:
+            error_code = str(content.get('error_code') or content.get('code') or '')[:32]
+        except Exception:  # noqa: BLE001
+            error_code = ''
+        try:
+            source_url = str(content.get('source_url') or content.get('src') or '')[:500]
+        except Exception:  # noqa: BLE001
+            source_url = ''
+        try:
+            played = float(content.get('played_seconds') or content.get('position_seconds') or 0)
+        except (TypeError, ValueError):
+            played = 0
+        member = getattr(self, '_user_payload', None) or {'id': getattr(self.user, 'pk', 0)}
+        await self.channel_layer.group_send(self.group_name, {
+            'type': 'watchparty.event',
+            'payload': {
+                'type': 'playback.member_failed',
+                'error_code': error_code,
+                'source_url': source_url,
+                'played_seconds': played,
+                'member': member,
+                # The host client files POST /api/catalog/playback-failure/
+                # with room_code; the server then broadcasts playback.fix.
+                'message_fa': 'پخش یکی از اعضا قطع شد؛ داریم نسخه سالم را آماده می‌کنیم…',
+            },
+            'sender_channel': self.channel_name,
+        })
+        # Ack to the reporter so their own player shows progress, not silence.
+        await self.send_json({
+            'type': 'playback.failure_ack',
+            'message_fa': 'خطای پخش ثبت شد؛ داریم نسخه سالم را آماده می‌کنیم…',
         })
 
     async def _handle_latency_ping(self, content):
@@ -362,6 +419,12 @@ class WatchPartyConsumer(AsyncJsonWebsocketConsumer):
 
             allowed = allowed_stream_urls(room)
             stream_url = None
+            if requested_stream and self._is_gateway_stream_url(requested_stream):
+                # Per-viewer gateway session: sync position/timing only, never
+                # persist or fan out the private session URL. Guests keep their
+                # own direct mirror (or open their own gateway) via
+                # syncPlayerSource's gateway guard.
+                requested_stream = ''
             if requested_stream:
                 if requested_stream not in allowed:
                     return None, ('invalid_stream', 'Stream URL is not allowed for this room.')

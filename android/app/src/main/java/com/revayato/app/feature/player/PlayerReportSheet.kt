@@ -68,11 +68,11 @@ private data class ReportProblemOption(
 )
 
 /**
- * The structured «گزارش خطا» sheet reached from inside the player. Unlike the
- * free-text detail-screen report, the viewer picks a concrete problem type
- * (subtitle / wrong film / wrong episode / playback / audio / other) so the
- * backend auto-remediation engine can dispatch the exact fix. `wrong_episode`
- * only appears for series ([isSeries]).
+ * The structured «گزارش خطا» sheet reached from inside the player. Mirrors the
+ * server catalogue in `apps/catalog/report_catalog.py` (served from
+ * `GET /api/catalog/report-issue/options/`) so the viewer picks the exact symptom
+ * the auto-remediation engine dispatches on — the same 12 buttons the web player
+ * shows. `wrong_episode` only appears for series ([isSeries]).
  *
  * Submission is handled by the ViewModel: [submitting] drives the spinner,
  * [done] + [message] show the confirmation state, and a failed send surfaces
@@ -90,14 +90,20 @@ fun PlayerReportSheet(
 ) {
     val options = remember(isSeries) {
         buildList {
-            add(ReportProblemOption("subtitle", "مشکل زیرنویس", "نبود، ناهماهنگی یا خرابی زیرنویس", Icons.Rounded.ClosedCaption))
+            add(ReportProblemOption("playback", "اصلاً پخش نمی‌شود", "ویدیو باز نمی‌شود یا خطا می‌دهد", Icons.Rounded.ErrorOutline))
+            add(ReportProblemOption("buffering", "مدام قطع و وصل می‌شود", "پخش شروع می‌شود ولی مدام می‌ایستد", Icons.AutoMirrored.Rounded.PlaylistPlay))
+            add(ReportProblemOption("audio_silent", "تصویر هست، صدا نیست", "فیلم پخش می‌شود ولی هیچ صدایی ندارد", Icons.Rounded.GraphicEq))
+            add(ReportProblemOption("audio_desync", "صدا با تصویر هماهنگ نیست", "صدا از تصویر جلو یا عقب است", Icons.Rounded.GraphicEq))
+            add(ReportProblemOption("subtitle_missing", "زیرنویس ندارد", "هیچ زیرنویس فارسی‌ای در دسترس نیست", Icons.Rounded.ClosedCaption))
+            add(ReportProblemOption("subtitle_sync", "زیرنویس عقب یا جلو است", "متن با گفت‌وگو هم‌زمان نیست", Icons.Rounded.ClosedCaption))
+            add(ReportProblemOption("subtitle_garbled", "زیرنویس خراب یا نامفهوم است", "حروف به‌هم‌ریخته‌اند یا متن بی‌ربط است", Icons.Rounded.ClosedCaption))
             add(ReportProblemOption("wrong_title", "فیلم با عنوان فرق دارد", "محتوای پخش‌شده با اسم صفحه یکی نیست", Icons.Rounded.Movie))
             if (isSeries) {
-                add(ReportProblemOption("wrong_episode", "قسمت اشتباه است", "این قسمت مربوط به شمارهٔ دیگری است", Icons.AutoMirrored.Rounded.PlaylistPlay))
+                add(ReportProblemOption("wrong_episode", "قسمت اشتباه است", "این ویدیو مربوط به قسمت دیگری است", Icons.AutoMirrored.Rounded.PlaylistPlay))
             }
-            add(ReportProblemOption("playback", "پخش نمی‌شود", "ویدیو باز نمی‌شود یا قطع می‌شود", Icons.Rounded.ErrorOutline))
-            add(ReportProblemOption("audio", "مشکل صدا یا دوبله", "صدا نیست، ناهماهنگ یا دوبلهٔ اشتباه", Icons.Rounded.GraphicEq))
-            add(ReportProblemOption("other", "مورد دیگر", "مشکلی که در فهرست نیست", Icons.AutoMirrored.Rounded.HelpOutline))
+            add(ReportProblemOption("quality", "کیفیت تصویر خیلی پایین است", "تصویر تار است یا با کیفیت انتخابی نمی‌خواند", Icons.Rounded.ErrorOutline))
+            add(ReportProblemOption("download_dead", "لینک دانلود کار نمی‌کند", "دانلود شروع نمی‌شود یا نیمه‌کاره می‌ماند", Icons.AutoMirrored.Rounded.HelpOutline))
+            add(ReportProblemOption("other", "مورد دیگر", "مشکلی که در این فهرست نیست", Icons.AutoMirrored.Rounded.HelpOutline))
         }
     }
 
@@ -156,7 +162,7 @@ fun PlayerReportSheet(
                         modifier = Modifier.size(56.dp).clip(CircleShape).background(Color(0x2234D399)),
                         contentAlignment = Alignment.Center,
                     ) {
-                        Icon(Icons.Rounded.CheckCircle, contentDescription = null, tint = Color(0xFF34D399), modifier = Modifier.size(30.dp))
+                        Icon(Icons.Rounded.CheckCircle, contentDescription = null, tint = Color(0xFFE8A04E), modifier = Modifier.size(30.dp))
                     }
                     Text(
                         message ?: "گزارشت ثبت شد.",

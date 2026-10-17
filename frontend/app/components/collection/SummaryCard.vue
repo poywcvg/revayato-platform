@@ -45,7 +45,7 @@ const countLabel = computed(() => `${props.collection.item_count.toLocaleString(
 .coll-card:focus-visible {
   border-color: color-mix(in srgb, var(--coll-accent, var(--theme-accent-primary)) 55%, transparent);
   transform: translateY(-2px);
-  box-shadow: 0 18px 40px rgb(0 0 0 / 22%);
+  box-shadow: none;
 }
 
 .coll-card__cover {
@@ -72,7 +72,6 @@ const countLabel = computed(() => `${props.collection.item_count.toLocaleString(
   color: #fff;
   font-size: 0.75rem;
   font-weight: 800;
-  backdrop-filter: blur(6px);
 }
 
 .coll-card__body { padding: 0.75rem 0.85rem 0.85rem; }

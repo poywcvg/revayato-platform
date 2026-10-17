@@ -53,7 +53,8 @@ type Draft = Pick<AdminMovie,
   | 'release_date' | 'release_year' | 'duration_minutes' | 'catalog_type'
   | 'publication_status' | 'age_rating' | 'content_format' | 'language'
   | 'imdb_id' | 'tmdb_id' | 'poster_external_url' | 'backdrop_external_url'
-  | 'trailer_external_url' | 'is_featured' | 'is_recommended' | 'is_dubbed'
+  | 'trailer_external_url' | 'is_featured' | 'is_recommended' | 'featured_order'
+  | 'slider_platform' | 'is_dubbed'
   | 'has_subtitle' | 'meta_title' | 'meta_description'
 >
 
@@ -62,7 +63,8 @@ const FIELDS: (keyof Draft)[] = [
   'release_date', 'release_year', 'duration_minutes', 'catalog_type',
   'publication_status', 'age_rating', 'content_format', 'language',
   'imdb_id', 'tmdb_id', 'poster_external_url', 'backdrop_external_url',
-  'trailer_external_url', 'is_featured', 'is_recommended', 'is_dubbed',
+  'trailer_external_url', 'is_featured', 'is_recommended', 'featured_order',
+  'slider_platform', 'is_dubbed',
   'has_subtitle', 'meta_title', 'meta_description',
 ]
 
@@ -74,13 +76,22 @@ function draftFrom(movie: AdminMovie | null | undefined): Draft {
 const draft = ref<Draft>(draftFrom(data.value))
 watch(data, movie => { draft.value = draftFrom(movie) }, { immediate: true })
 
+/** Numbers and dates clear to null; a cleared text field must stay '' (the API rejects null there). */
+const NULLABLE = new Set<string>(['release_date', 'release_year', 'duration_minutes', 'tmdb_id', 'imdb_id'])
+/** Numeric slider order clears to 0 (first), never to an empty string the API would reject. */
+const NUMERIC_ZERO = new Set<string>(['featured_order'])
+
 /** Only what actually changed. See the note on manual overrides above. */
 const changed = computed(() => {
   const server = draftFrom(data.value)
   const payload: Record<string, unknown> = {}
   for (const key of FIELDS) {
     const next = draft.value[key]
-    if (String(next ?? '') !== String(server[key] ?? '')) payload[key] = next === '' ? null : next
+    if (String(next ?? '') !== String(server[key] ?? '')) {
+      if (next === '' && NULLABLE.has(key)) payload[key] = null
+      else if (NUMERIC_ZERO.has(key)) payload[key] = Number(next) || 0
+      else payload[key] = next
+    }
   }
   return payload
 })
@@ -91,16 +102,12 @@ async function save() {
   if (!dirty.value) return
   saving.value = true
   try {
-    await api(`/admin/movies/${movieId.value}/`, { method: 'PATCH', body: changed.value })
+    await api(`/admin/movies/${movieId.value}/`, { method: 'PATCH', body: changed.value, timeout: 30_000 })
     notify.success('ذخیره شد', 'تغییرات اعمال شد')
     await refresh()
   }
   catch (err) {
-    const detail = (err as { data?: Record<string, string[] | string> })?.data
-    const first = detail && typeof detail === 'object'
-      ? Object.entries(detail).map(([k, v]) => `${k}: ${Array.isArray(v) ? v[0] : v}`)[0]
-      : ''
-    notify.error('ذخیره نشد', first || 'اعتبارسنجی ناموفق بود')
+    notify.error('ذخیره نشد', adminErrorMessage(err, 'اعتبارسنجی ناموفق بود'))
   }
   finally { saving.value = false }
 }
@@ -115,11 +122,12 @@ const syncing = ref(false)
 async function syncFromTmdb() {
   syncing.value = true
   try {
-    await api(`/admin/movies/${movieId.value}/sync-tmdb/`, { method: 'POST' })
+    // TMDB detail + Persian translation takes 4–10s; the shared 10s ceiling aborted it.
+    await api(`/admin/movies/${movieId.value}/sync-tmdb/`, { method: 'POST', timeout: 60_000 })
     notify.success('هم‌گام شد', 'اطلاعات از TMDB به‌روزرسانی شد')
     await refresh()
   }
-  catch { notify.error('خطا', 'هم‌گام‌سازی با TMDB ناموفق بود') }
+  catch (err) { notify.error('هم‌گام‌سازی با TMDB نشد', adminErrorMessage(err)) }
   finally { syncing.value = false }
 }
 
@@ -288,8 +296,20 @@ const FORMAT_OPTIONS = [
                 </select>
               </label>
               <label class="flex items-center justify-between gap-3">
-                <span class="text-xs font-bold text-[var(--rv-text)]">ویژه</span>
+                <span class="text-xs font-bold text-[var(--rv-text)]">ویژه (اسلایدر خانه)</span>
                 <input v-model="draft.is_featured" type="checkbox" class="rv-focus size-4 accent-[var(--rv-accent)]">
+              </label>
+              <label class="block">
+                <span class="rv-label">ترتیب اسلایدر (کمتر = اول‌تر)</span>
+                <input v-model.number="draft.featured_order" type="number" min="0" max="9999" class="rv-input mt-1.5">
+              </label>
+              <label class="block">
+                <span class="rv-label">نمایش اسلایدر در</span>
+                <select v-model="draft.slider_platform" class="rv-input mt-1.5">
+                  <option value="all">وب‌سایت و اپلیکیشن</option>
+                  <option value="web">فقط وب‌سایت</option>
+                  <option value="app">فقط اپلیکیشن</option>
+                </select>
               </label>
               <label class="flex items-center justify-between gap-3">
                 <span class="text-xs font-bold text-[var(--rv-text)]">پیشنهادی</span>

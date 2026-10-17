@@ -30,6 +30,5 @@ const meta = computed(() => COLLECTION_VISIBILITY[props.visibility] ?? COLLECTIO
 .vis-badge--solid {
   background: rgb(5 8 7 / 62%);
   color: #fff;
-  backdrop-filter: blur(6px);
 }
 </style>

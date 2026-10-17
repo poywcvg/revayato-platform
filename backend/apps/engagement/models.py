@@ -275,6 +275,28 @@ class SupportMessage(models.Model):
         return f'{self.ticket.tracking_code} [{who}]'
 
 
+class CommunityMessage(models.Model):
+    """Site-wide lounge chat. Lightweight: one flat room, newest-first read."""
+
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name='community_messages',
+    )
+    body = models.TextField(max_length=500)
+    is_hidden = models.BooleanField(default=False, db_index=True)
+    created_at = models.DateTimeField(auto_now_add=True, db_index=True)
+
+    class Meta:
+        ordering = ['-created_at']
+        indexes = [
+            models.Index(fields=['-created_at']),
+        ]
+
+    def __str__(self):
+        return f'{self.user_id}: {self.body[:40]}'
+
+
 def _new_share_token():
     """Short, URL-safe, unguessable token for unlisted share links."""
     import secrets

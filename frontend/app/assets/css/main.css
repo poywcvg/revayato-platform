@@ -1,51 +1,32 @@
 @import "tailwindcss";
 
-/* Yekan Plus = the single UI face; Yekan Boom = page titles only.
-   Yekan ships as one bold master, so lighter cuts are derived from it:
-   regular (up to 400) for running text, medium (500-600) for labels and small
-   UI text, and the original bold from 700 up.
-   Its letters sit ~25% smaller than other Persian faces at the same font-size,
-   hence size-adjust. unicode-range keeps it to Persian script + punctuation:
-   Latin letters and ASCII digits fall through to Plus Jakarta Sans (Yekan has
-   no Latin glyphs). */
+/* Mikhak = the single Persian UI face (Amin Abedi, SIL OFL 1.1): a modern,
+   Persian-native variable font, so one file covers every weight 100-900.
+   size-adjust keeps its letters at the size the layout was tuned for, and the
+   line metrics are pinned so Windows (which reads the taller win metrics)
+   lays it out like every other OS. unicode-range keeps it to Persian script +
+   punctuation: Latin letters and ASCII digits fall through to Plus Jakarta Sans. */
 @font-face {
-  font-family: "Yekan Plus";
-  src: url("/fonts/yekan-plus-regular.woff") format("woff");
-  font-weight: 100 400;
-  font-style: normal;
-  font-display: swap;
-  size-adjust: 116%;
-  unicode-range: U+0020-002F, U+003A-0040, U+005B-0060, U+007B-007E, U+00A0, U+00AB, U+00BB, U+00D7, U+00F7, U+0600-06FF, U+200C-2010, U+2013-2014, U+2018-201D, U+2022, U+2026, U+2039-203A, U+FB50-FDFF, U+FE70-FEFF;
-}
-
-@font-face {
-  font-family: "Yekan Plus";
-  src: url("/fonts/yekan-plus-medium.woff") format("woff");
-  font-weight: 500 600;
-  font-style: normal;
-  font-display: swap;
-  size-adjust: 116%;
-  unicode-range: U+0020-002F, U+003A-0040, U+005B-0060, U+007B-007E, U+00A0, U+00AB, U+00BB, U+00D7, U+00F7, U+0600-06FF, U+200C-2010, U+2013-2014, U+2018-201D, U+2022, U+2026, U+2039-203A, U+FB50-FDFF, U+FE70-FEFF;
-}
-
-@font-face {
-  font-family: "Yekan Plus";
-  src: url("/fonts/yekan-plus.woff") format("woff");
-  font-weight: 700 900;
-  font-style: normal;
-  font-display: swap;
-  size-adjust: 116%;
-  unicode-range: U+0020-002F, U+003A-0040, U+005B-0060, U+007B-007E, U+00A0, U+00AB, U+00BB, U+00D7, U+00F7, U+0600-06FF, U+200C-2010, U+2013-2014, U+2018-201D, U+2022, U+2026, U+2039-203A, U+FB50-FDFF, U+FE70-FEFF;
-}
-
-@font-face {
-  font-family: "Yekan Boom";
-  src: url("/fonts/yekan-boom.woff") format("woff");
+  font-family: "Mikhak";
+  src: url("/fonts/mikhak-variable.woff2") format("woff2");
   font-weight: 100 900;
   font-style: normal;
   font-display: swap;
-  size-adjust: 116%;
+  size-adjust: 86%;
+  ascent-override: 107%;
+  descent-override: 59%;
+  line-gap-override: 0%;
   unicode-range: U+0020-002F, U+003A-0040, U+005B-0060, U+007B-007E, U+00A0, U+00AB, U+00BB, U+00D7, U+00F7, U+0600-06FF, U+200C-2010, U+2013-2014, U+2018-201D, U+2022, U+2026, U+2039-203A, U+FB50-FDFF, U+FE70-FEFF;
+}
+
+/* Captions only: the UI face is too thin over a moving picture, so subtitles get a
+   heavy, open Persian face. Loaded only when a caption actually renders. */
+@font-face {
+  font-family: "Revayato Subtitle";
+  src: url("/fonts/vazirmatn-bold.woff2") format("woff2");
+  font-weight: 100 900;
+  font-style: normal;
+  font-display: swap;
 }
 
 @theme {
@@ -129,10 +110,10 @@
   --color-cinema-surface: var(--theme-bg-surface);
   --color-cinema-card: var(--theme-bg-elevated);
   --color-cinema-muted: color-mix(in srgb, var(--theme-text-muted) 75%, var(--theme-text-secondary));
-  /* Yekan Plus is the single UI face for Persian chrome and form controls. */
-  --font-sans: "Yekan Plus", "Plus Jakarta Sans", Tahoma, system-ui, sans-serif;
-  --font-latin: "Plus Jakarta Sans", "Yekan Plus", Tahoma, system-ui, sans-serif;
-  --font-display: "Yekan Boom", "Yekan Plus", "Plus Jakarta Sans", Tahoma, system-ui, sans-serif;
+  /* Mikhak is the single UI face for Persian chrome and form controls. */
+  --font-sans: "Mikhak", "Plus Jakarta Sans", Tahoma, system-ui, sans-serif;
+  --font-latin: "Plus Jakarta Sans", "Mikhak", Tahoma, system-ui, sans-serif;
+  --font-display: "Mikhak", "Plus Jakarta Sans", Tahoma, system-ui, sans-serif;
   /* Motion Design: Tailwind v4 theme mirror so `duration-motion-base`,
      `ease-out`, `ease-in-out`, `ease-spring` utilities resolve. */
   --duration-motion-fast: 120ms;
@@ -166,10 +147,15 @@
   border-radius: .85rem;
   background: color-mix(in srgb, var(--theme-bg-surface) 96%, transparent);
   color: var(--theme-text-primary);
-  box-shadow: 0 8px 24px rgb(0 0 0 / 18%);
+  box-shadow: none;
   font-family: inherit;
-  backdrop-filter: blur(18px);
   white-space: normal;
+}
+
+/* Sonner's own focus states carry a drop shadow; keep only the ring. */
+[data-sonner-toaster].cinema-toaster [data-sonner-toast]:focus-visible,
+[data-sonner-toaster].cinema-toaster [data-close-button]:focus-visible {
+  box-shadow: 0 0 0 2px var(--theme-focus-ring);
 }
 
 [data-sonner-toaster].cinema-toaster [data-icon] {
@@ -318,9 +304,9 @@
 :root {
   color-scheme: dark;
   font-synthesis: none;
-  --font-ui: "Yekan Plus", "Plus Jakarta Sans", Tahoma, Arial, system-ui, sans-serif;
-  --font-latin-ui: "Plus Jakarta Sans", "Yekan Plus", Tahoma, Arial, system-ui, sans-serif;
-  --font-display-ui: "Yekan Boom", "Yekan Plus", "Plus Jakarta Sans", Tahoma, Arial, system-ui, sans-serif;
+  --font-ui: "Mikhak", "Plus Jakarta Sans", Tahoma, Arial, system-ui, sans-serif;
+  --font-latin-ui: "Plus Jakarta Sans", "Mikhak", Tahoma, Arial, system-ui, sans-serif;
+  --font-display-ui: "Mikhak", "Plus Jakarta Sans", Tahoma, Arial, system-ui, sans-serif;
   /* Body chrome matches streaming-site layout: body #1d1c21, cards #0d0d0d, white text.
      Accents stay mint for Revayato brand. */
   --palette-sand: #b0e4cc;
@@ -388,8 +374,8 @@
   --theme-on-danger: #210506;
   --theme-on-warning: #251700;
   --theme-shadow: rgb(0 0 0 / 55%);
-  --theme-shadow-card: 0 10px 28px rgb(0 0 0 / 12%);
-  --theme-shadow-float: 0 18px 48px rgb(0 0 0 / 32%);
+  --theme-shadow-card: none;
+  --theme-shadow-float: none;
   --theme-focus-ring: rgb(176 228 204 / 24%);
   --theme-overlay-backdrop: rgb(0 0 0 / 66%);
   --theme-glow: rgb(var(--palette-sand-rgb) / 12%);
@@ -423,7 +409,10 @@
   --warning: var(--theme-warning);
   --danger: var(--theme-error);
   --border-subtle: var(--theme-border);
-  --container-max: 1440px;
+  /* Full-bleed: every section spans the viewport; only the fluid gutter
+     frames it. Kept as a length (not `none`) because calc()s such as the
+     hero slider's arrow offset subtract it from 100vw. */
+  --container-max: 100vw;
   --radius-sm: .5rem;
   --radius-md: .75rem;
   --radius-lg: 1rem;
@@ -479,11 +468,11 @@
   --rail-card-width: calc((100% - (var(--rail-gap) * (var(--rail-columns) - 1))) / var(--rail-columns));
 }
 
-/* Desktop header (68px) renders from lg up; phones and tablets share the
-   compact 3.5rem mobile chrome. */
+/* Desktop header (single 72px bar) renders from lg up; phones and tablets
+   share the compact 3.5rem mobile chrome. */
 @media (min-width: 1024px) {
   :root {
-    --header-height: 4.25rem;
+    --header-height: 4.5rem;
   }
 }
 
@@ -561,8 +550,8 @@ html[data-theme="light"] {
   --theme-on-danger: #ffffff;
   --theme-on-warning: #2a1d00;
   --theme-shadow: rgb(23 50 38 / 10%);
-  --theme-shadow-card: 0 10px 28px rgb(23 50 38 / 8%);
-  --theme-shadow-float: 0 20px 54px rgb(23 50 38 / 14%);
+  --theme-shadow-card: none;
+  --theme-shadow-float: none;
   --theme-focus-ring: rgb(23 107 80 / 18%);
   --theme-overlay-backdrop: rgb(12 27 21 / 48%);
   --theme-glow: rgb(23 107 80 / 9%);
@@ -627,8 +616,8 @@ html[data-theme="light"] {
   --theme-on-danger: #210506;
   --theme-on-warning: #251700;
   --theme-shadow: rgb(0 0 0 / 55%);
-  --theme-shadow-card: 0 10px 28px rgb(0 0 0 / 12%);
-  --theme-shadow-float: 0 18px 48px rgb(0 0 0 / 32%);
+  --theme-shadow-card: none;
+  --theme-shadow-float: none;
   --theme-focus-ring: rgb(176 228 204 / 24%);
   --theme-overlay-backdrop: rgb(0 0 0 / 66%);
   --theme-glow: rgb(176 228 204 / 12%);
@@ -1171,11 +1160,9 @@ html[data-page-navigating] body {
 
 
 .cinematic-glass {
-  background: color-mix(in srgb, var(--theme-bg-soft) 42%, transparent);
+  background: color-mix(in srgb, var(--theme-bg-soft) 90%, transparent);
   border-color: color-mix(in srgb, var(--theme-border) 80%, transparent);
   box-shadow: none;
-  backdrop-filter: blur(12px) saturate(1.2);
-  -webkit-backdrop-filter: blur(12px) saturate(1.2);
 }
 
 .cinematic-header--overlay {
@@ -1315,8 +1302,7 @@ html[data-theme="light"] .cinematic-card__synopsis p {
     radial-gradient(circle at 30% 25%, rgb(var(--palette-ink-rgb) / 10%), transparent 55%),
     color-mix(in srgb, var(--theme-accent-primary-soft) 88%, var(--theme-bg-elevated));
   box-shadow:
-    inset 0 1px 0 rgb(var(--palette-ink-rgb) / 8%),
-    inset 0 -1px 0 rgb(var(--palette-void-rgb) / 18%);
+    none;
 }
 
 @media (min-width: 640px) {
@@ -1356,7 +1342,7 @@ html[data-theme="light"] .cinematic-card__synopsis p {
   background:
     radial-gradient(circle at 32% 28%, rgb(var(--palette-ink-rgb) / 8%), transparent 60%),
     color-mix(in srgb, var(--theme-accent-primary-soft) 80%, var(--theme-bg-surface));
-  box-shadow: inset 0 1px 0 rgb(var(--palette-ink-rgb) / 7%);
+  box-shadow: none;
 }
 
 .category-chip__label {
@@ -1519,7 +1505,7 @@ html[data-theme="light"] .cinematic-card__synopsis p {
   color: var(--theme-text-primary);
   font-size: .8125rem;
   font-weight: 800;
-  box-shadow: inset 0 1px 0 rgb(var(--palette-ink-rgb) / 3%);
+  box-shadow: none;
   transition: border-color 140ms ease, background-color 140ms ease, box-shadow 140ms ease;
 }
 
@@ -1551,7 +1537,7 @@ html[data-theme="light"] .cinematic-card__synopsis p {
 .ui-select--open .ui-select__trigger {
   border-color: var(--theme-accent-primary);
   background: var(--theme-bg-surface);
-  box-shadow: 0 0 0 3px var(--theme-accent-primary-soft), inset 0 1px 0 rgb(var(--palette-ink-rgb) / 4%);
+  box-shadow: 0 0 0 3px var(--theme-accent-primary-soft);
   outline: none;
 }
 
@@ -2127,7 +2113,7 @@ html[data-theme="light"] .cinematic-card__synopsis p {
 
 @media (min-width: 1536px) {
   :root {
-    --gutter: clamp(1.5rem, 1.8vw, 2rem);
+    --gutter: clamp(1.75rem, 2vw, 2.5rem);
     --section-space: 3rem;
     --rail-columns: 7;
   }
@@ -2137,6 +2123,76 @@ html[data-theme="light"] .cinematic-card__synopsis p {
   .country-grid {
     grid-template-columns: repeat(7, minmax(0, 1fr));
   }
+}
+
+/* Wide and ultra-wide screens: the page is full-bleed, so instead of growing
+   each card without limit, more columns appear (a poster stays roughly
+   190–250px wide) and the gutter keeps scaling with the viewport. */
+@media (min-width: 1760px) {
+  :root {
+    --gutter: clamp(2.25rem, 2.2vw, 3rem);
+    --rail-gap: 1.125rem;
+    --rail-columns: 8;
+  }
+
+  .catalog-grid,
+  .people-grid,
+  .country-grid {
+    grid-template-columns: repeat(8, minmax(0, 1fr));
+  }
+}
+
+@media (min-width: 2048px) {
+  :root {
+    --gutter: clamp(2.75rem, 2.4vw, 4rem);
+    --section-space: 3.5rem;
+    --rail-gap: 1.25rem;
+    --rail-columns: 9;
+  }
+
+  .catalog-grid,
+  .people-grid,
+  .country-grid {
+    grid-template-columns: repeat(9, minmax(0, 1fr));
+  }
+}
+
+@media (min-width: 2400px) {
+  :root {
+    --rail-columns: 10;
+  }
+
+  .catalog-grid,
+  .people-grid,
+  .country-grid {
+    grid-template-columns: repeat(10, minmax(0, 1fr));
+  }
+}
+
+@media (min-width: 2880px) {
+  :root {
+    --rail-columns: 11;
+  }
+
+  .catalog-grid,
+  .people-grid,
+  .country-grid {
+    grid-template-columns: repeat(11, minmax(0, 1fr));
+  }
+}
+
+/* Type and controls scale up a step on large monitors and TVs so text stays
+   readable from a normal viewing distance (everything is rem-based). */
+@media (min-width: 1920px) {
+  html { font-size: 106.25%; }
+}
+
+@media (min-width: 2560px) {
+  html { font-size: 118.75%; }
+}
+
+@media (min-width: 3400px) {
+  html { font-size: 137.5%; }
 }
 
 /* Shared sticky/scroll helpers so detail tabs and section anchors clear the header. */
@@ -2297,22 +2353,6 @@ html[data-theme="light"] .cinematic-header--overlay {
   box-shadow: none;
 }
 
-html[data-theme="light"] .site-header {
-  background: rgb(255 255 255 / 28%);
-  border-bottom-color: rgb(24 24 22 / 6%);
-  box-shadow: inset 0 1px 0 rgb(255 255 255 / 35%);
-  -webkit-backdrop-filter: blur(8px) saturate(112%);
-  backdrop-filter: blur(8px) saturate(112%);
-}
-
-html[data-theme="light"] .site-header.cinematic-header--at-top {
-  background: rgb(255 255 255 / 16%);
-  border-bottom-color: transparent;
-  box-shadow: none;
-  -webkit-backdrop-filter: blur(6px) saturate(108%);
-  backdrop-filter: blur(6px) saturate(108%);
-}
-
 html[data-theme="light"] .cinema-page {
   background:
     radial-gradient(circle at 92% 0%, rgb(23 107 80 / 7%), transparent 25rem),
@@ -2357,7 +2397,7 @@ html[data-theme="light"] .ui-field,
 html[data-theme="light"] .ui-select__trigger {
   background: var(--theme-control-bg);
   border-color: var(--theme-border-strong);
-  box-shadow: 0 1px 0 rgb(23 50 38 / 3%);
+  box-shadow: none;
 }
 
 html[data-theme="light"] .ui-field:hover,
@@ -2396,7 +2436,7 @@ html[data-theme="light"] .ui-chip-dark:hover {
 html[data-theme="light"] .action-primary,
 html[data-theme="light"] .ui-primary-button {
   color: var(--theme-on-accent);
-  box-shadow: 0 8px 22px rgb(23 107 80 / 18%);
+  box-shadow: none;
 }
 
 html[data-theme="light"] .ui-secondary-button,
@@ -2405,7 +2445,7 @@ html[data-theme="light"] .carousel-control,
 html[data-theme="light"] .quick-path-card {
   border-color: var(--theme-border);
   background: var(--theme-bg-surface);
-  box-shadow: 0 5px 16px rgb(23 50 38 / 6%);
+  box-shadow: none;
 }
 
 html[data-theme="light"] .ui-secondary-button:hover,
@@ -2455,23 +2495,13 @@ html[data-theme="light"] .memory-card__type {
 
 html[data-theme="light"] .memory-card__play {
   color: var(--theme-on-accent);
-  box-shadow: 0 8px 20px rgb(23 107 80 / 22%);
+  box-shadow: none;
 }
 
 @media (max-width: 639px) {
-  html[data-theme="light"] .site-header {
-    background: rgb(255 255 255 / 30%);
-  }
-
-  html[data-theme="light"] .site-header.cinematic-header--at-top {
-    background: rgb(255 255 255 / 16%);
-  }
-
   html[data-theme="light"] .liquid-nav {
     background: color-mix(in srgb, var(--theme-bg-surface) 94%, transparent);
-    box-shadow:
-      0 8px 24px rgb(23 50 38 / 9%),
-      inset 0 1px 0 rgb(255 255 255 / 90%);
+    box-shadow: none;
   }
 }
 
@@ -2604,4 +2634,32 @@ body.party-panel-open {
   .filter-chip-leave-active {
     transition: none;
   }
+}
+
+/* Theme switch: the new theme is revealed as a circle growing from the
+   switch (useTheme.toggleTheme drives the clip-path); no cross-fade. */
+::view-transition-old(root),
+::view-transition-new(root) {
+  animation: none;
+  mix-blend-mode: normal;
+}
+
+/* Product rule: no blur anywhere in the UI. Surfaces that used to be frosted
+   glass are near-opaque instead; this guards against it creeping back. */
+*,
+*::before,
+*::after {
+  -webkit-backdrop-filter: none !important;
+  backdrop-filter: none !important;
+}
+
+/* Product rule: no shadows anywhere in the UI. Tailwind shadow utilities are
+   zeroed here; rings (--tw-ring-shadow) are borders and focus outlines, so
+   they stay. Player subtitles keep their text outline for legibility. */
+*,
+*::before,
+*::after {
+  --tw-shadow: 0 0 #0000 !important;
+  --tw-inset-shadow: 0 0 #0000 !important;
+  --tw-drop-shadow: initial !important;
 }

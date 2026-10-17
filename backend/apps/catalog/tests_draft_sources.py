@@ -228,6 +228,44 @@ class HuntTests(TestCase):
             PlaybackSourceGap.Status.QUEUED,
         )
 
+    def test_every_provider_saying_not_listed_rests_the_title(self):
+        # The crawls searched and found nothing; asking again next round would get
+        # the same answer, so the row must rest instead of looping as an error.
+        movie = self._enrolled('nowhere')
+        codes = {
+            'myf2m': ('err', 'myf2m_page_required'),
+            'dornatv': ('err', 'dornatv_page_required'),
+            'kargadan': ('err', 'kargadan_session_missing'),
+        }
+        with patch.object(draft_sources, '_recrawl_all_providers', return_value=codes):
+            stats = draft_sources.hunt_open_gaps(limit=5)
+        self.assertEqual(stats['unavailable'], 1)
+        gap = PlaybackSourceGap.objects.get(object_id=movie.pk)
+        self.assertEqual(gap.status, PlaybackSourceGap.Status.UNAVAILABLE)
+        self.assertEqual(gap.last_result, 'no_provider_listing')
+
+    def test_one_failing_provider_keeps_the_title_queued(self):
+        movie = self._enrolled('half-down')
+        codes = {'myf2m': ('err', 'myf2m_crawl_failed'), 'dornatv': ('err', 'dornatv_page_required')}
+        with patch.object(draft_sources, '_recrawl_all_providers', return_value=codes):
+            stats = draft_sources.hunt_open_gaps(limit=5)
+        self.assertEqual(stats['provider_error'], 1)
+        self.assertEqual(
+            PlaybackSourceGap.objects.get(object_id=movie.pk).status,
+            PlaybackSourceGap.Status.QUEUED,
+        )
+
+    def test_a_provider_we_cannot_ask_alone_is_not_an_answer(self):
+        movie = self._enrolled('no-cookie')
+        with patch.object(draft_sources, '_recrawl_all_providers',
+                          return_value={'kargadan': ('err', 'kargadan_session_missing')}):
+            stats = draft_sources.hunt_open_gaps(limit=5)
+        self.assertEqual(stats['provider_error'], 1)
+        self.assertEqual(
+            PlaybackSourceGap.objects.get(object_id=movie.pk).status,
+            PlaybackSourceGap.Status.QUEUED,
+        )
+
     def test_unavailable_rows_are_not_re_asked_before_the_retry_window(self):
         self._enrolled('patient')
         with patch.object(draft_sources, '_recrawl_all_providers', return_value={'myf2m': ('ok', 0)}):

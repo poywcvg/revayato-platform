@@ -155,7 +155,6 @@ onKeyStroke('Escape', () => {
   justify-content: center;
   padding: 1rem;
   background: rgb(2 6 5 / 86%);
-  backdrop-filter: blur(7px);
 }
 
 .region-modal__panel {
@@ -170,7 +169,7 @@ onKeyStroke('Escape', () => {
   background:
     radial-gradient(circle at 85% -15%, rgb(var(--media-accent-rgb, 176 228 204) / 20%), transparent 45%),
     #07100d;
-  box-shadow: 0 26px 70px rgb(0 0 0 / 60%);
+  box-shadow: none;
   outline: none;
   overscroll-behavior: contain;
 }

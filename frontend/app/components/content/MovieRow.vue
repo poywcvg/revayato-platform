@@ -209,10 +209,8 @@ onBeforeUnmount(() => {
       </template>
     </SectionHeader>
     <div v-if="items.length" class="relative">
-      <div class="pointer-events-none absolute inset-y-0 right-0 z-20 w-8 bg-gradient-to-l from-canvas to-transparent transition-opacity sm:w-20" :class="canGoPrevious ? 'opacity-100' : 'opacity-0'" aria-hidden="true" />
-      <div class="pointer-events-none absolute inset-y-0 left-0 z-20 w-8 bg-gradient-to-r from-canvas to-transparent transition-opacity sm:w-20" :class="canGoNext ? 'opacity-100' : 'opacity-0'" aria-hidden="true" />
       <div ref="rail" class="hide-scrollbar cinema-rail rail-bleed flex snap-x snap-mandatory overflow-x-auto pb-3 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/60 sm:pb-5" :class="dragging && 'is-dragging'" tabindex="0" role="region" aria-roledescription="carousel" :aria-label="title" @scroll.passive="scheduleStateUpdate" @keydown="handleKeydown" @pointerdown="handlePointerDown" @pointermove="handlePointerMove" @pointerup="handlePointerEnd" @pointercancel="handlePointerEnd" @click.capture="handleClickCapture" @dragstart.prevent>
-        <MovieCard v-for="(item, index) in items" :key="`${item.type}:${item.id}`" data-carousel-card role="group" aria-roledescription="slide" :aria-label="`${index + 1} از ${items.length}: ${englishCatalogTitle(item)}`" :item="item" :dark="dark" :reason="showReasons ? item.recommendation_reason : ''" class="cinema-rail-card" />
+        <MovieCard v-for="(item, index) in items" :key="`${item.type}:${item.id}`" data-carousel-card role="group" aria-roledescription="slide" :aria-label="`${index + 1} از ${items.length}: ${englishCatalogTitle(item)}`" :item="item" :dark="dark" :reason="showReasons ? (item.recommendation_reason || '\u00A0') : ''" class="cinema-rail-card" />
       </div>
       <div v-if="hasOverflow" class="mt-1.5 hidden items-center justify-between gap-4 px-1 sm:mt-2 sm:flex">
         <span class="font-latin text-[11px] font-bold tabular-nums text-muted">{{ currentPage + 1 }} / {{ totalPages }}</span>

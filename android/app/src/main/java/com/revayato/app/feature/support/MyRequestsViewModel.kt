@@ -50,14 +50,19 @@ class MyRequestsViewModel @Inject constructor(
     }
 
     /**
-     * Open a new request. Validates locally (subject ≥ 4, body ≥ 10) before hitting
-     * the server, and calls [onCreated] with the tracking code so the caller can
-     * jump straight into the fresh conversation.
+     * Open a new request. Validates locally (subject ≥ 4, body ≥ 10, year in
+     * 1900..2100 when given) before hitting the server, and calls [onCreated]
+     * with the tracking code so the caller can jump straight into the fresh
+     * conversation. Related fields mirror the web /contact contract so
+     * content_request automation can resolve without a human.
      */
     fun create(
         category: String,
         subject: String,
         body: String,
+        relatedTitle: String = "",
+        relatedYear: Int? = null,
+        relatedUrl: String = "",
         onCreated: (trackingCode: String) -> Unit,
     ) {
         val subjectTrim = subject.trim()
@@ -70,9 +75,22 @@ class MyRequestsViewModel @Inject constructor(
             _state.update { it.copy(createError = "متن پیام باید حداقل ۱۰ نویسه باشد.") }
             return
         }
+        if (relatedYear != null && (relatedYear < 1900 || relatedYear > 2100)) {
+            _state.update { it.copy(createError = "سال باید بین ۱۹۰۰ تا ۲۱۰۰ باشد.") }
+            return
+        }
+        if (relatedUrl.isNotBlank() && !relatedUrl.startsWith("http://") && !relatedUrl.startsWith("https://")) {
+            _state.update { it.copy(createError = "لینک باید با http(s) شروع شود.") }
+            return
+        }
         _state.update { it.copy(creating = true, createError = null) }
         viewModelScope.launch {
-            repository.create(category, subjectTrim, bodyTrim)
+            repository.create(
+                category, subjectTrim, bodyTrim,
+                relatedTitle = relatedTitle.trim(),
+                relatedYear = relatedYear,
+                relatedUrl = relatedUrl.trim(),
+            )
                 .onSuccess { created ->
                     _state.update { it.copy(creating = false) }
                     refresh()

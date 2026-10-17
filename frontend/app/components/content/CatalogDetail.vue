@@ -1,6 +1,7 @@
 <script setup lang="ts">
-import type { Movie } from '~/types'
+import type { DownloadLink, Movie } from '~/types'
 import type { DownloadPlayRequest } from '~/components/content/DownloadBox.vue'
+import { englishCatalogTitle, isMostlyLatin, isMostlyPersian } from '~/utils/displayNames'
 import '~/assets/css/media-detail.css'
 
 const props = defineProps<{ item: Movie }>()
@@ -30,8 +31,88 @@ const sameGenreTitles = computed(() => {
     .sort((a, b) => b.rating - a.rating || b.popularity - a.popularity)
     .slice(0, 7)
 })
-const playLabel = computed(() => props.item.progress_percent > 0 ? 'ادامه تماشا' : props.item.type === 'series' ? 'پخش قسمت اول' : 'تماشا آنلاین')
+const playLabel = computed(() => props.item.progress_percent > 0 ? 'ادامه تماشا' : 'تماشای آنلاین')
 const downloadLinks = computed(() => props.item.download_links || [])
+
+// Hero heading: «دانلود سریال Ted Lasso» over «تد لاسو (2020)».
+const kindWord = computed(() => (props.item.type === 'series' ? 'سریال' : 'فیلم'))
+const heroEnglish = computed(() => {
+  const english = englishCatalogTitle(props.item)
+  return isMostlyLatin(english) ? english : ''
+})
+const heroPersian = computed(() => (
+  [props.item.title, props.item.secondary_title, props.item.original_title]
+    .map(value => (value || '').trim())
+    .find(value => value && isMostlyPersian(value)) || ''
+))
+const heroGenres = computed(() => props.item.genres.slice(0, 4))
+const heroFacts = computed(() => {
+  const facts: string[] = []
+  if (props.item.type === 'movie' && props.item.duration_minutes) {
+    facts.push(`${props.item.duration_minutes.toLocaleString('fa-IR')} دقیقه`)
+  }
+  if (props.item.type === 'series' && props.item.seasons_count) {
+    facts.push(`${props.item.seasons_count.toLocaleString('fa-IR')} فصل`)
+  }
+  if (props.item.country) facts.push(props.item.country)
+  return facts
+})
+
+type EpisodeLink = DownloadLink & { season_number: number; episode_number: number }
+function isEpisodeLink(link: DownloadLink): link is EpisodeLink {
+  return Boolean(link.episode_number)
+}
+function newestEpisode(links: EpisodeLink[]) {
+  return links.reduce<EpisodeLink | null>((best, link) => {
+    if (!best) return link
+    const a = (link.season_number || 1) * 10000 + link.episode_number
+    const b = (best.season_number || 1) * 10000 + best.episode_number
+    return a > b ? link : best
+  }, null)
+}
+const twoDigits = (value: number) => value.toLocaleString('fa-IR', { minimumIntegerDigits: 2 })
+const episodeLinks = computed(() => downloadLinks.value.filter(isEpisodeLink))
+const newestLink = computed(() => newestEpisode(episodeLinks.value))
+
+/** «فصل ۰۴ - قسمت ۰۹ اضافه شد» pills, from the links actually on the page. */
+const freshPills = computed(() => {
+  const links = downloadLinks.value
+  if (props.item.type === 'series') {
+    const pills: string[] = []
+    const subbed = newestEpisode(episodeLinks.value.filter(link => link.kind !== 'dubbed'))
+    const dubbed = newestEpisode(episodeLinks.value.filter(link => link.kind === 'dubbed'))
+    if (subbed) pills.push(`فصل ${twoDigits(subbed.season_number || 1)} - قسمت ${twoDigits(subbed.episode_number)} اضافه شد`)
+    if (dubbed) pills.push(`دوبله فصل ${twoDigits(dubbed.season_number || 1)} - قسمت ${twoDigits(dubbed.episode_number)} اضافه شد`)
+    return pills
+  }
+  const pills: string[] = []
+  if (links.some(link => link.kind === 'dubbed')) pills.push('نسخهٔ دوبله فارسی اضافه شد')
+  if (links.some(link => link.kind === 'softsub' || link.kind === 'hardsub')) pills.push('زیرنویس فارسی اضافه شد')
+  return pills
+})
+
+/** Play the newest episode — subtitled first, dubbed when that is all there is. */
+const latestRequest = computed<DownloadPlayRequest | null>(() => {
+  const newest = newestLink.value
+  if (props.item.type !== 'series' || !newest) return null
+  const same = episodeLinks.value.filter(link => (
+    (link.season_number || 1) === (newest.season_number || 1) && link.episode_number === newest.episode_number
+  ))
+  const pick = same.find(link => link.kind === 'softsub')
+    || same.find(link => link.kind !== 'dubbed')
+    || same[0]
+  if (!pick) return null
+  return {
+    url: pick.url,
+    kind: pick.kind === 'dubbed' ? 'dub' : pick.kind === 'softsub' ? 'softsub' : 'original',
+    seasonNumber: pick.season_number || 1,
+    episodeNumber: pick.episode_number,
+  }
+})
+
+function playLatest() {
+  if (latestRequest.value) requestPlay('full', latestRequest.value)
+}
 const primaryStreamUrl = computed(() => (
   downloadLinks.value[0]?.url
   || props.item.hls_url
@@ -50,43 +131,13 @@ const qualityBadge = computed(() => props.item.quality || props.item.download_qu
 const colorSource = computed(() => props.item.poster_url || props.item.backdrop_url)
 const { styleVars } = useDominantColor(colorSource)
 
-const metaBits = computed(() => {
-  const bits: Array<{ key: string; label: string; to?: string; onClick?: () => void }> = []
-  if (props.item.imdb_rank) {
-    bits.push({
-      key: 'imdb-top',
-      label: `IMDb Top #${props.item.imdb_rank}`,
-      to: props.item.type === 'movie' ? '/movies?sort=imdb_top' : '/series?sort=imdb_top',
-    })
-  }
-  if (props.item.year) bits.push({ key: 'year', label: String(props.item.year) })
-  if (props.item.type === 'movie' && props.item.duration_minutes) {
-    bits.push({ key: 'duration', label: `${props.item.duration_minutes.toLocaleString('fa-IR')} دقیقه` })
-  }
-  if (props.item.type === 'series') {
-    bits.push({
-      key: 'seasons',
-      label: `${(props.item.seasons_count || 1).toLocaleString('fa-IR')} فصل · ${episodeCount.value.toLocaleString('fa-IR')} قسمت`,
-    })
-  }
-  if (props.item.country) bits.push({ key: 'country', label: props.item.country })
-  props.item.genres.slice(0, 4).forEach((genre) => {
-    bits.push({
-      key: `genre-${genre.id}`,
-      label: genre.title,
-      to: `${props.item.type === 'movie' ? '/movies' : '/series'}/genre/${genre.slug}`,
-      onClick: () => trackGenreClick(genre.slug),
-    })
-  })
-  return bits
-})
-
 const activeSection = ref('story')
 const detailTabs = computed(() => [
   { id: 'story', label: 'داستان' },
+  ...(downloadLinks.value.length ? [{ id: 'download', label: 'دانلود' }] : []),
   { id: 'info', label: 'اطلاعات' },
   { id: 'cast', label: 'بازیگران' },
-  { id: 'comments', label: 'دیدگاه‌ها' },
+  { id: 'comments', label: 'دیدگاه‌ها', count: reviews.value.length },
   ...(related.value.length ? [{ id: 'similar', label: 'آثار مشابه' }] : []),
   ...(authStore.isAuthenticated ? [{ id: 'why-recommended', label: 'چرا پیشنهاد شده؟' }] : []),
 ])
@@ -315,48 +366,67 @@ onBeforeUnmount(() => sectionObserver?.disconnect())
 
       <div class="media-hero__layout">
         <MediaPoster
+          class="media-hero__poster"
           :src="item.poster_url"
           :alt="`پوستر ${item.title}`"
           :progress-percent="progressPercent"
           :quality-label="qualityBadge"
-          :show-trailer="hasTrailer && !progressPercent"
+          :can-play="canWatchOnline"
+          :has-trailer="hasTrailer"
+          :has-subtitle="item.has_subtitle"
+          :is-dubbed="item.is_dubbed"
+          @play="openPlayOptions"
           @trailer="requestPlay('trailer')"
         />
 
-        <div class="media-summary">
-          <MediaStatusBadges :item="item" />
+        <!-- Both names in the one H1: people search «تلقین» and «Inception» alike. -->
+        <div class="media-hero__head">
+          <h1 class="media-summary__heading">
+            <span class="media-summary__title">
+              دانلود {{ kindWord }}
+              <bdi v-if="heroEnglish" dir="ltr">{{ heroEnglish }}</bdi>
+              <template v-else>{{ item.title }}</template>
+            </span>
+            <span v-if="heroPersian || item.year" class="media-summary__original">
+              <template v-if="heroEnglish && heroPersian">{{ heroPersian }}</template>
+              <bdi v-if="item.year" dir="ltr">({{ item.year }})</bdi>
+            </span>
+          </h1>
 
-          <h1 class="media-summary__title" dir="auto">{{ item.title }}</h1>
-
-          <p
-            v-if="item.secondary_title || (item.original_title && item.original_title !== item.title)"
-            class="media-summary__original ltr-value"
-            dir="ltr"
-          >
-            {{ item.secondary_title || item.original_title }}
+          <p v-if="heroGenres.length" class="media-summary__genres">
+            <span class="media-summary__label">ژانر:</span>
+            <template v-for="(genre, index) in heroGenres" :key="genre.id">
+              <NuxtLink
+                :to="`${item.type === 'movie' ? '/movies' : '/series'}/genre/${genre.slug}`"
+                @click="trackGenreClick(genre.slug)"
+              >
+                {{ genre.title }}
+              </NuxtLink><span v-if="index < heroGenres.length - 1">، </span>
+            </template>
           </p>
 
-          <div v-if="metaBits.length" class="media-summary__meta" aria-label="اطلاعات کوتاه">
-            <template v-for="(bit, index) in metaBits" :key="bit.key">
-              <span v-if="index" class="media-summary__meta-sep" aria-hidden="true" />
-              <NuxtLink
-                v-if="bit.to"
-                :to="bit.to"
-                @click="bit.onClick?.()"
-              >
-                {{ bit.label }}
-              </NuxtLink>
-              <span v-else :class="/^\d/.test(bit.label) && 'ltr-value'">{{ bit.label }}</span>
-            </template>
+          <div v-if="heroFacts.length || item.age_rating" class="media-summary__facts">
+            <AgeRatingBadge :rating="item.age_rating" />
+            <span v-for="fact in heroFacts" :key="fact">{{ fact }}</span>
           </div>
+        </div>
 
-          <p v-if="item.description" class="media-summary__desc line-clamp-4 sm:line-clamp-5">
+        <div class="media-hero__body">
+          <p v-if="item.description" class="media-summary__desc">
             {{ item.description }}
           </p>
+
+          <ul v-if="freshPills.length" class="media-summary__fresh" aria-label="تازه‌ها">
+            <li v-for="pill in freshPills" :key="pill">
+              <CinematicIcon name="refresh" class="size-3.5" />
+              {{ pill }}
+            </li>
+          </ul>
 
           <MediaActions
             :play-label="playLabel"
             :can-watch="canWatchOnline"
+            :latest-label="latestRequest ? 'تماشای آخرین قسمت' : ''"
             :has-trailer="hasTrailer"
             :has-downloads="Boolean(downloadLinks.length)"
             :liked="liked"
@@ -364,6 +434,7 @@ onBeforeUnmount(() => sectionObserver?.disconnect())
             :slug="item.slug"
             :content-type="item.type"
             @play="openPlayOptions"
+            @latest="playLatest"
             @trailer="requestPlay('trailer')"
             @like="toggleLiked"
             @share="shareTitle"
@@ -373,7 +444,7 @@ onBeforeUnmount(() => sectionObserver?.disconnect())
           />
         </div>
 
-        <MediaRatingCards :item="item" class="media-hero__ratings" />
+        <MediaHeroRatings :item="item" class="media-hero__rates" />
       </div>
     </MediaHero>
 
@@ -394,6 +465,8 @@ onBeforeUnmount(() => sectionObserver?.disconnect())
               هنوز خلاصه‌ای برای این عنوان ثبت نشده است.
             </p>
           </section>
+
+          <MediaDownloadSummary :item="item" @download="openDownloadOptions" />
 
           <ContentWarnings :warnings="item.content_warnings" />
 
@@ -448,6 +521,7 @@ onBeforeUnmount(() => sectionObserver?.disconnect())
 
         <aside class="media-aside">
           <RatingWidget
+            id="rate"
             :object-id="item.id"
             :slug="item.slug"
             :content-type="item.type"

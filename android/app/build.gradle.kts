@@ -23,8 +23,8 @@ android {
         applicationId = "com.revayato.app"
         minSdk = 24
         targetSdk = 35
-        versionCode = 20
-        versionName = "1.0.19"
+        versionCode = 27
+        versionName = "1.0.26"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         resourceConfigurations += listOf("fa", "en")

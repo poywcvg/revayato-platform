@@ -17,6 +17,7 @@ import androidx.compose.material.icons.rounded.Movie
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.ReadOnlyComposable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -26,7 +27,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.revayato.app.core.theme.AccentBlue
 import com.revayato.app.core.theme.AccentYellow
-import com.revayato.app.core.theme.BrandMint
+import com.revayato.app.core.theme.Brand
 import com.revayato.app.core.theme.PlayAccent
 import com.revayato.app.core.theme.TextMuted
 
@@ -36,6 +37,7 @@ fun categoryIcon(category: String): ImageVector = when (category) {
     "bug" -> Icons.Rounded.BugReport
     "content_fix" -> Icons.Rounded.EditNote
     "suggestion" -> Icons.Rounded.AutoAwesome
+    "support" -> Icons.AutoMirrored.Rounded.HelpOutline
     "cooperation" -> Icons.Rounded.Favorite
     else -> Icons.AutoMirrored.Rounded.HelpOutline
 }
@@ -77,10 +79,12 @@ fun supportDateTime(iso: String): String {
 }
 
 /** Accent colour that encodes a ticket's lifecycle state at a glance. */
+@Composable
+@ReadOnlyComposable
 fun statusColor(status: String): Color = when (status) {
     "open" -> AccentBlue
     "in_progress" -> AccentYellow
-    "waiting_user" -> BrandMint
+    "waiting_user" -> Brand
     "resolved" -> PlayAccent
     else -> TextMuted // closed / unknown
 }

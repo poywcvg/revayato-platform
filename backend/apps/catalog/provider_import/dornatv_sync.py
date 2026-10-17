@@ -148,6 +148,12 @@ def _ingest_embedded_subtitle_tracks(obj, tracks: list[dict]) -> bool:
     """
     if not tracks:
         return False
+    from apps.catalog.title_staging import is_staging
+
+    if is_staging():
+        # A staged rebuild must leave nothing behind if its test rejects the set;
+        # the subtitle step after a successful apply hunts these again.
+        return False
     # Series keep subtitles on their episodes; without a concrete field here the
     # save below raises only after every .vtt was downloaded (up to 90 s each).
     if not any(f.name == 'subtitle_tracks' and f.concrete for f in obj._meta.get_fields()):
@@ -282,26 +288,60 @@ def _apply_dornatv_page_metadata(obj, crawled: dict) -> list[str]:
     return fields
 
 
-def _auto_resolve_movie_target(connector, movie: Movie) -> str:
-    query = {
-        'title': movie.title,
-        'original_title': movie.original_title,
-        'year': movie.release_year,
-        'titles': [t for t in (movie.original_title, movie.title) if t],
-    }
-    hits = connector.search_movie(query) or []
-    return hits[0].provider_item_id if hits else ''
+# Search hits worth opening before giving up: search ranking is loose ("Breaking
+# Bad" lists "Breaking In" first), so the first hit is a guess, not an answer.
+AUTO_RESOLVE_MAX_PAGES = 3
 
 
-def _auto_resolve_series_target(connector, series: Series) -> str:
+def _rank_hits(hits: list, obj) -> list:
+    """Put the hit whose English title is exactly the target's first (stable otherwise)."""
+    target = slugify_title(str(getattr(obj, 'original_title', '') or ''))
+
+    def exact(hit) -> bool:
+        return bool(target) and slugify_title(str(getattr(hit, 'original_title', '') or '')) == target
+
+    return sorted(hits, key=lambda hit: not exact(hit))
+
+
+def _auto_resolve_targets(connector, obj) -> list[str]:
+    is_movie = isinstance(obj, Movie)
     query = {
-        'title': series.title,
-        'original_title': series.original_title,
-        'year': series.start_year,
-        'titles': [t for t in (series.original_title, series.title) if t],
+        'title': obj.title,
+        'original_title': obj.original_title,
+        'year': obj.release_year if is_movie else obj.start_year,
+        'titles': [t for t in (obj.original_title, obj.title) if t],
     }
-    hits = connector.search_series(query) or []
-    return hits[0].provider_item_id if hits else ''
+    search = connector.search_movie if is_movie else connector.search_series
+    hits = _rank_hits(list(search(query) or []), obj)
+    return [hit.provider_item_id for hit in hits[:AUTO_RESOLVE_MAX_PAGES] if hit.provider_item_id]
+
+
+def _crawl_matching_page(connector, obj, target: str, *, content_type: str) -> dict:
+    """Crawl ``target`` (or each search hit in turn) and return the first page that IS ``obj``.
+
+    An explicit target is checked once. Without one, every ranked hit gets its
+    identity check, so a wrong top hit no longer hides the right page below it.
+    """
+    if target:
+        crawled = connector.crawl_download_links(target, content_type=content_type)
+        _validate_dornatv_identity(obj, crawled)
+        return crawled
+    targets = _auto_resolve_targets(connector, obj)
+    if not targets:
+        raise ProviderImportError(
+            'Provide a Dornatv page URL or ensure the title matches a listing.',
+            code='dornatv_page_required',
+        )
+    mismatch = None
+    for candidate in targets:
+        crawled = connector.crawl_download_links(candidate, content_type=content_type)
+        try:
+            _validate_dornatv_identity(obj, crawled)
+        except ProviderImportError as exc:
+            mismatch = exc
+            continue
+        return crawled
+    raise mismatch
 
 
 def crawl_dornatv_downloads_for_movie(
@@ -318,15 +358,7 @@ def crawl_dornatv_downloads_for_movie(
     target = (page_url or provider_item_id or '').strip()
     connector = get_connector('dornatv')
     try:
-        if not target:
-            target = _auto_resolve_movie_target(connector, movie)
-        if not target:
-            raise ProviderImportError(
-                'Provide a Dornatv page URL or ensure the title matches a listing.',
-                code='dornatv_page_required',
-            )
-        crawled = connector.crawl_download_links(target, content_type='movie')
-        _validate_dornatv_identity(movie, crawled)
+        crawled = _crawl_matching_page(connector, movie, target, content_type='movie')
     except ProviderImportError:
         raise
     except Exception as exc:
@@ -382,15 +414,7 @@ def crawl_dornatv_downloads_for_series(
     target = (page_url or provider_item_id or '').strip()
     connector = get_connector('dornatv')
     try:
-        if not target:
-            target = _auto_resolve_series_target(connector, series)
-        if not target:
-            raise ProviderImportError(
-                'Provide a Dornatv series URL or ensure the title matches a listing.',
-                code='dornatv_page_required',
-            )
-        crawled = connector.crawl_download_links(target, content_type='series')
-        _validate_dornatv_identity(series, crawled)
+        crawled = _crawl_matching_page(connector, series, target, content_type='series')
     except ProviderImportError:
         raise
     except Exception as exc:

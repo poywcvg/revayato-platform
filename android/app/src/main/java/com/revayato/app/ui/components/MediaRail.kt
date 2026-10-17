@@ -25,7 +25,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
-import com.revayato.app.core.theme.BrandMint
+import com.revayato.app.core.theme.Brand
 import com.revayato.app.data.model.CatalogCardDto
 
 /** A titled horizontal rail of poster cards. */
@@ -35,10 +35,12 @@ fun MediaRail(
     items: List<CatalogCardDto>,
     onItemClick: (CatalogCardDto) -> Unit,
     modifier: Modifier = Modifier,
-    accent: Color = BrandMint,
+    accent: Color = Brand,
     onSeeAll: (() -> Unit)? = null,
 ) {
     if (items.isEmpty()) return
+    // Same width as a grid cell, so a rail card and a grid card are one size.
+    val cardWidth = posterCardWidth()
     Column(modifier = modifier.fillMaxWidth()) {
         SectionHeader(title = title, accent = accent, onSeeAll = onSeeAll)
         LazyRow(
@@ -49,7 +51,7 @@ fun MediaRail(
                 PosterCard(
                     item = item,
                     onClick = { onItemClick(item) },
-                    modifier = Modifier.width(132.dp),
+                    modifier = Modifier.width(cardWidth),
                 )
             }
         }
@@ -60,7 +62,7 @@ fun MediaRail(
 fun SectionHeader(
     title: String,
     modifier: Modifier = Modifier,
-    accent: Color = BrandMint,
+    accent: Color = Brand,
     onSeeAll: (() -> Unit)? = null,
 ) {
     Row(

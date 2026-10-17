@@ -52,3 +52,19 @@ class SupportTicketAdmin(admin.ModelAdmin):
     autocomplete_fields = ['user']
     inlines = [SupportMessageInline]
     readonly_fields = ['tracking_code', 'created_at', 'updated_at', 'last_message_at']
+    actions = ['delete_resolved_tickets']
+
+    @admin.action(description='حذف درخواست‌های حل‌شده/بستهٔ انتخاب‌شده از پنل')
+    def delete_resolved_tickets(self, request, queryset):
+        finished = [SupportTicket.Status.RESOLVED, SupportTicket.Status.CLOSED]
+        deletable = queryset.filter(status__in=finished)
+        skipped = queryset.count() - deletable.count()
+        deleted, _details = deletable.delete()
+        if deleted:
+            self.message_user(request, f'{deleted} درخواست حل‌شده حذف شد.')
+        if skipped:
+            self.message_user(
+                request,
+                f'{skipped} درخواست باز حذف نشد (فقط حل‌شده/بسته حذف می‌شوند).',
+                level='warning',
+            )

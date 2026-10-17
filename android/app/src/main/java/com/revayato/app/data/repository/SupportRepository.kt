@@ -34,19 +34,27 @@ class SupportRepository @Inject constructor(
 
     /**
      * Open a fresh request in the chosen [category]. `body` must be at least 10
-     * characters (enforced server-side too). Returns the tracking code so the
-     * caller can open the new conversation.
+     * characters (enforced server-side too). `relatedTitle`/`relatedYear`/
+     * `relatedUrl` power the content_request automation (same contract as the
+     * web /contact form) — without them a title request cannot auto-resolve.
+     * Returns the tracking code so the caller can open the new conversation.
      */
     suspend fun create(
         category: String,
         subject: String,
         body: String,
+        relatedTitle: String = "",
+        relatedYear: Int? = null,
+        relatedUrl: String = "",
     ): ApiResult<SupportTicketDto> = safeApiCall {
         api.createSupportTicket(
             SupportTicketRequest(
                 category = category,
                 subject = subject.take(255),
                 body = body,
+                relatedTitle = relatedTitle.take(255),
+                relatedYear = relatedYear,
+                relatedUrl = relatedUrl.take(500),
             ),
         )
     }

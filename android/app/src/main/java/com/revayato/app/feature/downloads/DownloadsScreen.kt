@@ -38,8 +38,8 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.media3.exoplayer.offline.Download
 import com.revayato.app.core.download.DownloadItem
 import com.revayato.app.core.theme.BgElevated
-import com.revayato.app.core.theme.BrandGreen
-import com.revayato.app.core.theme.BrandMint
+import com.revayato.app.core.theme.BrandDeep
+import com.revayato.app.core.theme.Brand
 import com.revayato.app.core.theme.TextMuted
 import com.revayato.app.core.theme.TextSecondary
 import com.revayato.app.ui.components.EmptyState
@@ -107,9 +107,9 @@ private fun DownloadRow(
         verticalAlignment = Alignment.CenterVertically,
     ) {
         val (icon, tint) = when {
-            item.isComplete -> Icons.Rounded.PlayCircle to BrandMint
+            item.isComplete -> Icons.Rounded.PlayCircle to Brand
             item.state == Download.STATE_FAILED -> Icons.Rounded.Downloading to TextMuted
-            else -> Icons.Rounded.Downloading to BrandGreen
+            else -> Icons.Rounded.Downloading to BrandDeep
         }
         Icon(icon, contentDescription = null, tint = tint, modifier = Modifier.size(34.dp))
         Spacer(Modifier.size(12.dp))
@@ -124,7 +124,7 @@ private fun DownloadRow(
             Spacer(Modifier.size(4.dp))
             if (item.isComplete) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    Icon(Icons.Rounded.CheckCircle, contentDescription = null, tint = BrandGreen, modifier = Modifier.size(14.dp))
+                    Icon(Icons.Rounded.CheckCircle, contentDescription = null, tint = BrandDeep, modifier = Modifier.size(14.dp))
                     Spacer(Modifier.size(4.dp))
                     Text("آمادهٔ تماشای آفلاین", style = MaterialTheme.typography.labelSmall, color = TextSecondary)
                 }
@@ -132,7 +132,7 @@ private fun DownloadRow(
                 LinearProgressIndicator(
                     progress = { (item.percentDownloaded / 100f).coerceIn(0f, 1f) },
                     modifier = Modifier.fillMaxWidth(),
-                    color = BrandMint,
+                    color = Brand,
                     trackColor = BgElevated,
                 )
                 Spacer(Modifier.size(4.dp))

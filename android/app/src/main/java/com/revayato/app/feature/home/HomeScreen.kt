@@ -33,6 +33,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.ReadOnlyComposable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
@@ -43,18 +44,22 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.revayato.app.core.playback.WatchProgressEntry
+import com.revayato.app.core.theme.TextMuted
 import com.revayato.app.core.theme.AccentBlue
 import com.revayato.app.core.theme.AccentRed
 import com.revayato.app.core.theme.AccentYellow
-import com.revayato.app.core.theme.BrandMint
+import com.revayato.app.core.theme.Brand
 import com.revayato.app.core.theme.PlayAccent
 import com.revayato.app.core.ui.UiState
 import com.revayato.app.data.model.CatalogCardDto
 import com.revayato.app.data.model.GenreDto
 import com.revayato.app.ui.components.ErrorState
+import com.revayato.app.ui.components.FitStep
+import com.revayato.app.ui.components.FitText
 import com.revayato.app.ui.components.LoadingState
 import com.revayato.app.ui.components.MediaRail
 import com.revayato.app.ui.components.NetworkImage
@@ -63,7 +68,8 @@ import com.revayato.app.ui.components.SectionHeader
 import kotlinx.coroutines.delay
 
 /** Rotating shelf accents (زرد / قرمز / آبی / نعناعی) for a lively rhythm. */
-private val RailAccents = listOf(AccentYellow, AccentRed, AccentBlue, PlayAccent, BrandMint)
+private val RailAccents: List<Color>
+    @Composable @ReadOnlyComposable get() = listOf(AccentYellow, AccentRed, AccentBlue, PlayAccent, Brand)
 
 @Composable
 fun HomeScreen(
@@ -149,6 +155,13 @@ private fun ContinueWatchingRail(
     }
 }
 
+private val ContinueTitleSteps = listOf(
+    FitStep(14.sp, 20.sp, 1),
+    FitStep(13.sp, 18.sp, 1),
+    FitStep(12.sp, 17.sp, 1),
+    FitStep(11.sp, 16.sp, 1),
+)
+
 @Composable
 private fun ContinueWatchingCard(
     entry: WatchProgressEntry,
@@ -201,13 +214,15 @@ private fun ContinueWatchingCard(
                 .padding(start = 12.dp, end = 12.dp, top = 12.dp, bottom = 10.dp),
             verticalArrangement = Arrangement.spacedBy(6.dp),
         ) {
-            Text(
+            // One line (the play button owns the middle), shrunk to fit before
+            // it ever ellipsizes, so long names still read in full.
+            FitText(
                 text = entry.title,
+                steps = ContinueTitleSteps,
                 style = MaterialTheme.typography.titleSmall,
                 fontWeight = FontWeight.Bold,
                 color = Color.White,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.fillMaxWidth(),
             )
             if (entry.episodeLabel.isNotBlank()) {
                 Text(
@@ -243,7 +258,7 @@ private fun GenreChipsRow(
     genres: List<GenreDto>,
     onOpenGenre: (GenreDto) -> Unit,
 ) {
-    val accents = listOf(AccentYellow, AccentRed, AccentBlue, PlayAccent, BrandMint)
+    val accents = listOf(AccentYellow, AccentRed, AccentBlue, PlayAccent, Brand)
     Column(Modifier.fillMaxWidth()) {
         SectionHeader(title = "ژانرها", accent = AccentBlue)
         LazyRow(
@@ -310,7 +325,7 @@ private fun HeroSlider(
                         .padding(horizontal = 3.dp)
                         .size(if (active) 20.dp else 6.dp, 6.dp)
                         .clip(CircleShape)
-                        .background(if (active) BrandMint else Color(0x55FFFFFF)),
+                        .background(if (active) Brand else TextMuted.copy(alpha = 0.45f)),
                 )
             }
         }
@@ -356,8 +371,7 @@ private fun HeroSlide(
                 style = MaterialTheme.typography.headlineSmall,
                 fontWeight = FontWeight.Bold,
                 color = Color.White,
-                maxLines = 2,
-                overflow = TextOverflow.Ellipsis,
+                maxLines = 3,
             )
             Row(
                 verticalAlignment = Alignment.CenterVertically,
@@ -382,7 +396,7 @@ private fun HeroSlide(
             Button(
                 onClick = { onOpen(item.contentType, item.slug) },
                 colors = ButtonDefaults.buttonColors(
-                    containerColor = BrandMint,
+                    containerColor = Brand,
                     contentColor = Color(0xFF0D0D0D),
                 ),
                 shape = RoundedCornerShape(12.dp),

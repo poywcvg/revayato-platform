@@ -1,5 +1,6 @@
 package com.revayato.app.feature.detail
 
+import com.revayato.app.core.theme.BgSoft
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -36,8 +37,8 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.blur
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
@@ -45,11 +46,12 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.revayato.app.core.theme.BgElevated
-import com.revayato.app.core.theme.BrandMint
+import com.revayato.app.core.theme.Brand
 import com.revayato.app.core.theme.OnBrand
 import com.revayato.app.core.theme.OutlineSoft
 import com.revayato.app.core.theme.StarGold
 import com.revayato.app.core.theme.TextMuted
+import com.revayato.app.core.theme.NeutralSurface
 import com.revayato.app.core.theme.TextSecondary
 import com.revayato.app.data.model.RatingDto
 import com.revayato.app.data.model.RatingSummaryDto
@@ -94,7 +96,25 @@ fun RatingsAndComments(
         modifier = modifier.fillMaxWidth().padding(horizontal = 16.dp),
         verticalArrangement = Arrangement.spacedBy(14.dp),
     ) {
-        SectionTitle("نظرات و امتیازها")
+        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            SectionTitle("نظرات و امتیازها")
+            val comments = maxOf(ui.count, ui.reviews.size)
+            if (comments > 0) {
+                Box(
+                    Modifier
+                        .padding(top = 8.dp)
+                        .clip(RoundedCornerShape(999.dp))
+                        .background(NeutralSurface)
+                        .padding(horizontal = 8.dp, vertical = 2.dp),
+                ) {
+                    Text(
+                        toPersianDigits(comments.toString()),
+                        style = MaterialTheme.typography.labelMedium,
+                        color = TextSecondary,
+                    )
+                }
+            }
+        }
 
         AverageRatingCard(average = ui.average, count = ui.count)
 
@@ -113,7 +133,7 @@ fun RatingsAndComments(
             ui.loading -> Box(
                 Modifier.fillMaxWidth().padding(vertical = 20.dp),
                 contentAlignment = Alignment.Center,
-            ) { CircularProgressIndicator(color = BrandMint, strokeWidth = 2.dp) }
+            ) { CircularProgressIndicator(color = Brand, strokeWidth = 2.dp) }
 
             ui.reviews.isEmpty() -> Text(
                 text = "هنوز نظری ثبت نشده — اولین نفر باش!",
@@ -191,8 +211,8 @@ private fun RateComposer(
             placeholder = { Text("نظرت را بنویس… (اختیاری)") },
             keyboardOptions = KeyboardOptions(imeAction = ImeAction.Default),
             colors = OutlinedTextFieldDefaults.colors(
-                focusedBorderColor = BrandMint,
-                cursorColor = BrandMint,
+                focusedBorderColor = Brand,
+                cursorColor = Brand,
             ),
         )
 
@@ -206,10 +226,10 @@ private fun RateComposer(
                 Modifier
                     .size(20.dp)
                     .background(
-                        if (spoiler) BrandMint else Color.Transparent,
+                        if (spoiler) Brand else Color.Transparent,
                         RoundedCornerShape(5.dp),
                     )
-                    .border(1.5.dp, if (spoiler) BrandMint else OutlineSoft, RoundedCornerShape(5.dp)),
+                    .border(1.5.dp, if (spoiler) Brand else OutlineSoft, RoundedCornerShape(5.dp)),
                 contentAlignment = Alignment.Center,
             ) {
                 if (spoiler) Text("✓", color = OnBrand, fontSize = 13.sp, fontWeight = FontWeight.Bold)
@@ -223,7 +243,7 @@ private fun RateComposer(
             modifier = Modifier
                 .fillMaxWidth()
                 .background(
-                    if (canSubmit) BrandMint else OutlineSoft,
+                    if (canSubmit) Brand else OutlineSoft,
                     RoundedCornerShape(14.dp),
                 )
                 .clickable(enabled = canSubmit) {
@@ -279,7 +299,7 @@ private fun LoginPrompt(onRequireLogin: () -> Unit) {
             text = "برای ثبت نظر و امتیاز وارد شوید",
             style = MaterialTheme.typography.bodyMedium,
             fontWeight = FontWeight.Bold,
-            color = BrandMint,
+            color = Brand,
         )
     }
 }
@@ -293,7 +313,7 @@ private fun ReviewCard(review: RatingDto) {
             .background(BgElevated, RoundedCornerShape(16.dp))
             .border(
                 1.dp,
-                if (review.isFeatured) BrandMint.copy(alpha = 0.55f) else OutlineSoft,
+                if (review.isFeatured) Brand.copy(alpha = 0.55f) else OutlineSoft,
                 RoundedCornerShape(16.dp),
             )
             .padding(14.dp),
@@ -302,7 +322,7 @@ private fun ReviewCard(review: RatingDto) {
         if (review.isFeatured) {
             Row(
                 modifier = Modifier
-                    .background(BrandMint.copy(alpha = 0.14f), RoundedCornerShape(999.dp))
+                    .background(Brand.copy(alpha = 0.14f), RoundedCornerShape(999.dp))
                     .padding(horizontal = 9.dp, vertical = 4.dp),
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(4.dp),
@@ -310,15 +330,15 @@ private fun ReviewCard(review: RatingDto) {
                 Icon(
                     Icons.Rounded.AutoAwesome,
                     contentDescription = null,
-                    tint = BrandMint,
+                    tint = Brand,
                     modifier = Modifier.size(13.dp),
                 )
-                Text("نقد برگزیده", color = BrandMint, fontWeight = FontWeight.Bold, fontSize = 11.sp)
+                Text("نقد برگزیده", color = Brand, fontWeight = FontWeight.Bold, fontSize = 11.sp)
             }
         }
         Row(verticalAlignment = Alignment.CenterVertically) {
             Box(
-                Modifier.size(34.dp).background(BrandMint, CircleShape),
+                Modifier.size(34.dp).background(Brand, CircleShape),
                 contentAlignment = Alignment.Center,
             ) {
                 Text(
@@ -348,8 +368,11 @@ private fun ReviewCard(review: RatingDto) {
                 Text(
                     text = text,
                     style = MaterialTheme.typography.bodyMedium,
-                    color = TextSecondary,
-                    modifier = if (revealed) Modifier else Modifier.blur(10.dp),
+                    // Masked like the web: solid tone, transparent ink. No blur.
+                    color = if (revealed) TextSecondary else Color.Transparent,
+                    modifier = if (revealed) Modifier else Modifier
+                        .clip(RoundedCornerShape(6.dp))
+                        .background(BgSoft),
                 )
                 if (!revealed) {
                     Box(
@@ -375,8 +398,8 @@ private fun ReviewCard(review: RatingDto) {
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .background(BrandMint.copy(alpha = 0.08f), RoundedCornerShape(12.dp))
-                    .border(1.dp, BrandMint.copy(alpha = 0.32f), RoundedCornerShape(12.dp))
+                    .background(Brand.copy(alpha = 0.08f), RoundedCornerShape(12.dp))
+                    .border(1.dp, Brand.copy(alpha = 0.32f), RoundedCornerShape(12.dp))
                     .padding(12.dp),
                 verticalArrangement = Arrangement.spacedBy(6.dp),
             ) {
@@ -387,12 +410,12 @@ private fun ReviewCard(review: RatingDto) {
                     Icon(
                         Icons.Rounded.Verified,
                         contentDescription = null,
-                        tint = BrandMint,
+                        tint = Brand,
                         modifier = Modifier.size(16.dp),
                     )
                     Text(
                         "پاسخ روایتو",
-                        color = BrandMint,
+                        color = Brand,
                         fontWeight = FontWeight.Bold,
                         style = MaterialTheme.typography.labelLarge,
                     )

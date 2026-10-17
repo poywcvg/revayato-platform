@@ -308,3 +308,31 @@ def sync_catalog_ratings(*, movies: bool = True, series: bool = True, limit: int
                     ['imdb_rating', 'imdb_votes', 'imdb_rating_source', 'imdb_rating_synced_at'],
                 )
     return summary
+
+
+def sync_title_rating(obj) -> str:
+    """IMDb's own score for one title — the per-title half of :func:`sync_catalog_ratings`.
+
+    Returns what happened: ``updated``, ``unchanged``, ``unrated_by_imdb``,
+    ``manual`` (a human's score stands) or ``no_imdb_id``.
+    """
+    imdb_id = (getattr(obj, 'imdb_id', '') or '').strip()
+    if not imdb_id.startswith('tt'):
+        return 'no_imdb_id'
+    if not _may_overwrite(obj, obj.imdb_rating_source):
+        return 'manual'
+    exact = lookup(imdb_id)
+    if exact is None:
+        return 'unrated_by_imdb'
+    previous = float(obj.imdb_rating) if obj.imdb_rating is not None else None
+    if (
+        previous is not None and abs(previous - exact.rating) < 0.05
+        and obj.imdb_rating_source == SOURCE_IMDB and obj.imdb_votes == exact.votes
+    ):
+        return 'unchanged'
+    obj.imdb_rating = round(exact.rating, 1)
+    obj.imdb_votes = exact.votes
+    obj.imdb_rating_source = SOURCE_IMDB
+    obj.imdb_rating_synced_at = timezone.now()
+    obj.save(update_fields=['imdb_rating', 'imdb_votes', 'imdb_rating_source', 'imdb_rating_synced_at'])
+    return 'updated'

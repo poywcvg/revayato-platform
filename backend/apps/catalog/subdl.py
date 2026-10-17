@@ -23,6 +23,7 @@ from urllib.request import HTTPRedirectHandler, HTTPSHandler, Request, build_ope
 from django.conf import settings
 from django.core.cache import cache
 
+from apps.catalog.subtitle_provider_health import is_live_lane, note_provider_outage
 from apps.catalog.subtitle_star import (
     _choose_release,
     _has_persian_text,
@@ -40,6 +41,11 @@ DOWNLOAD_BASE = 'https://dl.subdl.com'
 SITE_BASE = 'https://subdl.com'
 _ALLOWED_HOSTS = ('api.subdl.com', 'dl.subdl.com')
 CIRCUIT_OPEN_KEY = 'catalog:subdl:circuit-open'
+# Bulk backfill pauses on its own key: a 429 closes the provider for every lane
+# only briefly, but keeps backfill off the shared quota for much longer, so the
+# viewer who presses play gets the quota back within minutes.
+BULK_PAUSED_KEY = 'catalog:subdl:bulk-paused'
+BULK_BUDGET_KEY = 'catalog:subdl:bulk-budget:{hour}'
 _PERSIAN_LANGS = {'fa', 'farsi', 'persian', 'farsi_persian', 'farsi/persian'}
 _SUB_SUFFIXES = {'.srt', '.vtt', '.webvtt', '.ass', '.ssa'}
 
@@ -50,6 +56,10 @@ class SubdlError(RuntimeError):
 
 class SubdlBlocked(SubdlError):
     """Provider rejected the key or asked us to back off."""
+
+
+class SubdlDeferred(SubdlBlocked):
+    """Bulk lane is out of its share of the quota; the live lane is unaffected."""
 
 
 @dataclass(frozen=True)
@@ -123,7 +133,14 @@ class _SafeRedirectHandler(HTTPRedirectHandler):
 
 
 def _throttle(*, urgent: bool = False) -> None:
-    interval = max(0.1, 0.15 if urgent else float(getattr(settings, 'SUBDL_REQUEST_INTERVAL_SECONDS', 0.5)))
+    if urgent:
+        interval = 0.15
+    else:
+        interval = max(
+            float(getattr(settings, 'SUBDL_REQUEST_INTERVAL_SECONDS', 0.5)),
+            float(getattr(settings, 'SUBDL_BULK_INTERVAL_SECONDS', 3.0)),
+        )
+    interval = max(0.1, interval)
     key = 'catalog:subdl:next-request'
     now = time.time()
     next_at = float(cache.get(key) or 0)
@@ -133,17 +150,46 @@ def _throttle(*, urgent: bool = False) -> None:
 
 
 def _open_circuit(code: int) -> None:
-    # A rejected key will not fix itself in minutes; rate limits clear quickly.
-    cooldown = 60 * 60 if code in {401, 403} else 15 * 60
-    cache.set(CIRCUIT_OPEN_KEY, True, timeout=cooldown)
+    if code in {401, 403}:
+        # A rejected key will not fix itself in minutes.
+        cache.set(CIRCUIT_OPEN_KEY, True, timeout=60 * 60)
+        return
+    # Rate limit: everyone backs off briefly, bulk backfill for an hour.
+    live_backoff = max(30, int(getattr(settings, 'SUBDL_LIVE_BACKOFF_SECONDS', 180)))
+    bulk_backoff = max(live_backoff, int(getattr(settings, 'SUBDL_BULK_BACKOFF_SECONDS', 60 * 60)))
+    cache.set(CIRCUIT_OPEN_KEY, True, timeout=live_backoff)
+    cache.set(BULK_PAUSED_KEY, True, timeout=bulk_backoff)
+
+
+def _take_bulk_budget() -> bool:
+    """Spend one request of the bulk lane's hourly share; False when it is used up."""
+    budget = int(getattr(settings, 'SUBDL_BULK_HOURLY_BUDGET', 90))
+    if budget <= 0:
+        return False
+    key = BULK_BUDGET_KEY.format(hour=time.strftime('%Y%m%d%H', time.gmtime()))
+    cache.add(key, 0, timeout=2 * 60 * 60)
+    try:
+        used = int(cache.incr(key))
+    except ValueError:
+        cache.set(key, 1, timeout=2 * 60 * 60)
+        used = 1
+    return used <= budget
 
 
 def _fetch(url: str, *, max_bytes: int, timeout_seconds: float, urgent: bool) -> tuple[bytes, str]:
     if not _host_allowed(url):
         raise SubdlError('SubDL URL host is not allowlisted.')
+    # Only an open player (lane set by the ensure request / softsub-urgent
+    # worker) may spend the reserved quota; ``urgent`` just tightens pacing.
+    live = is_live_lane()
     if cache.get(CIRCUIT_OPEN_KEY):
         raise SubdlBlocked('SubDL circuit breaker is open.')
-    _throttle(urgent=urgent)
+    if not live:
+        if cache.get(BULK_PAUSED_KEY):
+            raise SubdlDeferred('SubDL bulk lane is paused after a rate limit.')
+        if not _take_bulk_budget():
+            raise SubdlDeferred('SubDL bulk lane used its hourly share.')
+    _throttle(urgent=bool(live or urgent))
     request = Request(url, headers={
         'User-Agent': 'Revayato/1.0 (+https://revayato.com)',
         'Accept': 'application/json,application/zip,*/*;q=0.5',
@@ -167,6 +213,11 @@ def _fetch(url: str, *, max_bytes: int, timeout_seconds: float, urgent: bool) ->
         raise SubdlError(f'SubDL network error: {type(exc.reason).__name__}') from None
     except (TimeoutError, OSError) as exc:
         raise SubdlError(f'SubDL network error: {type(exc).__name__}') from None
+
+
+def _log_paused(message: str, exc: Exception) -> None:
+    # Bulk deferrals are routine budgeting, not incidents worth a warning each.
+    (logger.debug if isinstance(exc, SubdlDeferred) else logger.warning)(message, exc)
 
 
 def _as_int(value) -> int | None:
@@ -195,9 +246,12 @@ def _query(params: dict, *, timeout_seconds: float, urgent: bool) -> dict:
         return {}
     if data.get('status') is False:
         error = str(data.get('error') or '').casefold()
-        if ('api' in error and 'key' in error) or 'not_authorized' in error or 'limit' in error:
+        if 'limit' in error:
+            _open_circuit(429)
+            raise SubdlBlocked('SubDL quota limit reached.')
+        if ('api' in error and 'key' in error) or 'not_authorized' in error:
             _open_circuit(403)
-            raise SubdlBlocked('SubDL rejected the API key or quota.')
+            raise SubdlBlocked('SubDL rejected the API key.')
         return {}  # "can't find movie or tv" is an ordinary miss
     return data
 
@@ -316,6 +370,7 @@ def find_movie_subtitle(
                 raise
             except SubdlError as exc:
                 logger.info('SubDL download failed for movie=%s: %s', getattr(movie, 'pk', None), exc)
+                note_provider_outage('subdl')
                 complete = False
                 continue
             members = [(n, p) for n, p in _members(body, entry.url) if _has_persian_text(p)]
@@ -339,12 +394,15 @@ def find_movie_subtitle(
                 imdb_id=imdb_id,
             )
     except SubdlBlocked as exc:
-        logger.warning('SubDL lookup paused: %s', exc)
+        note_provider_outage('subdl')
+        _log_paused('SubDL lookup paused: %s', exc)
         return None
     except SubdlError as exc:
+        note_provider_outage('subdl')
         logger.info('SubDL lookup failed for movie=%s: %s', getattr(movie, 'pk', None), exc)
         return None
     except Exception:
+        note_provider_outage('subdl')
         logger.exception('Unexpected SubDL lookup failure for movie=%s', getattr(movie, 'pk', None))
         return None
 
@@ -399,6 +457,7 @@ def find_series_episode_subtitles(
                 raise
             except SubdlError as exc:
                 logger.info('SubDL download failed for series=%s: %s', getattr(series, 'pk', None), exc)
+                note_provider_outage('subdl')
                 complete = False
                 body = b''
             downloaded[entry.url] = [(n, p) for n, p in _members(body, entry.url) if _has_persian_text(p)]
@@ -458,12 +517,15 @@ def find_series_episode_subtitles(
                     remaining.discard(key)
                     break
     except SubdlBlocked as exc:
-        logger.warning('SubDL series lookup paused: %s', exc)
+        note_provider_outage('subdl')
+        _log_paused('SubDL series lookup paused: %s', exc)
         return results
     except SubdlError as exc:
+        note_provider_outage('subdl')
         logger.info('SubDL series lookup failed for series=%s: %s', getattr(series, 'pk', None), exc)
         return results
     except Exception:
+        note_provider_outage('subdl')
         logger.exception('Unexpected SubDL series lookup failure for series=%s', getattr(series, 'pk', None))
         return results
 

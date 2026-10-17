@@ -104,7 +104,7 @@ useSeoMeta({
       :count="readyCount"
       count-label="آماده تماشا"
     >
-      <div class="hide-scrollbar flex gap-2 overflow-x-auto pb-1" role="tablist" aria-label="نوع فهرست">
+      <ScrollStrip track-class="flex gap-2 pb-1" role="tablist" label="نوع فهرست">
         <button
           v-for="option in kindOptions"
           :key="option.value"
@@ -120,7 +120,7 @@ useSeoMeta({
           <CinematicIcon :name="option.icon" class="size-4.5" :stroke-width="kind === option.value ? 2.2 : 1.8" />
           ۲۵۰ {{ option.label }} برتر
         </button>
-      </div>
+      </ScrollStrip>
     </PageHero>
 
     <CatalogSourceNotice

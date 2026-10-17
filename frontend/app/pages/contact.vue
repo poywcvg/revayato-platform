@@ -70,6 +70,20 @@ async function openTicket(code: string) {
   }
 }
 
+function toEnDigits(value: string): string {
+  return (value || '')
+    .replace(/[۰-۹]/g, d => String('۰۱۲۳۴۵۶۷۸۹'.indexOf(d)))
+    .replace(/[٠-٩]/g, d => String('٠١٢٣٤٥٦٧٨٩'.indexOf(d)))
+}
+
+function parseYearOrNull(raw: string): number | null {
+  const digits = toEnDigits(raw).trim().replace(/[^0-9]/g, '')
+  if (!digits) return null
+  const year = Number(digits)
+  if (!Number.isFinite(year) || year < 1900 || year > 2100) return null
+  return year
+}
+
 async function submitTicket() {
   if (!authStore.isAuthenticated) {
     await navigateTo({ path: '/auth/login', query: { redirect: '/contact' } })
@@ -79,16 +93,26 @@ async function submitTicket() {
     notifications.warning('پیام ناقص است', 'موضوع و متن کامل‌تری بنویس.')
     return
   }
+  const yearRaw = relatedYear.value.trim()
+  const parsedYear = parseYearOrNull(yearRaw)
+  if (yearRaw && parsedYear === null) {
+    notifications.warning('سال معتبر نیست', 'سال را بین ۱۹۰۰ تا ۲۱۰۰ بنویس (مثلاً 2010).')
+    return
+  }
+  const urlRaw = relatedUrl.value.trim()
+  if (urlRaw && !/^https?:\/\/.+\..+/.test(urlRaw)) {
+    notifications.warning('لینک معتبر نیست', 'لینک باید با http(s) شروع شود.')
+    return
+  }
   submitting.value = true
   try {
-    const yearRaw = relatedYear.value.trim()
     const ticket = await support.create({
       category: category.value,
       subject: subject.value.trim(),
       body: body.value.trim(),
       related_title: relatedTitle.value.trim(),
-      related_year: yearRaw ? Number(yearRaw) : null,
-      related_url: relatedUrl.value.trim(),
+      related_year: parsedYear,
+      related_url: urlRaw,
     })
     notifications.success('پیام ارسال شد', 'به‌زودی پاسخ را همین‌جا می‌بینی.')
     subject.value = ''

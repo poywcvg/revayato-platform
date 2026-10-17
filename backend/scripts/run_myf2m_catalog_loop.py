@@ -118,7 +118,7 @@ def main() -> int:
     # Floor at 5 minutes: a round is already ~30+ minutes of work, and the floor
     # used to be 15 — which silently turned the configured 600 s into 900 s.
     interval = _number('MYF2M_CRAWL_INTERVAL_SECONDS', 21600, minimum=300)
-    request_delay = _number('MYF2M_BULK_CRAWL_DELAY_SECONDS', 3.0, minimum=1.0)
+    request_delay = _number('MYF2M_BULK_CRAWL_DELAY_SECONDS', 1.2, minimum=0.3)
     size_workers = _integer('MYF2M_SIZE_WORKERS', 4, minimum=1)
     size_timeout = _integer('MYF2M_SIZE_TIMEOUT_SECONDS', 10, minimum=5)
     size_probe_batch = _integer('MYF2M_SIZE_PROBE_BATCH', 600, minimum=50)

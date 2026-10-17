@@ -161,14 +161,14 @@ def translate_to_persian(text: str, *, timeout: int | None = None) -> str:
 
 
 def _pick_original_image(candidates: list, current: str | None) -> str | None:
-    """Prefer null-language (original) posters, then English, else keep current."""
+    """Prefer null-language (textless) stills, then English, else keep current."""
     rows = [item for item in (candidates or []) if isinstance(item, dict) and item.get('file_path')]
     if not rows:
         return current
 
     def score(item: dict) -> tuple:
         lang = (item.get('iso_639_1') or '').strip().lower()
-        # null/empty = original theatrical artwork
+        # null/empty = textless artwork — right for wide hero backdrops
         lang_rank = 0 if not lang else (1 if lang == 'en' else 2)
         return (
             lang_rank,
@@ -181,14 +181,51 @@ def _pick_original_image(candidates: list, current: str | None) -> str | None:
     return best or current
 
 
+def pick_titled_poster(candidates: list, current: str | None, original_language: str | None = '') -> str | None:
+    """The release poster with the title printed on it.
+
+    TMDB tags textless key art with a null language, so a titled poster is
+    one with a language: English first (it matches the English title the
+    site shows), then the title's own language, then Persian. Iranian titles
+    flip that — their own Persian poster is the original. Textless art is
+    only the last resort.
+    """
+    rows = [item for item in (candidates or []) if isinstance(item, dict) and item.get('file_path')]
+    if not rows:
+        return current
+    original = (original_language or '').strip().lower()
+    order = ['fa', 'en'] if original == 'fa' else [lang for lang in ('en', original, 'fa') if lang]
+
+    def score(item: dict) -> tuple:
+        lang = (item.get('iso_639_1') or '').strip().lower()
+        if not lang:
+            lang_rank = len(order) + 1
+        elif lang in order:
+            lang_rank = order.index(lang)
+        else:
+            lang_rank = len(order)
+        return (
+            lang_rank,
+            -(float(item.get('vote_average') or 0)),
+            -(int(item.get('vote_count') or 0)),
+        )
+
+    rows.sort(key=score)
+    return rows[0].get('file_path') or current
+
+
 def prefer_original_artwork(details: dict) -> dict:
-    """Force poster/backdrop paths to original (non-localized) TMDB stills when available."""
+    """Titled release poster + textless backdrop from the TMDB image lists."""
     images = details.get('images') or {}
-    poster = _pick_original_image(images.get('posters') or [], details.get('poster_path'))
+    poster = pick_titled_poster(
+        images.get('posters') or [],
+        details.get('poster_path'),
+        details.get('original_language'),
+    )
     backdrop = _pick_original_image(images.get('backdrops') or [], details.get('backdrop_path'))
     if poster:
         details['poster_path'] = poster
-        details['_poster_source'] = 'original'
+        details['_poster_source'] = 'titled'
     if backdrop:
         details['backdrop_path'] = backdrop
         details['_backdrop_source'] = 'original'

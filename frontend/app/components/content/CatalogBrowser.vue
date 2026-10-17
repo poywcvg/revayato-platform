@@ -146,7 +146,9 @@ const {
   countries: serverCountries,
   trendingQueries,
 } = useCatalogFilterOptions();
-await loadFilterOptions();
+// Kick off immediately; awaited together with the results below so SSR pays
+// the slower of the two round trips instead of their sum.
+const filterOptionsPromise = loadFilterOptions();
 
 const scopedCatalog = computed(() =>
   props.type ? catalog.value.filter((item) => item.type === props.type) : catalog.value,
@@ -667,7 +669,10 @@ watchDebounced(
       trackSearch(trimmed, filteredItems.value.length);
     }
   },
-  { debounce: 650 },
+  // Realtime typing: the header suggest answers in ~90ms and this list aborts
+  // in-flight fetches per keystroke-burst, so a short window here only
+  // coalesces the burst instead of adding a perceptible lag before results.
+  { debounce: 180 },
 );
 watch(() => route.query, applyRouteQuery, { deep: true });
 
@@ -868,7 +873,11 @@ watchDebounced(
   () => {
     if (import.meta.client) void loadRemoteResults();
   },
-  { debounce: 260, maxWait: 700 },
+  // Realtime follow-up to the query sync above: stale requests are aborted,
+  // so this window only spaces bursts, it never stacks slow fetches. Kept
+  // roomy on purpose — every committed keystroke used to fire two cold
+  // catalog queries (movies + series) against the database.
+  { debounce: 300, maxWait: 800 },
 );
 
 watch(totalPages, (pages) => {
@@ -882,9 +891,12 @@ watch(totalPages, (pages) => {
 // and awaiting here only froze the outgoing page under the out-in page transition
 // (navigation felt stuck until results arrived). Fetch in the background instead.
 if (import.meta.server || nuxtApp.isHydrating) {
-  await loadRemoteResults();
+  // Filter options and the first results page are independent: fetch them
+  // concurrently so SSR waits for the slower one, not their sum.
+  await Promise.all([filterOptionsPromise, loadRemoteResults()]);
 }
 else {
+  void filterOptionsPromise;
   void loadRemoteResults();
 }
 
@@ -904,7 +916,7 @@ onMounted(() => {
       :count="resultCount"
       :icon="discovery ? 'search' : type === 'series' ? 'series' : 'movie'"
     >
-      <div v-if="discovery" class="hide-scrollbar flex gap-2 overflow-x-auto pb-1">
+      <ScrollStrip v-if="discovery" track-class="flex gap-2 pb-1" role="group" label="جستجوهای آماده">
         <button
           v-for="item in quickSearches"
           :key="item.label"
@@ -914,7 +926,7 @@ onMounted(() => {
         >
           {{ item.label }}
         </button>
-      </div>
+      </ScrollStrip>
     </PageHero>
 
     <section
@@ -940,7 +952,7 @@ onMounted(() => {
           <Transition name="search-suggest">
             <div
               v-if="showSearchSuggestions"
-              class="absolute inset-x-0 top-full z-40 mt-2 overflow-hidden rounded-2xl bg-surface ring-1 ring-primary-500/25 shadow-xl shadow-black/30"
+              class="absolute inset-x-0 top-full z-40 mt-2 overflow-hidden rounded-2xl bg-surface ring-1 ring-primary-500/25"
               role="listbox"
               aria-label="پیشنهادهای جستجو"
             >
@@ -1008,7 +1020,7 @@ onMounted(() => {
             type="button"
             class="inline-flex h-12 w-full items-center justify-center gap-2 rounded-xl px-5 text-sm font-black transition lg:h-12"
             :class="
-              activeFilters
+ activeFilters
                 ? 'cinema-glow bg-primary-500 text-night-950'
                 : 'bg-elevated text-secondary ring-1 ring-line hover:text-primary-300 hover:ring-primary-500/40'
             "
@@ -1054,14 +1066,14 @@ onMounted(() => {
       <!-- Content-type switch (mixed discovery only) -->
       <div v-if="!type" class="mt-4 border-t border-line pt-4">
         <p class="mb-2 text-xs font-black text-secondary">نوع محتوا</p>
-        <div class="hide-scrollbar flex gap-2 overflow-x-auto pb-1">
+        <ScrollStrip track-class="flex gap-2 pb-1" role="group" label="نوع محتوا">
           <button
             v-for="option in typeOptions"
             :key="option.value"
             type="button"
             class="inline-flex min-h-11 shrink-0 items-center gap-2 rounded-xl px-3.5 py-2 text-xs font-bold transition"
             :class="
-              contentKind === option.value
+ contentKind === option.value
                 ? 'cinema-glow bg-primary-500 text-night-950'
                 : 'bg-elevated text-secondary ring-1 ring-line hover:text-primary-300 hover:ring-primary-500/40'
             "
@@ -1075,7 +1087,7 @@ onMounted(() => {
               :stroke-width="contentKind === option.value ? 2.2 : 1.8"
             />{{ option.label }}
           </button>
-        </div>
+        </ScrollStrip>
       </div>
 
       <div
@@ -1112,7 +1124,7 @@ onMounted(() => {
       <Transition name="filter-drawer">
         <div v-if="drawerOpen" class="fixed inset-0 z-[70] lg:hidden">
           <div
-            class="absolute inset-0 bg-black/65 backdrop-blur-sm"
+            class="absolute inset-0 bg-black/65"
             aria-hidden="true"
             @click="drawerOpen = false"
           />

@@ -9,28 +9,31 @@ import androidx.compose.ui.unit.TextUnit
 import androidx.compose.ui.unit.sp
 import com.revayato.app.R
 
-// Yekan ships as one bold master, so lighter cuts are derived from it:
-// regular for running text, medium for SemiBold labels, the original for Bold.
-// Neither face carries Latin letters or ASCII digits; Android falls back to the system
-// face for those, as the web does.
-private fun yekanFamily(regular: Int, medium: Int, bold: Int) = FontFamily(
-    Font(regular, FontWeight.Normal),
-    Font(regular, FontWeight.Medium),
-    Font(medium, FontWeight.SemiBold),
-    Font(bold, FontWeight.Bold),
+// Mikhak — the same face as the website. The TTFs are static cuts of the web's
+// variable font (wght 400/500/600/700/850) with the web's size-adjust (78% of the em)
+// and line metrics (ascent 107%, descent 59%) baked in, so Persian text sits at the
+// same visual size as before while Latin letters and ASCII digits (absent from the
+// files, exactly like the web's unicode-range) fall back to Roboto at full size.
+private val Mikhak = FontFamily(
+    Font(R.font.mikhak_regular, FontWeight.Normal),
+    Font(R.font.mikhak_medium, FontWeight.Medium),
+    Font(R.font.mikhak_semibold, FontWeight.SemiBold),
+    Font(R.font.mikhak_bold, FontWeight.Bold),
+    Font(R.font.mikhak_black, FontWeight.ExtraBold),
+    Font(R.font.mikhak_black, FontWeight.Black),
 )
 
 /** Body / UI face. */
-val YekanPlus = yekanFamily(R.font.yekan_plus_regular, R.font.yekan_plus_medium, R.font.yekan_plus)
+val YekanPlus = Mikhak
 
 /** Display face for the large headline roles. */
-val YekanBoom = yekanFamily(R.font.yekan_boom, R.font.yekan_boom, R.font.yekan_boom)
+val YekanBoom = Mikhak
 
 private val base = Typography()
 
-// Yekan's letters sit ~25% smaller than Vazirmatn's at the same sp, which the scale
-// below was tuned for; this brings them back to a comfortable reading size.
-private const val YEKAN_SCALE = 1.12f
+// Gentle lift over the base scale: Persian glyphs land ~9% larger than the old
+// Yekan, Latin fallback stays close to its old size.
+private const val YEKAN_SCALE = 1.04f
 
 // Bigger, bolder, and airier than the Material default scale — Persian text reads
 // better with heavier strokes and a touch more line-height. Role names are kept

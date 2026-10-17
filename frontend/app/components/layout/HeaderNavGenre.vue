@@ -30,7 +30,7 @@ const groups: GenreGroup[] = [
   },
   {
     label: 'انیمیشن',
-    icon: 'animation',
+    icon: 'cartoon',
     path: '/movies',
     query: { format: 'animation' },
     genreSlugs: ['animation', 'anime', 'kids', 'family', 'fantasy', 'comedy', 'adventure', 'musical', 'action'],
@@ -119,7 +119,7 @@ watch(() => route.fullPath, closeGroup)
           <div
             v-if="openIndex === idx"
             :id="`header-genre-menu-${idx}`"
-            class="header-dropdown header-nav-genre__panel absolute top-full z-50 mt-2 rounded-2xl p-3 shadow-2xl"
+            class="header-dropdown header-nav-genre__panel absolute top-full z-50 mt-2 rounded-2xl p-3"
             :class="panelAlignEnd ? 'end-0 start-auto' : 'start-0'"
             role="menu"
             :aria-label="`ژانرهای ${group.label}`"

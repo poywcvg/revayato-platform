@@ -11,11 +11,33 @@ from .models import (
 )
 
 
-def _require_persian_title(attrs, instance=None):
+def _require_persian_title(attrs, instance=None, *, publishing=False):
+    """Enforce the fa+en title contract on what this request actually writes.
+
+    A partial admin update that does not touch the title (feature toggle,
+    archive, a plot fix) must not be refused because the *stored* title is
+    still English: ~1% of the catalog is waiting on the title-repair lane and
+    every action on those rows used to fail with «عنوان باید فارسی باشد».
+    The stored title is still checked on create and when the request
+    publishes the row, so nothing reaches the site without a Persian title.
+    """
+    if instance is not None and 'title' not in attrs and not publishing:
+        if 'original_title' in attrs:
+            original = (attrs.get('original_title') or '').strip()
+            if original and not is_latin_text(original):
+                raise serializers.ValidationError({
+                    'original_title': 'عنوان انگلیسی باید با حروف لاتین باشد.',
+                })
+            attrs['original_title'] = original
+        return attrs
     title = (attrs.get('title') if 'title' in attrs else getattr(instance, 'title', '') or '').strip()
     if not title:
         raise serializers.ValidationError({'title': 'عنوان فارسی الزامی است.'})
     if not contains_persian(title):
+        if 'title' not in attrs:
+            raise serializers.ValidationError({
+                'title': 'برای انتشار، اول عنوان فارسی این مورد را وارد کنید (عنوان فعلی فارسی نیست).',
+            })
         raise serializers.ValidationError({'title': 'عنوان باید فارسی باشد.'})
     attrs['title'] = title
 
@@ -379,6 +401,7 @@ class AdminMovieSerializer(serializers.ModelSerializer):
             'content_format', 'is_dubbed', 'has_subtitle', 'is_uncensored', 'content_warnings',
             'imdb_rating', 'rating_average', 'vote_count', 'popularity', 'production_companies',
             'crew_metadata', 'writers', 'movie_actors', 'directors', 'is_featured', 'is_recommended',
+            'featured_order', 'slider_platform',
             'meta_title', 'meta_description', 'seo_keywords', 'media_status',
             'rights_verified', 'metadata_source', 'manual_override_fields',
             'last_tmdb_sync_at', 'created_at', 'updated_at', 'duplicate_warnings',
@@ -458,8 +481,12 @@ class AdminMovieSerializer(serializers.ModelSerializer):
         return normalized
 
     def validate(self, attrs):
-        attrs = _require_persian_title(attrs, self.instance)
-        title = attrs['title']
+        publishing = (
+            attrs.get('publication_status') == Movie.PublicationStatus.PUBLISHED
+            and getattr(self.instance, 'publication_status', None) != Movie.PublicationStatus.PUBLISHED
+        )
+        attrs = _require_persian_title(attrs, self.instance, publishing=publishing)
+        title = attrs.get('title') or getattr(self.instance, 'title', '')
         if not attrs.get('slug') and not getattr(self.instance, 'slug', ''):
             # Page addresses are English (``inception-2010``), never the Persian title.
             attrs['slug'] = english_slug_for(
@@ -470,11 +497,11 @@ class AdminMovieSerializer(serializers.ModelSerializer):
                 tmdb_id=attrs.get('tmdb_id'),
             )
 
-        links = attrs.get('download_links')
-        if links is None and self.instance is not None:
-            links = self.instance.download_links
-        if links is not None:
-            attrs['download_links'] = normalize_download_links(links)
+        # Links are only re-derived when this request sends them. Re-normalizing
+        # the stored links on every unrelated PATCH rewrote them (and marked
+        # them a manual override, freezing the crawler out) and clobbered the
+        # dub/subtitle badges the admin had just toggled.
+        if attrs.get('download_links') is not None:
             first = attrs['download_links'][0] if attrs['download_links'] else None
             if first and not attrs.get('quality') and not getattr(self.instance, 'quality', ''):
                 attrs['quality'] = first.get('quality') or ''
@@ -484,9 +511,13 @@ class AdminMovieSerializer(serializers.ModelSerializer):
 
             from apps.catalog.subtitle_extract import download_links_imply_dub, download_links_imply_subtitle
 
-            # Keep public badges honest: derive from link metadata, never leave stale flags.
-            attrs['has_subtitle'] = download_links_imply_subtitle(attrs['download_links'])
-            attrs['is_dubbed'] = download_links_imply_dub(attrs['download_links'])
+            # Keep public badges honest: derive from link metadata unless the
+            # admin set the badge explicitly in this same request.
+            if 'has_subtitle' not in attrs:
+                attrs['has_subtitle'] = download_links_imply_subtitle(attrs['download_links'])
+            if 'is_dubbed' not in attrs:
+                attrs['is_dubbed'] = download_links_imply_dub(attrs['download_links'])
+        if attrs.get('download_links') is not None or attrs.get('subtitle_tracks') is not None:
             tracks = attrs.get('subtitle_tracks')
             if tracks is None and self.instance is not None:
                 tracks = getattr(self.instance, 'subtitle_tracks', None) or []
@@ -714,6 +745,7 @@ class AdminSeriesSerializer(serializers.ModelSerializer):
             'content_format', 'is_dubbed', 'has_subtitle', 'is_uncensored', 'content_warnings',
             'imdb_rating', 'rating_average', 'vote_count', 'popularity',
             'series_actors', 'directors', 'status', 'is_published', 'is_featured',
+            'featured_order', 'slider_platform',
             'metadata_source', 'last_tmdb_sync_at', 'created_at', 'updated_at', 'duplicate_warnings',
         ]
         read_only_fields = [
@@ -796,8 +828,9 @@ class AdminSeriesSerializer(serializers.ModelSerializer):
         return normalized
 
     def validate(self, attrs):
-        attrs = _require_persian_title(attrs, self.instance)
-        title = attrs['title']
+        publishing = bool(attrs.get('is_published')) and not getattr(self.instance, 'is_published', False)
+        attrs = _require_persian_title(attrs, self.instance, publishing=publishing)
+        title = attrs.get('title') or getattr(self.instance, 'title', '')
         if not attrs.get('slug') and not getattr(self.instance, 'slug', ''):
             # Page addresses are English (``inception-2010``), never the Persian title.
             attrs['slug'] = english_slug_for(
@@ -808,14 +841,13 @@ class AdminSeriesSerializer(serializers.ModelSerializer):
                 tmdb_id=attrs.get('tmdb_id'),
             )
 
-        links = attrs.get('download_links')
-        if links is None and self.instance is not None:
-            links = self.instance.download_links
-        if links is not None:
-            attrs['download_links'] = normalize_download_links(links)
+        # Same rule as movies: only links sent in this request are re-derived.
+        if attrs.get('download_links') is not None:
             from apps.catalog.subtitle_extract import download_links_imply_dub, download_links_imply_subtitle
-            attrs['has_subtitle'] = download_links_imply_subtitle(attrs['download_links'])
-            attrs['is_dubbed'] = download_links_imply_dub(attrs['download_links'])
+            if 'has_subtitle' not in attrs:
+                attrs['has_subtitle'] = download_links_imply_subtitle(attrs['download_links'])
+            if 'is_dubbed' not in attrs:
+                attrs['is_dubbed'] = download_links_imply_dub(attrs['download_links'])
         return attrs
 
     def create(self, validated_data):

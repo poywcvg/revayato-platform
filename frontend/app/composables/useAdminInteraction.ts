@@ -58,6 +58,19 @@ export function useAdminInteraction() {
     })
   }
 
+  function deleteTicket(trackingCode: string) {
+    return api<{ ok: boolean, deleted: string }>(`/admin/support/tickets/${trackingCode}/`, {
+      method: 'DELETE',
+    })
+  }
+
+  function purgeTickets(payload: Record<string, unknown> = {}) {
+    return api<{ ok: boolean, deleted: number }>('/admin/support/tickets/purge/', {
+      method: 'POST',
+      body: payload,
+    })
+  }
+
   return {
     overview,
     refreshOverview,
@@ -67,5 +80,7 @@ export function useAdminInteraction() {
     ticketDetail,
     replyTicket,
     patchTicket,
+    deleteTicket,
+    purgeTickets,
   }
 }

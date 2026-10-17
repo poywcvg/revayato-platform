@@ -51,7 +51,7 @@ import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.revayato.app.BuildConfig
 import com.revayato.app.core.theme.BgElevated
-import com.revayato.app.core.theme.BrandMint
+import com.revayato.app.core.theme.Brand
 import com.revayato.app.core.theme.ErrorRed
 import com.revayato.app.core.theme.OnBrand
 import com.revayato.app.core.theme.PlayAccent
@@ -115,7 +115,7 @@ fun ProfileScreen(
                     Row(
                         Modifier
                             .clip(RoundedCornerShape(999.dp))
-                            .background(BrandMint.copy(alpha = 0.12f))
+                            .background(Brand.copy(alpha = 0.12f))
                             .clickable {
                                 clipboard.setText(AnnotatedString(shareLink))
                             }
@@ -123,8 +123,8 @@ fun ProfileScreen(
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.spacedBy(6.dp),
                     ) {
-                        Icon(Icons.Rounded.Share, contentDescription = null, tint = BrandMint, modifier = Modifier.size(15.dp))
-                        Text("اشتراک پروفایل", style = MaterialTheme.typography.labelMedium, color = BrandMint, fontWeight = FontWeight.Bold)
+                        Icon(Icons.Rounded.Share, contentDescription = null, tint = Brand, modifier = Modifier.size(15.dp))
+                        Text("اشتراک پروفایل", style = MaterialTheme.typography.labelMedium, color = Brand, fontWeight = FontWeight.Bold)
                     }
                 }
             }
@@ -156,7 +156,7 @@ fun ProfileScreen(
                         Text(
                             "مدیریت",
                             style = MaterialTheme.typography.labelMedium,
-                            color = BrandMint,
+                            color = Brand,
                             fontWeight = FontWeight.Bold,
                             modifier = Modifier.clickable(onClick = onOpenMyCollections),
                         )
@@ -176,7 +176,7 @@ fun ProfileScreen(
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.spacedBy(12.dp),
                     ) {
-                        Icon(Icons.Rounded.LibraryAddCheck, contentDescription = null, tint = BrandMint)
+                        Icon(Icons.Rounded.LibraryAddCheck, contentDescription = null, tint = Brand)
                         Text("اولین کالکشنت را بساز", fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
                         Icon(Icons.AutoMirrored.Rounded.KeyboardArrowLeft, contentDescription = null, tint = TextMuted)
                     }
@@ -236,7 +236,7 @@ fun ProfileScreen(
                     onClick = onLogin,
                     modifier = Modifier.fillMaxWidth().height(50.dp),
                     shape = RoundedCornerShape(14.dp),
-                    colors = ButtonDefaults.buttonColors(containerColor = BrandMint, contentColor = OnBrand),
+                    colors = ButtonDefaults.buttonColors(containerColor = Brand, contentColor = OnBrand),
                 ) {
                     Icon(Icons.AutoMirrored.Rounded.Login, contentDescription = null, modifier = Modifier.size(20.dp))
                     Spacer(Modifier.size(8.dp))
@@ -273,7 +273,7 @@ private fun ProfileRow(
             .padding(vertical = 14.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        Icon(icon, contentDescription = null, tint = BrandMint, modifier = Modifier.size(22.dp))
+        Icon(icon, contentDescription = null, tint = Brand, modifier = Modifier.size(22.dp))
         Spacer(Modifier.size(14.dp))
         Column(Modifier.weight(1f)) {
             Text(label, style = MaterialTheme.typography.bodyLarge)
@@ -331,7 +331,7 @@ private fun UpdateCheckRow(viewModel: UpdateViewModel = hiltViewModel()) {
                 CircularProgressIndicator(
                     modifier = Modifier.size(18.dp),
                     strokeWidth = 2.dp,
-                    color = BrandMint,
+                    color = Brand,
                 )
             }
         } else {

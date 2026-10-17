@@ -95,7 +95,14 @@ def main() -> int:
     if args.limit:
         series_rows = series_rows[: max(1, args.limit)]
 
-    before_eps = Episode.objects.filter(is_published=True).count()
+    # Progress stats only: a slow COUNT under checkpoint I/O pressure must never
+    # kill the whole refresh lane (seen cancelled by statement timeout). The
+    # per-series counts below already live inside refresh_one's try/except.
+    try:
+        before_eps = Episode.objects.filter(is_published=True).count()
+    except Exception as exc:
+        print(f'refresh_series stats before_eps unavailable: {exc}', flush=True)
+        before_eps = None
     stats = {
         'tried': 0,
         'ok': 0,
@@ -171,9 +178,15 @@ def main() -> int:
                         flush=True,
                     )
 
-    after_eps = Episode.objects.filter(is_published=True).count()
+    try:
+        after_eps = Episode.objects.filter(is_published=True).count()
+    except Exception as exc:
+        print(f'refresh_series stats after_eps unavailable: {exc}', flush=True)
+        after_eps = None
     stats['episodes_after'] = after_eps
-    stats['episodes_delta'] = after_eps - before_eps
+    stats['episodes_delta'] = (after_eps - before_eps) if (
+        isinstance(after_eps, int) and isinstance(before_eps, int)
+    ) else None
     print('REFRESH_SERIES_DONE', stats, flush=True)
     return 0
 

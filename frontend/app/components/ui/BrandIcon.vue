@@ -186,7 +186,7 @@ const icon = computed(() => icons[props.name])
   transition: opacity 160ms ease, transform 160ms ease;
 }
 
-:global(.group:hover) .brand-icon__accent {
+.group:hover .brand-icon__accent {
   opacity: 1;
   transform: scale(1.035);
 }

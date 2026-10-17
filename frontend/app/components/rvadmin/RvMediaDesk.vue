@@ -16,7 +16,8 @@
  * a probe says otherwise. Nothing here deletes a row: «حذف» archives, and
  * removing a link edits a list the next crawl refills.
  */
-import type { AdminContentKind, DeskAction, DeskLink, MediaDesk } from '~/types/admin'
+import type { AdminContentKind, CompletionStepKey, DeskAction, DeskCompletionStep, DeskLink, MediaDesk } from '~/types/admin'
+import { STAGED_REJECT_LABEL } from '~/utils/stagedRebuild'
 import Radar from '~icons/lucide/radar'
 import Loader from '~icons/lucide/loader-circle'
 import ShieldCheck from '~icons/lucide/shield-check'
@@ -30,6 +31,9 @@ import History from '~icons/lucide/history'
 import TriangleAlert from '~icons/lucide/triangle-alert'
 import RefreshCw from '~icons/lucide/refresh-cw'
 import CheckCheck from '~icons/lucide/check-check'
+import Wand from '~icons/lucide/wand-sparkles'
+import Rebuild from '~icons/lucide/rotate-ccw'
+import Undo from '~icons/lucide/undo-2'
 
 const props = defineProps<{ kind: AdminContentKind, id: number }>()
 const emit = defineEmits<{ changed: [MediaDesk] }>()
@@ -65,6 +69,8 @@ const ACTION_ERRORS: Record<string, string> = {
   queue_failed: 'صف پردازش در دسترس نبود',
   action_failed: 'اجرای عملیات ناموفق بود',
   duplicate_link: 'این لینک از قبل ثبت شده است',
+  no_rebuild_backup: 'نسخهٔ پشتیبانی برای بازگرداندن نیست',
+  completion_running: 'یک اجرا برای همین عنوان در جریان است',
 }
 
 async function run(action: DeskAction, payload: Record<string, unknown> = {}, success?: string) {
@@ -78,11 +84,11 @@ async function run(action: DeskAction, payload: Record<string, unknown> = {}, su
     return response
   }
   catch (err) {
-    const data = (err as { data?: { code?: string, detail?: string, blockers?: string[] } })?.data
+    const data = (err as { data?: { code?: string, blockers?: string[] } })?.data
     const blockers = (data?.blockers || []).map(blockerLabel).join('، ')
     notify.error(
       ACTION_ERRORS[data?.code || ''] || 'انجام نشد',
-      blockers || data?.detail || 'سرور درخواست را نپذیرفت',
+      blockers || adminErrorMessage(err, 'سرور درخواست را نپذیرفت'),
     )
     return null
   }
@@ -159,6 +165,137 @@ function when(iso: string | null | undefined) {
   return new Date(iso).toLocaleString('fa-IR', { dateStyle: 'short', timeStyle: 'short' })
 }
 
+// ----- «جستجوی دوباره و تکمیل» -------------------------------------------- //
+// The run happens on a worker (TMDB → titles → every provider → sizes → verify
+// → publish → subtitles, several minutes); the desk polls its own payload and
+// draws each step as it lands.
+
+const completion = computed(() => desk.value?.completion || null)
+const completing = computed(() => ['queued', 'running'].includes(completion.value?.state || ''))
+const rebuilding = computed(() => completion.value?.mode === 'rebuild' || completion.value?.mode === 'staged')
+const runTitle = computed(() => {
+  if (completion.value?.mode === 'staged') return 'بازسازی از صفر با تست'
+  return rebuilding.value ? 'بازسازی کامل از صفر' : 'جستجوی دوباره و تکمیل'
+})
+
+const STEP_LABEL: Record<CompletionStepKey, string> = {
+  backup: 'نسخهٔ پشتیبان',
+  episodes: 'هماهنگی قسمت‌ها',
+  playback: 'پخش آنلاین از صفر',
+  metadata: 'اطلاعات از TMDB',
+  titles: 'عنوان فارسی و انگلیسی',
+  sources: 'جستجوی لینک در همهٔ منابع',
+  sizes: 'اندازهٔ فایل‌ها',
+  verify: 'تست سلامت لینک‌ها',
+  publish: 'انتشار',
+  problems: 'رفع مشکل‌های سلامت محتوا',
+  subtitles: 'زیرنویس',
+  stage: 'خزش منابع روی نسخهٔ آزمایشی',
+  test: 'تست لینک‌های تازه',
+  apply: 'جایگزینی روی عنوان',
+}
+const STEP_STATUS: Record<DeskCompletionStep['status'], { label: string, tone: 'success' | 'info' | 'warning' | 'danger' | 'neutral' }> = {
+  pending: { label: 'در انتظار', tone: 'neutral' },
+  running: { label: 'در حال اجرا', tone: 'info' },
+  ok: { label: 'انجام شد', tone: 'success' },
+  skipped: { label: 'لازم نبود', tone: 'neutral' },
+  empty: { label: 'لینکی پیدا نشد', tone: 'warning' },
+  warn: { label: 'نامطمئن', tone: 'warning' },
+  blocked: { label: 'متوقف شد', tone: 'warning' },
+  error: { label: 'خطا', tone: 'danger' },
+}
+
+function stepDetail(step: DeskCompletionStep) {
+  if (step.key === 'stage' && step.staged_links != null) {
+    const head = `${fa(step.staged_links)} لینک تازه پیدا شد (فعلی: ${fa(step.links_before || 0)})`
+    return step.detail ? `${head} — ${step.detail}` : head
+  }
+  if (step.key === 'sources' && step.fresh != null) {
+    const head = `${fa(step.fresh)} لینک از منابع · ${fa(step.added || 0)} تازه · ${fa(step.removed || 0)} قدیمی حذف شد · ${fa(step.links_after || 0)} در کل`
+    return step.detail ? `${head} — ${step.detail}` : head
+  }
+  if (step.key === 'sources' && step.links_after != null) {
+    const added = step.links_after - (step.links_before || 0)
+    const head = added > 0 ? `${fa(added)} لینک تازه · ${fa(step.links_after)} لینک در کل` : `${fa(step.links_after)} لینک در کل`
+    return step.detail ? `${head} — ${step.detail}` : head
+  }
+  if (step.blockers?.length) return step.blockers.map(blockerLabel).join('، ')
+  return step.detail
+}
+
+let poll: ReturnType<typeof setTimeout> | null = null
+const POLL_MS = 3000
+
+function stopPolling() {
+  if (poll) clearTimeout(poll)
+  poll = null
+}
+
+async function pollCompletion() {
+  stopPolling()
+  if (!completing.value) return
+  poll = setTimeout(async () => {
+    try {
+      const fresh = await fetchDesk(props.kind, props.id)
+      const wasRunning = completing.value
+      desk.value = fresh
+      if (wasRunning && !completing.value) {
+        emit('changed', fresh)
+        const failedSteps = fresh.completion?.failed_steps || []
+        const verdict = fresh.completion?.verdict
+        if (fresh.completion?.state === 'done' && verdict === 'applied') notify.success('بازسازی اعمال شد', 'لینک‌های تازه تست شدند و جایگزین شدند')
+        else if (fresh.completion?.state === 'done' && verdict === 'rejected') notify.info('عنوان دست نخورد', STAGED_REJECT_LABEL[fresh.completion.verdict_reason || ''] || 'مجموعهٔ تازه تست را قبول نشد')
+        else if (fresh.completion?.state === 'done' && !failedSteps.length) notify.success(`${runTitle.value} انجام شد`, 'همهٔ مراحل اجرا شد')
+        else notify.error(`${runTitle.value} با خطا تمام شد`, failedSteps.map(k => STEP_LABEL[k as CompletionStepKey] || k).join('، ') || 'اجرای پس‌زمینه متوقف شد')
+      }
+    }
+    catch { /* a missed poll is retried on the next tick */ }
+    void pollCompletion()
+  }, POLL_MS)
+}
+
+watch(completing, (running) => { if (running) void pollCompletion() }, { immediate: true })
+onMounted(() => { if (completing.value) void pollCompletion() })
+onBeforeUnmount(stopPolling)
+
+async function complete() {
+  const response = await run('complete', { publish: true }, 'جستجو و تکمیل در پس‌زمینه شروع شد')
+  if ((response?.result as { already_running?: boolean } | undefined)?.already_running)
+    notify.info('در حال اجرا', 'یک تکمیل برای همین عنوان از قبل در جریان است')
+  void pollCompletion()
+}
+
+async function rebuildStaged() {
+  const what = props.kind === 'series' ? 'همهٔ کیفیت‌ها و قسمت‌های این سریال' : 'همهٔ کیفیت‌های این فیلم'
+  if (!window.confirm(
+    `بازسازی از صفر با تست\n\n${what} از همهٔ منابع روی یک نسخهٔ آزمایشی دوباره ساخته و تست می‌شوند. فقط اگر تست قبول شد، جای لینک‌های فعلی را می‌گیرند و قسمت‌های بی‌لینک پنهان می‌شوند.\n\n`
+    + 'قبل از جایگزینی نسخهٔ پشتیبان گرفته می‌شود و لینک‌های دستی دست نمی‌خورند. اگر تست قبول نشود عنوان دست نمی‌خورد.',
+  )) return
+  const response = await run('rebuild_staged', { publish: true }, 'بازسازی در پس‌زمینه شروع شد')
+  if ((response?.result as { already_running?: boolean } | undefined)?.already_running)
+    notify.info('در حال اجرا', 'یک اجرا برای همین عنوان از قبل در جریان است')
+  void pollCompletion()
+}
+
+async function rebuildDirect() {
+  const what = props.kind === 'series' ? 'همهٔ کیفیت‌ها و قسمت‌های این سریال' : 'همهٔ کیفیت‌های این فیلم'
+  if (!window.confirm(
+    `جایگزینی از صفر بدون تست\n\n${what} بدون تست، مستقیم از صفر با لینک‌های تازهٔ همهٔ منابع جایگزین می‌شوند: اطلاعات و نمره، لینک‌های دانلود، پخش آنلاین و زیرنویس.\n\n`
+    + 'نسخهٔ فعلی پشتیبان‌گیری می‌شود و از همین میز قابل بازگردانی است.',
+  )) return
+  const response = await run('rebuild', { publish: true }, 'جایگزینی در پس‌زمینه شروع شد')
+  if ((response?.result as { already_running?: boolean } | undefined)?.already_running)
+    notify.info('در حال اجرا', 'یک اجرا برای همین عنوان از قبل در جریان است')
+  void pollCompletion()
+}
+
+async function undoRebuild() {
+  const backup = desk.value?.rebuild_backup
+  if (!backup) return
+  if (!window.confirm(`لینک‌ها و قسمت‌ها به وضعیت پیش از بازسازی (${when(backup.created_at)}، ${fa(backup.links)} لینک) برگردانده شوند؟`)) return
+  await run('rebuild_undo', {}, 'وضعیت پیش از بازسازی برگردانده شد')
+}
+
 defineExpose({ reload: load })
 </script>
 
@@ -175,12 +312,30 @@ defineExpose({ reload: load })
           تست منابع
         </button>
         <button
-          type="button" class="rv-btn rv-btn--ghost rv-focus !min-h-8 !px-2.5 !text-xs"
-          :disabled="!!busy" @click="run('recrawl', { force: true }, 'خزنده‌ها دوباره فرستاده شدند')"
+          type="button" class="rv-btn rv-btn--primary rv-focus !min-h-8 !px-2.5 !text-xs"
+          :disabled="!!busy || completing" @click="complete"
         >
-          <Loader v-if="busy === 'recrawl'" class="size-3.5 animate-spin" />
-          <Radar v-else class="size-3.5" />
-          جستجوی دوباره
+          <Loader v-if="busy === 'complete' || (completing && !rebuilding)" class="size-3.5 animate-spin" />
+          <Wand v-else class="size-3.5" />
+          {{ completing && !rebuilding ? 'در حال تکمیل…' : 'جستجوی دوباره و تکمیل' }}
+        </button>
+        <button
+          type="button" class="rv-btn rv-btn--ghost rv-focus !min-h-8 !px-2.5 !text-xs"
+          :disabled="!!busy || completing" @click="rebuildStaged"
+        >
+          <Loader v-if="busy === 'rebuild_staged' || (completing && completion?.mode === 'staged')" class="size-3.5 animate-spin" />
+          <Rebuild v-else class="size-3.5" />
+          {{ completing && completion?.mode === 'staged' ? 'در حال بازسازی…' : 'بازسازی از صفر با تست' }}
+        </button>
+        <button
+          type="button" class="rv-btn rv-btn--ghost rv-focus !min-h-8 !px-2.5 !text-xs"
+          :style="{ color: 'var(--rv-danger)' }"
+          :disabled="!!busy || completing" title="بدون تست جایگزین می‌شود؛ نسخهٔ قبلی پشتیبان دارد"
+          @click="rebuildDirect"
+        >
+          <Loader v-if="busy === 'rebuild' || (completing && completion?.mode === 'rebuild')" class="size-3.5 animate-spin" />
+          <Rebuild v-else class="size-3.5" />
+          {{ completing && completion?.mode === 'rebuild' ? 'در حال جایگزینی…' : 'جایگزینی از صفر بدون تست' }}
         </button>
       </template>
 
@@ -431,6 +586,39 @@ defineExpose({ reload: load })
           </tbody>
         </table>
       </div>
+    </RvPanel>
+
+    <!-- Step-by-step progress of «جستجوی دوباره و تکمیل» / «بازسازی کامل». -->
+    <RvPanel
+      v-if="completion || desk?.rebuild_backup" :icon="rebuilding || !completion ? Rebuild : Wand"
+      :title="completion ? runTitle : 'بازسازی از صفر'"
+      :subtitle="completing ? 'در حال اجرا در پس‌زمینه — این صفحه خودش به‌روز می‌شود' : completion ? `آخرین اجرا: ${when(completion.finished_at || completion.started_at)}` : `نسخهٔ پشتیبان: ${when(desk?.rebuild_backup?.created_at || '')}`"
+    >
+      <template v-if="desk?.rebuild_backup && !completing" #actions>
+        <button
+          type="button" class="rv-btn rv-btn--ghost rv-focus !min-h-8 !px-2.5 !text-xs"
+          :disabled="!!busy" @click="undoRebuild"
+        >
+          <Loader v-if="busy === 'rebuild_undo'" class="size-3.5 animate-spin" />
+          <Undo v-else class="size-3.5" />
+          بازگرداندن نسخهٔ قبل از بازسازی
+        </button>
+      </template>
+      <ol v-if="completion" class="divide-y divide-[var(--rv-border)] text-xs">
+        <li v-for="step in completion.steps" :key="step.key" class="flex flex-wrap items-center gap-2 py-2 first:pt-0">
+          <Loader v-if="step.status === 'running'" class="size-3.5 shrink-0 animate-spin text-[var(--rv-muted)]" />
+          <span class="w-40 shrink-0 font-black text-[var(--rv-text)]">{{ STEP_LABEL[step.key] || step.key }}</span>
+          <RvBadge :tone="STEP_STATUS[step.status]?.tone || 'neutral'" dot>
+            {{ STEP_STATUS[step.status]?.label || step.status }}
+          </RvBadge>
+          <span class="min-w-0 flex-1 truncate font-semibold text-[var(--rv-muted)]" :title="stepDetail(step)">
+            {{ stepDetail(step) }}
+          </span>
+        </li>
+      </ol>
+      <p v-else class="text-xs font-semibold text-[var(--rv-muted)]">
+        لینک‌ها و قسمت‌های پیش از آخرین بازسازی نگه داشته شده‌اند و می‌توانید آن‌ها را برگردانید.
+      </p>
     </RvPanel>
 
     <!-- Crawler runs aimed at this title, so «چرا لینکی نیامد؟» has an answer. -->

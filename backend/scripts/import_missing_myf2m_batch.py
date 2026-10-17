@@ -347,7 +347,7 @@ def main() -> int:
     parser.add_argument('--max-series-pages', type=int, default=200)
     parser.add_argument('--start-movie-page', type=int, default=1)
     parser.add_argument('--start-series-page', type=int, default=1)
-    parser.add_argument('--delay', type=float, default=0.45)
+    parser.add_argument('--delay', type=float, default=0.2)
     parser.add_argument(
         '--require-both',
         action='store_true',

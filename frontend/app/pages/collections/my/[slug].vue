@@ -113,11 +113,11 @@ useSeoMeta({
       <Transition enter-active-class="transition duration-200" enter-from-class="opacity-0" leave-active-class="transition duration-150" leave-to-class="opacity-0">
         <div
           v-if="deleteOpen"
-          class="fixed inset-0 z-[110] grid cursor-pointer place-items-center bg-[var(--theme-overlay-backdrop)] p-4 backdrop-blur-sm"
+          class="fixed inset-0 z-[110] grid cursor-pointer place-items-center bg-[var(--theme-overlay-backdrop)] p-4"
           role="presentation"
           @click.self="deleteOpen = false"
         >
-          <section role="dialog" aria-modal="true" class="w-full max-w-sm cursor-default rounded-3xl bg-surface p-5 text-ink shadow-2xl shadow-black/40 ring-1 ring-line sm:p-6">
+          <section role="dialog" aria-modal="true" class="w-full max-w-sm cursor-default rounded-3xl bg-surface p-5 text-ink ring-1 ring-line sm:p-6">
             <span class="grid size-12 place-items-center rounded-2xl bg-red-500/12 text-red-300 ring-1 ring-red-500/20"><CinematicIcon name="trash" class="size-6" /></span>
             <h2 class="mt-4 text-lg font-black text-ink">حذف «{{ collection?.title }}»؟</h2>
             <p class="mt-1.5 text-sm leading-7 text-secondary">این کالکشن و همهٔ عنوان‌های داخلش برای همیشه پاک می‌شوند. عنوان‌ها از کاتالوگ حذف نمی‌شوند.</p>

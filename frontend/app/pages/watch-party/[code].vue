@@ -3,6 +3,7 @@ import { reportClientDiag } from '~/utils/clientDiag'
 import type {
   AppErrorDetails,
   DownloadLink,
+  PlaybackQuality,
   PlaybackSnapshot,
   PlaybackTextTrack,
   PlaybackVersion,
@@ -13,8 +14,11 @@ import type {
   WatchRoom,
 } from '~/types'
 import type { StreamGatewaySession } from '~/composables/useStreamGateway'
+import type { ReportProblemType } from '~/composables/useContentReport'
 import { pickStreamFriendlyLink, prefersBrowserSafeContainers, qualityHeightOf, streamNetworkProfile, videoCodecFamily, warmPlaybackOrigin } from '~/utils/downloadMeta'
-import { buildPlaybackVersions, pairSubtitleTracksForSource, resolvePlaybackVersion } from '~/utils/playbackVersions'
+import { buildPlaybackVersions, linksForVersionKind, pairSubtitleTracksForSource, resolvePlaybackVersion } from '~/utils/playbackVersions'
+import { subtitleReadyNotice } from '~/utils/subtitlePolicy'
+import { classifyPlayerToast, type PlayerToastMeta } from '~/utils/playerToast'
 
 definePageMeta({ layout: 'player', middleware: 'auth', pageTransition: false })
 
@@ -28,6 +32,8 @@ const route = useRoute()
 const code = computed(() => String(route.params.code))
 const { api } = useApi()
 const { reportSubtitleSync } = useSubtitleSyncReport()
+const { reportIssue } = useContentReport()
+const { healFailure, pollFixedUrl } = usePlaybackSelfHeal()
 const notifications = useNotifications()
 const socket = useWatchPartySocket(code)
 const player = useTemplateRef<PlayerHandle>('player')
@@ -37,6 +43,11 @@ const pageError = ref<AppErrorDetails | null>(null)
 const playerReady = ref(false)
 const playerSrc = ref('')
 const playerNotice = ref('')
+const playerToast = ref<(PlayerToastMeta & { id: number, message: string }) | null>(null)
+const playbackBlocked = ref<{ family: string, container: string, url?: string } | null>(null)
+const selectedQuality = ref<PlaybackQuality>('auto')
+let toastSeq = 0
+let autoUpgradeDone = false
 const panelOpen = ref(false)
 const focusMode = ref(false)
 const partyFullscreen = ref(false)
@@ -119,6 +130,56 @@ const playerSourceQuality = computed(() => {
   return height ? `${height}p` : raw
 })
 
+// --- parity with main player: quality / version scoping ----------------------
+// Mirrors watch/[slug].vue: quality choices stay inside the active version kind
+// (dub / softsub / original) so a quality switch never changes the language lane.
+function versionScopedLinks() {
+  const kind = activeVersion.value?.kind
+  const pool: DownloadLink[] = streamLinks.value.map(link => ({
+    label: link.label || link.quality || 'پخش',
+    quality: link.quality || '',
+    size_label: link.size_label || '',
+    url: link.url,
+    kind: link.kind || '',
+    subtitle_type: link.subtitle_type || '',
+  }))
+  if (!kind || !pool.length) return pool
+  const scoped = linksForVersionKind(pool, kind)
+  return scoped.length ? scoped : pool
+}
+
+const playerQualities = computed<PlaybackQuality[]>(() => {
+  const values = new Set<PlaybackQuality>()
+  for (const link of versionScopedLinks()) {
+    const height = qualityHeightOf(link.quality, link.url)
+    if (height) values.add(`${height}p`)
+  }
+  return [...values].sort((a, b) => Number.parseInt(b, 10) - Number.parseInt(a, 10))
+})
+
+// 'movie' | 'series' — gates the «قسمت اشتباه» report option exactly like the main player.
+const partyContentType = computed<'movie' | 'series' | ''>(() => {
+  const content = room.value?.content
+  if (!content) return ''
+  return content.type === 'movie' ? 'movie' : 'series'
+})
+
+// Header meta: فصل/قسمت برای اپیزود، بدون تغییر ساختار دیتا.
+const partyContentMeta = computed(() => {
+  const content = room.value?.content
+  if (!content) return ''
+  if (content.type === 'episode' && content.series) {
+    return `فصل ${Number(content.series.season_number || 1).toLocaleString('fa-IR')} · قسمت ${Number(content.series.episode_number || 0).toLocaleString('fa-IR')} · ${content.series.title}`
+  }
+  return content.secondary_title || ''
+})
+
+function qualityMatches(linkQuality: string | undefined, target: PlaybackQuality) {
+  if (target === 'auto') return false
+  const raw = String(linkQuality || '').toLowerCase()
+  return raw.includes(target.toLowerCase()) || raw.includes(target.replace('p', ''))
+}
+
 const { ensurePlaybackSubtitles, getPlaybackSubtitleStatus } = usePlaybackSubtitleEnsure()
 const ensuredSubtitles = ref<{ key: string, tracks: PlaybackTextTrack[] }>({ key: '', tracks: [] })
 const subtitleEnsureTarget = computed(() => {
@@ -168,7 +229,7 @@ function acceptEnsuredTracks(key: string, tracks: PlaybackTextTrack[] | undefine
   if (!usable.length || key !== subtitleContentKey.value) return false
   ensuredSubtitles.value = { key, tracks: usable }
   clearSubtitlePoll()
-  showNotice('زیرنویس فارسی آماده شد و روشن شد')
+  showNotice(subtitleReadyNotice(true))
   return true
 }
 
@@ -271,9 +332,23 @@ function handlePartyFullscreenChange(active: boolean) {
 }
 
 function showNotice(message: string) {
-  playerNotice.value = message
+  const text = String(message || '').trim()
+  if (!text) return
+  playerNotice.value = text
+  toastSeq += 1
+  playerToast.value = { id: toastSeq, message: text, ...classifyPlayerToast(text) }
   if (noticeTimer) window.clearTimeout(noticeTimer)
-  noticeTimer = window.setTimeout(() => { playerNotice.value = '' }, 2400)
+  noticeTimer = window.setTimeout(() => {
+    playerNotice.value = ''
+    playerToast.value = null
+  }, 2800)
+}
+
+function dismissPlayerToast() {
+  if (noticeTimer) window.clearTimeout(noticeTimer)
+  noticeTimer = undefined
+  playerNotice.value = ''
+  playerToast.value = null
 }
 
 async function copyInviteLink() {
@@ -326,6 +401,8 @@ function syncPlayerSource(url?: string | null) {
   ).trim()
   if (next) warmPlaybackOrigin(next)
   if (next && next !== playerSrc.value) {
+    playbackBlocked.value = null
+    autoUpgradeDone = false
     playerReady.value = false
     playerSrc.value = next
   }
@@ -360,6 +437,7 @@ async function tryGatewayPlayback(
     })
     gatewayOriginUrl = source
     gatewaySession.value = session
+    playbackBlocked.value = null
     playerReady.value = false
     playerSrc.value = session.playlist
     showNotice('پخش سازگار با این مرورگر فعال شد.')
@@ -398,8 +476,65 @@ watch(() => gatewaySession.value?.playlist || '', (playlist) => {
   }, 30_000)
 })
 
+/**
+ * Automatic heal for every group-playback failure.
+ *
+ * Same intake and repair as the single player — filed once with room_code so
+ * the server also broadcasts `playback.fix` to the whole room — plus a
+ * `playback.failed` socket event so the host heals even when a guest is the
+ * one whose player broke. Immediate retry when a better URL already exists,
+ * background poll otherwise. One Persian notice, automatic recovery.
+ */
+function autoHealPartySource(failed: string, errCode: number | string, gatewayCode = '') {
+  const content = room.value?.content
+  if (!content?.id || !failed) return
+  const isEpisode = content.type === 'episode'
+  const failedUrl = String(failed).trim()
+  // Tell the room right away (host + guests see progress, host files shared heal).
+  socket.sendEvent({
+    type: 'playback.failed',
+    error_code: String(errCode ?? ''),
+    source_url: failedUrl,
+    played_seconds: lastPositionSeconds,
+  })
+  const played = player.value?.getPlaybackSnapshot()?.position_seconds || lastPositionSeconds
+  void healFailure({
+    type: isEpisode ? 'series' : 'movie',
+    objectId: isEpisode ? (content.series?.id || 0) : content.id,
+    slug: isEpisode ? (content.series?.slug || content.slug) : content.slug,
+    episodeId: isEpisode ? content.id : 0,
+    errorCode: String(errCode ?? ''),
+    errorMessage: `auto heal watch-party code=${String(errCode ?? '')}`,
+    gatewayCode,
+    sourceUrl: failedUrl,
+    version: activeVersion.value?.kind || '',
+    roomCode: code.value,
+    playedSeconds: played,
+    hadPlayed: played > 1,
+  }).then((healed) => {
+    if (!healed) return
+    showNotice(healed.messageFa)
+    if (healed.shouldRetry && healed.fixedUrl && healed.fixedUrl !== playerSrc.value) {
+      applyPartySource(healed.fixedUrl, 'پخش درست شد؛ ادامه از همین‌جا')
+      return
+    }
+    if (healed.reportId && !healed.shouldRetry) {
+      void pollFixedUrl(healed.reportId, failedUrl).then((fixed) => {
+        if (fixed && fixed !== playerSrc.value) {
+          applyPartySource(fixed, 'پخش درست شد؛ ادامه از همین‌جا')
+        }
+      })
+    }
+  })
+}
+
 function handleSourceFailed(payload: { src: string, code: number }) {
   const failed = String(payload?.src || playerSrc.value || '').trim()
+  // File once for the whole room (dedupe per source) while local mirrors are
+  // tried — the repair crawl runs in parallel instead of after giving up.
+  if (failed && !isGatewayUrl(failed)) {
+    autoHealPartySource(failed, Number(payload?.code) || 0)
+  }
   // The session itself broke — usually reaped while paused. Reopen at the
   // playhead; only if that fails do we fall back to the direct mirrors, and
   // the session has to be cleared first or syncPlayerSource will refuse.
@@ -446,19 +581,122 @@ function handleSourceFailed(payload: { src: string, code: number }) {
   }
   // Every direct mirror is spent. Rewrapping is the last thing left, and it
   // keeps this viewer in the room instead of dropping them out of the party.
+  // Same dead-end UX as the main player: a persistent panel instead of a toast
+  // that vanishes while the frame stays black.
   const resumeAt = player.value?.getPlaybackSnapshot()?.position_seconds || lastPositionSeconds
   showNotice('در حال آماده‌سازی نسخهٔ سازگار با این مرورگر…')
   void tryGatewayPlayback(failed, { position: resumeAt }).then((ok) => {
-    if (ok) return
+    if (ok) {
+      playbackBlocked.value = null
+      return
+    }
     if (failedFamily === 'hevc' || failedFamily === 'av1') {
+      playbackBlocked.value = { family: failedFamily, container: '' }
       showNotice('این فایل با کُدک HEVC/AV1 است و این مرورگر نمی‌تواند آن را رمزگشایی کند.')
       return
     }
     if (prefersBrowserSafeContainers() && /\.mkv(?:\?|$)/i.test(failed)) {
+      playbackBlocked.value = { family: failedFamily, container: 'mkv' }
       showNotice('این نسخه از مرورگر فایل MKV را پخش نمی‌کند. کیفیت دیگری را انتخاب کن یا مرورگر/iOS را به‌روز کن.')
       return
     }
+    playbackBlocked.value = { family: failedFamily, container: '' }
     showNotice('این مرورگر این فایل را پخش نکرد. کیفیت دیگری را امتحان کن.')
+  })
+}
+
+function pickUpgradeLink(links: DownloadLink[], currentUrl: string) {
+  const currentHeight = qualityHeightOf(
+    links.find(link => link.url === currentUrl)?.quality,
+    currentUrl,
+  ) || 0
+  const profile = streamNetworkProfile()
+  let target = 0
+  if (currentHeight > 0 && currentHeight < 720) target = 720
+  else if (profile === 'fast' && currentHeight >= 700 && currentHeight < 1000) target = 1080
+  if (!target) return null
+  const min = target - 80
+  const max = target + 80
+  const candidates = links
+    .map(link => ({ link, height: qualityHeightOf(link.quality, link.url) }))
+    .filter(entry => entry.height >= min && entry.height <= max && entry.link.url !== currentUrl)
+    .sort((a, b) => Math.abs(a.height - target) - Math.abs(b.height - target))
+  return candidates[0]?.link || null
+}
+
+// Same fast-start/auto-upgrade behaviour as watch/[slug].vue, but host-only:
+// guests stay locked to the host's stream and only get the notice.
+function handleBufferHealth(aheadSeconds: number) {
+  if (!isHost.value || autoUpgradeDone || selectedQuality.value !== 'auto') return
+  if (/\.m3u8(?:\?|$)/i.test(playerSrc.value)) return
+  const profile = streamNetworkProfile()
+  const threshold = profile === 'fast' ? 14 : profile === 'lean' ? 28 : 20
+  if (aheadSeconds < threshold) return
+  const links = versionScopedLinks().filter(link => Boolean(link.url) && !failedPlaybackSources.has(link.url))
+  const upgrade = pickUpgradeLink(links, playerSrc.value)
+  if (!upgrade?.url) return
+  const nextHeight = qualityHeightOf(upgrade.quality, upgrade.url)
+  autoUpgradeDone = profile !== 'fast' || nextHeight >= 1000
+  applyPartySource(upgrade.url, `کیفیت بهتر فعال شد · ${upgrade.quality || 'HD'}`)
+}
+
+function applyPartySource(url: string, notice?: string) {
+  if (!url || url === playerSrc.value) return
+  const previous = player.value?.getPlaybackSnapshot()
+  if (previous && previous.position_seconds > 1) {
+    player.value?.prepareResumeAt?.(previous.position_seconds)
+  }
+  playbackBlocked.value = null
+  warmPlaybackOrigin(url)
+  playerReady.value = false
+  playerSrc.value = url
+  if (notice) showNotice(notice)
+  if (isHost.value && previous) sendPlayback('playback.sync', previous)
+}
+
+function selectQuality(quality: PlaybackQuality) {
+  selectedQuality.value = quality
+  autoUpgradeDone = quality !== 'auto'
+  if (!isHost.value) {
+    showNotice('کیفیت مشترک را میزبان انتخاب می‌کند')
+    return
+  }
+  if (/\.m3u8(?:\?|$)/i.test(playerSrc.value)) {
+    showNotice(quality === 'auto' ? 'کیفیت خودکار و تطبیقی فعال شد' : `کیفیت ${quality} انتخاب شد`)
+    return
+  }
+  const links = versionScopedLinks()
+  if (!links.length) {
+    showNotice(quality === 'auto' ? 'کیفیت خودکار فعال شد' : `کیفیت ${quality} انتخاب شد`)
+    return
+  }
+  const match = quality === 'auto'
+    ? pickStreamFriendlyLink(links, streamNetworkProfile())
+    : pickStreamFriendlyLink(links.filter(link => qualityMatches(link.quality, quality)), streamNetworkProfile())
+      || pickStreamFriendlyLink(links, streamNetworkProfile())
+  if (match?.url && match.url !== playerSrc.value) {
+    applyPartySource(
+      match.url,
+      quality === 'auto' ? `شروع سریع · ${match.quality || 'آماده'}` : `ادامه از همین‌جا · ${match.quality || quality}`,
+    )
+    return
+  }
+  showNotice(quality === 'auto' ? 'کیفیت خودکار فعال شد' : `کیفیت ${quality} انتخاب شد`)
+}
+
+function handleReportIssue(payload: { problemType: ReportProblemType, detail: string }) {
+  const content = room.value?.content
+  if (!content) return
+  const isEpisode = content.type === 'episode'
+  void reportIssue({
+    type: isEpisode ? 'series' : 'movie',
+    objectId: isEpisode ? (content.series?.id || 0) : content.id,
+    slug: isEpisode ? (content.series?.slug || content.slug) : content.slug,
+    episodeId: isEpisode ? content.id : 0,
+    problemType: payload.problemType,
+    version: activeVersion.value?.kind || '',
+    sourceUrl: playerSrc.value || '',
+    detail: payload.detail,
   })
 }
 
@@ -547,10 +785,15 @@ function sendPlayback(
   state: PlaybackSnapshot,
 ) {
   if (!isHost.value) return
+  // A gateway playlist is a per-viewer HLS session, not a shared mirror.
+  // Broadcasting it would leak a private session URL and trip the server's
+  // stream allowlist; guests stay on the direct mirror (or open their own
+  // gateway) while position/timing still syncs.
+  const src = String(playerSrc.value || '').trim()
   socket.sendEvent({
     type,
     ...state,
-    stream_url: playerSrc.value || undefined,
+    stream_url: src && !isGatewayUrl(src) ? src : undefined,
   })
 }
 
@@ -587,6 +830,7 @@ function scheduleHostSync() {
 
 async function handlePlayerReady() {
   playerReady.value = true
+  playbackBlocked.value = null
   if (socket.playbackState.value) await applyPartyState(socket.playbackState.value, true)
   socket.requestSync()
   if (isHost.value) scheduleHostSync()
@@ -645,29 +889,17 @@ function handleSubtitleSyncFeedback(feedback: SubtitleSyncFeedback) {
 
 function selectStream(link: WatchPartyStreamLink) {
   if (!isHost.value || !link.url || link.url === playerSrc.value) return
-  const previous = player.value?.getPlaybackSnapshot()
-  if (previous && previous.position_seconds > 1) {
-    player.value?.prepareResumeAt?.(previous.position_seconds)
-  }
-  warmPlaybackOrigin(link.url)
-  playerSrc.value = link.url
-  playerReady.value = false
-  showNotice(`کیفیت ${link.quality || link.label} · ادامه از همین‌جا`)
-  if (previous) sendPlayback('playback.sync', previous)
+  applyPartySource(link.url, `کیفیت ${link.quality || link.label} · ادامه از همین‌جا`)
 }
 
 function selectVersion(version: PlaybackVersion) {
   if (!isHost.value || !version.url) return
   if (version.url === playerSrc.value) return
-  const previous = player.value?.getPlaybackSnapshot()
-  if (previous && previous.position_seconds > 1) {
-    player.value?.prepareResumeAt?.(previous.position_seconds)
-  }
-  warmPlaybackOrigin(version.url)
-  playerSrc.value = version.url
-  playerReady.value = false
-  showNotice(version.kind === 'dub' ? 'دوبله · ادامه از همین‌جا' : `${version.label} · ادامه از همین‌جا`)
-  if (previous) sendPlayback('playback.sync', previous)
+  autoUpgradeDone = false
+  applyPartySource(
+    version.url,
+    version.kind === 'dub' ? 'دوبله · ادامه از همین‌جا' : `${version.label} · ادامه از همین‌جا`,
+  )
 }
 
 async function leaveRoom() {
@@ -706,6 +938,35 @@ watch(
   () => {
     const event = socket.lastPlaybackEvent.value
     if (event) void handleRemotePlayback(event)
+  },
+)
+
+// A fixed URL broadcast by the server after POST /api/catalog/playback-failure/.
+// Applies to whoever is still on the dead source — host and guests alike —
+// without a reload, and announces it once in Persian.
+watch(
+  () => socket.lastPlaybackFix.value?.sequence,
+  () => {
+    const fix = socket.lastPlaybackFix.value
+    if (!fix) return
+    if (fix.messageFa) showNotice(fix.messageFa)
+    const fixed = String(fix.fixedUrl || '').trim()
+    if (fixed && fixed !== playerSrc.value) {
+      applyPartySource(fixed, 'پخش درست شد؛ ادامه از همین‌جا')
+    }
+  },
+)
+
+// Another member's player broke: the host files the shared heal so one repair
+// covers the whole room instead of one report per member.
+watch(
+  () => socket.lastMemberFailed.value?.sequence,
+  () => {
+    const failed = socket.lastMemberFailed.value
+    if (!failed || !isHost.value) return
+    if (failed.messageFa) showNotice(failed.messageFa)
+    const failedUrl = String(failed.sourceUrl || playerSrc.value || '').trim()
+    if (failedUrl) autoHealPartySource(failedUrl, failed.errorCode || 'member_failed')
   },
 )
 
@@ -853,7 +1114,7 @@ useSeoMeta({
         v-else-if="pageError && !room"
         class="mx-auto grid min-h-[65vh] max-w-lg place-items-center text-center"
       >
-        <div class="rounded-3xl border border-white/10 bg-white/[.04] p-7 backdrop-blur-xl">
+        <div class="rounded-3xl border border-white/10 bg-white/[.04] p-7">
           <span class="mx-auto grid size-14 place-items-center rounded-2xl bg-error/10 text-error ring-1 ring-error/20">
             <CinematicIcon name="alert-triangle" class="size-7" />
           </span>
@@ -895,6 +1156,14 @@ useSeoMeta({
                 </span>
               </div>
               <h1 class="mt-1 truncate text-base font-black sm:text-xl" dir="auto">{{ room.content.title }}</h1>
+              <p v-if="partyContentMeta" class="mt-0.5 truncate text-[11px] text-white/45" dir="auto">{{ partyContentMeta }}</p>
+              <p class="mt-1 flex flex-wrap items-center gap-1.5 text-[11px]">
+                <span v-if="activeVersion" class="rounded-md bg-white/8 px-1.5 py-0.5 font-bold text-white/55">
+                  {{ activeVersion.kind === 'dub' ? 'دوبله فارسی' : activeVersion.label }}
+                </span>
+                <span v-if="playerSourceQuality" class="rounded-md bg-white/8 px-1.5 py-0.5 font-latin font-bold text-white/55" dir="ltr">{{ playerSourceQuality }}</span>
+                <span v-if="gatewaySession" class="rounded-md bg-info/15 px-1.5 py-0.5 font-bold text-info">پخش سازگار</span>
+              </p>
             </div>
           </div>
           <div
@@ -950,7 +1219,7 @@ useSeoMeta({
           v-if="room.status !== 'active'"
           class="mx-auto grid min-h-[55vh] max-w-xl place-items-center text-center"
         >
-          <div class="rounded-3xl border border-white/10 bg-white/[.04] p-8 backdrop-blur-xl">
+          <div class="rounded-3xl border border-white/10 bg-white/[.04] p-8">
             <span class="mx-auto grid size-14 place-items-center rounded-2xl bg-wine text-crimson-hover ring-1 ring-crimson/25">
               <CinematicIcon name="clock" class="size-7" />
             </span>
@@ -978,11 +1247,11 @@ useSeoMeta({
           v-else
           class="party-room__layout grid items-start gap-4"
           :class="focusMode
-            ? 'lg:grid-cols-1'
+ ? 'lg:grid-cols-1'
             : 'lg:grid-cols-[minmax(0,1fr)_340px] xl:grid-cols-[minmax(0,1fr)_370px]'"
         >
           <section class="party-room__stage min-w-0" aria-label="پخش هم‌زمان">
-            <div v-if="canPlay" class="party-room__player-frame relative overflow-hidden rounded-2xl shadow-[0_30px_80px_rgba(0,0,0,.55)] ring-1 ring-white/10">
+            <div v-if="canPlay" class="party-room__player-frame relative overflow-hidden rounded-2xl ring-1 ring-white/10">
               <VideoPlayer
                 ref="player"
                 :src="playerSrc"
@@ -992,6 +1261,9 @@ useSeoMeta({
                 :playback-versions="playbackVersions"
                 :active-version-id="activeVersion?.id || ''"
                 :source-quality="playerSourceQuality"
+                :quality="selectedQuality"
+                :available-qualities="playerQualities"
+                :content-type="partyContentType"
                 :locked="!isHost"
                 :timeline-offset="gatewaySession?.start || 0"
                 :timeline-total="gatewaySession?.duration || 0"
@@ -1005,12 +1277,15 @@ useSeoMeta({
                 @playback-play="onHostPlay"
                 @playback-pause="onHostPause"
                 @playback-seek="onHostSeek"
+                @buffer-health="handleBufferHealth"
+                @quality-request="selectQuality"
                 @version-request="selectVersion"
                 @source-failed="handleSourceFailed"
                 @notice="showNotice"
                 @fullscreen-change="handlePartyFullscreenChange"
                 @sync-correction="onSyncCorrection"
                 @sync-feedback="handleSubtitleSyncFeedback"
+                @report-issue="handleReportIssue"
                 @embedded-subtitles="handleEmbeddedSubtitles"
               >
                 <template #fullscreen-overlay="{ isFullscreen }">
@@ -1097,16 +1372,72 @@ useSeoMeta({
                 </template>
               </VideoPlayer>
               <Transition
+                enter-active-class="transition duration-200"
+                enter-from-class="opacity-0"
+                leave-active-class="transition duration-150"
+                leave-to-class="opacity-0"
+              >
+                <div
+                  v-if="playbackBlocked"
+                  class="absolute inset-0 z-30 grid place-items-center bg-black/85 p-4 text-center"
+                  role="alertdialog"
+                  aria-live="assertive"
+                >
+                  <div class="w-full max-w-sm rounded-2xl bg-night-900/95 p-5 ring-1 ring-white/10">
+                    <span class="mx-auto grid size-12 place-items-center rounded-2xl bg-primary-500/15 text-primary-300 ring-1 ring-primary-400/25">
+                      <CinematicIcon name="film" class="size-6" />
+                    </span>
+                    <p class="mt-3 text-sm font-black">این فایل در مرورگر پخش نمی‌شود</p>
+                    <p class="mt-1.5 text-xs leading-6 text-white/55">
+                      {{ playbackBlocked.container === 'mkv'
+                        ? 'این نسخه با ساختار MKV است و این مرورگر آن را پخش نمی‌کند.'
+                        : 'این نسخه با کُدک HEVC/x265 است و مرورگر شما آن را رمزگشایی نمی‌کند.' }}
+                      کیفیت یا نسخهٔ دیگری را امتحان کن.
+                    </p>
+                    <div class="mt-4 grid gap-2">
+                      <a
+                        v-if="room.content.download_url"
+                        :href="room.content.download_url"
+                        target="_blank"
+                        rel="noopener"
+                        class="inline-flex min-h-11 items-center justify-center gap-2 rounded-xl bg-white/10 px-4 text-xs font-black text-white ring-1 ring-white/15 transition hover:bg-white/15"
+                      >
+                        <CinematicIcon name="download" class="size-4" />
+                        دانلود مستقیم فایل
+                      </a>
+                      <button
+                        type="button"
+                        class="text-[11px] font-bold text-white/40 transition hover:text-white/80"
+                        @click="playbackBlocked = null"
+                      >
+                        بستن و امتحان کیفیت/نسخهٔ دیگر
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              </Transition>
+              <Transition
                 enter-active-class="transition duration-150"
                 enter-from-class="translate-y-1 opacity-0"
                 leave-active-class="transition duration-100"
                 leave-to-class="translate-y-1 opacity-0"
               >
                 <div
-                  v-if="playerNotice"
-                  class="absolute bottom-3 left-1/2 z-20 max-w-[calc(100%-1.5rem)] -translate-x-1/2 truncate rounded-xl bg-black/90 px-3 py-2 text-xs font-bold text-white ring-1 ring-white/15 sm:bottom-5"
+                  v-if="playerToast"
+                  :key="playerToast.id"
+                  class="absolute bottom-3 left-1/2 z-20 flex max-w-[calc(100%-1.5rem)] -translate-x-1/2 items-center gap-2 rounded-xl bg-black/90 py-2 pe-2 ps-3 text-xs font-bold text-white ring-1 ring-white/15 sm:bottom-5"
+                  role="status"
                 >
-                  {{ playerNotice }}
+                  <CinematicIcon :name="playerToast.icon" class="size-4 shrink-0 text-primary-300" />
+                  <span class="min-w-0 truncate">{{ playerToast.message }}</span>
+                  <button
+                    type="button"
+                    class="shrink-0 rounded-md px-1.5 py-0.5 text-[11px] text-white/50 transition hover:bg-white/10 hover:text-white"
+                    aria-label="بستن پیام"
+                    @click="dismissPlayerToast"
+                  >
+                    بستن
+                  </button>
                 </div>
               </Transition>
             </div>
@@ -1121,7 +1452,7 @@ useSeoMeta({
               </div>
             </div>
 
-            <div class="mt-3 rounded-2xl border border-white/8 bg-black/35 p-3 backdrop-blur-md">
+            <div class="mt-3 rounded-2xl border border-white/8 bg-black/35 p-3">
               <WatchPartyPresence
                 :members="socket.members.value"
                 :playback-state="isHost ? (hostLiveState || socket.playbackState.value) : socket.playbackState.value"
@@ -1131,22 +1462,43 @@ useSeoMeta({
             </div>
 
             <div
-              v-if="isHost && streamLinks.length > 1"
-              class="mt-3 rounded-2xl border border-white/8 bg-black/30 p-3"
+              v-if="isHost && (playbackVersions.length > 1 || streamLinks.length > 1)"
+              class="mt-3 space-y-3 rounded-2xl border border-white/8 bg-black/30 p-3"
             >
-              <p class="mb-2 text-xs font-black text-primary-300">کیفیت مشترک اتاق</p>
-              <div class="hide-scrollbar flex gap-2 overflow-x-auto pb-1">
-                <button
-                  v-for="(link, index) in streamLinks"
-                  :key="`${link.url}-${index}`"
-                  type="button"
-                  class="inline-flex min-h-11 shrink-0 items-center gap-2 rounded-xl px-3 text-xs font-black transition"
-                  :class="playerSrc === link.url ? 'bg-primary-500 text-night-950' : 'bg-white/5 text-white/65 ring-1 ring-white/10 hover:text-white'"
-                  @click="selectStream(link)"
-                >
-                  {{ link.quality || link.label || `کیفیت ${index + 1}` }}
-                </button>
+              <div v-if="playbackVersions.length > 1">
+                <p class="mb-2 text-xs font-black text-primary-300">نسخه مشترک اتاق</p>
+                <div class="hide-scrollbar flex gap-2 overflow-x-auto pb-1">
+                  <button
+                    v-for="version in playbackVersions"
+                    :key="version.id"
+                    type="button"
+                    class="inline-flex min-h-11 shrink-0 items-center gap-2 rounded-xl px-3 text-xs font-black transition"
+                    :class="activeVersion?.id === version.id ? 'bg-primary-500 text-night-950' : 'bg-white/5 text-white/65 ring-1 ring-white/10 hover:text-white'"
+                    :aria-pressed="activeVersion?.id === version.id"
+                    @click="selectVersion(version)"
+                  >
+                    <CinematicIcon :name="version.kind === 'dub' ? 'audio' : 'subtitle'" class="size-4" />
+                    {{ version.label }}
+                  </button>
+                </div>
               </div>
+              <div v-if="streamLinks.length > 1">
+                <p class="mb-2 text-xs font-black text-primary-300">کیفیت مشترک اتاق</p>
+                <div class="hide-scrollbar flex gap-2 overflow-x-auto pb-1">
+                  <button
+                    v-for="(link, index) in streamLinks"
+                    :key="`${link.url}-${index}`"
+                    type="button"
+                    class="inline-flex min-h-11 shrink-0 items-center gap-2 rounded-xl px-3 text-xs font-black transition"
+                    :class="playerSrc === link.url ? 'bg-primary-500 text-night-950' : 'bg-white/5 text-white/65 ring-1 ring-white/10 hover:text-white'"
+                    :aria-pressed="playerSrc === link.url"
+                    @click="selectStream(link)"
+                  >
+                    {{ link.quality || link.label || `کیفیت ${index + 1}` }}
+                  </button>
+                </div>
+              </div>
+              <p class="text-[11px] leading-5 text-white/35">تغییر نسخه یا کیفیت از همین‌جا برای همه ادامه پیدا می‌کند؛ داخل پلیر هم می‌توانی عوض کنی.</p>
             </div>
 
             <div
@@ -1173,7 +1525,7 @@ useSeoMeta({
             <div
               class="party-room__panel-shell fixed inset-x-0 bottom-0 z-40 isolate max-h-[78dvh] origin-bottom lg:static lg:z-auto lg:max-h-none"
               :class="[
-                panelOpen ? 'block' : 'hidden lg:block',
+ panelOpen ? 'block' : 'hidden lg:block',
                 focusMode && 'lg:!hidden',
               ]"
             >
@@ -1266,7 +1618,6 @@ useSeoMeta({
   inset: 0;
   border: 0;
   background: rgb(0 0 0 / 58%);
-  backdrop-filter: blur(2px);
 }
 
 .party-fullscreen-chat {
@@ -1283,8 +1634,7 @@ useSeoMeta({
   border-radius: 1.25rem;
   background: rgb(10 10 10 / 96%);
   padding: 0.875rem;
-  box-shadow: 0 1.5rem 5rem rgb(0 0 0 / 70%);
-  backdrop-filter: blur(18px);
+  box-shadow: none;
 }
 
 .party-fullscreen-chat__header {
@@ -1313,8 +1663,7 @@ useSeoMeta({
   color: white;
   font-size: 0.75rem;
   font-weight: 900;
-  box-shadow: 0 0.75rem 2.5rem rgb(0 0 0 / 55%);
-  backdrop-filter: blur(14px);
+  box-shadow: none;
   transition: background-color 0.15s ease, transform 0.15s ease;
 }
 
@@ -1511,7 +1860,7 @@ useSeoMeta({
   color: #e0f2fe;
   background: rgb(14 165 233 / 28%);
   border-color: rgb(56 189 248 / 55%);
-  box-shadow: 0 8px 22px rgb(14 165 233 / 22%);
+  box-shadow: none;
 }
 
 /* Cinema focus — amber */
@@ -1526,7 +1875,7 @@ useSeoMeta({
   color: #fff7ed;
   background: rgb(245 158 11 / 26%);
   border-color: rgb(251 191 36 / 50%);
-  box-shadow: 0 8px 22px rgb(245 158 11 / 20%);
+  box-shadow: none;
 }
 
 /* Chat / panel — brand mint */
@@ -1540,20 +1889,20 @@ useSeoMeta({
   color: #ecfdf5;
   background: rgb(176 228 204 / 26%);
   border-color: rgb(176 228 204 / 50%);
-  box-shadow: 0 8px 22px rgb(176 228 204 / 18%);
+  box-shadow: none;
 }
 
 .party-btn--chat.party-btn--fab {
   color: #07140f;
   background: #b0e4cc;
   border-color: transparent;
-  box-shadow: 0 12px 28px rgb(0 0 0 / 45%);
+  box-shadow: none;
 }
 
 .party-btn--chat.party-btn--fab:hover {
   color: #04100b;
   background: #c8efdc;
-  box-shadow: 0 14px 32px rgb(176 228 204 / 28%);
+  box-shadow: none;
 }
 
 /* Resync — violet */
@@ -1569,7 +1918,7 @@ useSeoMeta({
   color: #f5f3ff;
   background: rgb(139 92 246 / 28%);
   border-color: rgb(167 139 250 / 55%);
-  box-shadow: 0 8px 20px rgb(139 92 246 / 22%);
+  box-shadow: none;
 }
 
 .party-fab {
@@ -1589,8 +1938,7 @@ useSeoMeta({
   border-radius: 1rem;
   padding-inline: 1rem;
   font-size: 0.75rem;
-  backdrop-filter: blur(14px);
-  box-shadow: 0 12px 28px rgb(0 0 0 / 45%);
+  box-shadow: none;
 }
 
 .party-btn--cinema.party-btn--fab {

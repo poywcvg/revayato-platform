@@ -37,7 +37,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import com.revayato.app.core.theme.BrandMint
+import com.revayato.app.core.theme.Brand
 import com.revayato.app.core.theme.OnBrand
 import com.revayato.app.core.theme.TextMuted
 import com.revayato.app.core.ui.UiState
@@ -93,9 +93,9 @@ fun AddToCollectionSheet(
                 horizontalArrangement = Arrangement.spacedBy(12.dp),
             ) {
                 Box(
-                    Modifier.size(40.dp).clip(CircleShape).background(BrandMint.copy(alpha = 0.15f)),
+                    Modifier.size(40.dp).clip(CircleShape).background(Brand.copy(alpha = 0.15f)),
                     contentAlignment = Alignment.Center,
-                ) { Icon(Icons.Rounded.Add, contentDescription = null, tint = BrandMint) }
+                ) { Icon(Icons.Rounded.Add, contentDescription = null, tint = Brand) }
                 Text("کالکشن جدید", fontWeight = FontWeight.Bold, style = MaterialTheme.typography.bodyLarge)
             }
 
@@ -183,11 +183,11 @@ private fun PickRow(
             Modifier
                 .size(28.dp)
                 .clip(CircleShape)
-                .background(if (row.contains) BrandMint else Color.Transparent),
+                .background(if (row.contains) Brand else Color.Transparent),
             contentAlignment = Alignment.Center,
         ) {
             when {
-                busy -> RevayatoSpinner(size = 18.dp, color = BrandMint)
+                busy -> RevayatoSpinner(size = 18.dp, color = Brand)
                 row.contains -> Icon(Icons.Rounded.Check, contentDescription = "در کالکشن", tint = OnBrand, modifier = Modifier.size(18.dp))
                 else -> Icon(Icons.Rounded.Add, contentDescription = "افزودن", tint = TextMuted, modifier = Modifier.size(18.dp))
             }

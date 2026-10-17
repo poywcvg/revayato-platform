@@ -67,6 +67,36 @@ GAP_REASON = DRAFT_GAP_REASON
 #: A provider lookup matches on the English title; without one it cannot even try.
 _MIN_TITLE_LEN = 2
 
+#: Provider codes meaning "searched, this provider does not carry the title". The
+#: crawl only returns these after its own title/IMDb lookup came up empty, so the
+#: next round would get the same answer — the row rests for ``retry_hours``.
+_NOT_LISTED_CODES = frozenset({
+    'page_not_found',
+    'myf2m_page_required', 'myf2m_links_empty', 'myf2m_identity_mismatch',
+    'dornatv_page_required', 'dornatv_links_empty', 'dornatv_identity_mismatch',
+    'kargadan_page_missing', 'kargadan_links_empty', 'kargadan_identity_mismatch',
+    'kargadan_imdb_required', 'empty_download',
+})
+
+#: A provider we cannot ask yet (kargadan without its operator cookie). Neither a
+#: miss nor a failure: it must not keep a title spinning in the retry queue.
+_UNASKABLE_CODES = frozenset({'kargadan_session_missing', 'kargadan_login_required'})
+
+
+def _providers_answered(codes: dict) -> bool:
+    """True when every askable provider gave a real answer (links or "not listed").
+
+    Anything else — an exception, a timeout, an unknown code — is a failure and
+    keeps the title queued, so a provider outage never parks a title for a week.
+    """
+    answered = False
+    for status, detail in codes.values():
+        if status == 'ok' or (status == 'err' and detail in _NOT_LISTED_CODES):
+            answered = True
+        elif not (status == 'err' and detail in _UNASKABLE_CODES):
+            return False
+    return answered
+
 
 def _sourceless_diag() -> dict:
     """The synthetic diagnosis a no-source row carries."""
@@ -167,21 +197,22 @@ def hunt(obj) -> dict:
     Outcome is ``sourced`` (the title now has at least one link), ``unplayable``
     (links landed but none a browser can play — handed to the playback-source
     pipeline), ``unavailable`` (providers answered, nothing to import) or
-    ``provider_error`` (every provider failed; retry later).
+    ``provider_error`` (a provider failed and none answered; retry later). A
+    provider that searched and does not list the title counts as an answer.
     """
     from apps.catalog.models import PlaybackSourceGap
 
     codes = _recrawl_all_providers(obj)
-    any_ok = any(status == 'ok' for status, _ in codes.values())
+    answered = any(status == 'ok' for status, _ in codes.values()) or _providers_answered(codes)
 
     if not has_any_source(obj):
         upsert_source_gap(
             obj, _sourceless_diag(),
-            status=(PlaybackSourceGap.Status.UNAVAILABLE if any_ok
+            status=(PlaybackSourceGap.Status.UNAVAILABLE if answered
                     else PlaybackSourceGap.Status.QUEUED),
-            last_result=('no_provider_listing' if any_ok else 'provider_error'),
+            last_result=('no_provider_listing' if answered else 'provider_error'),
         )
-        return {'outcome': 'unavailable' if any_ok else 'provider_error', 'codes': codes}
+        return {'outcome': 'unavailable' if answered else 'provider_error', 'codes': codes}
 
     diag = diagnose(obj)
     if diag['unplayable']:

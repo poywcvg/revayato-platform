@@ -55,7 +55,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.revayato.app.core.theme.BgElevated
-import com.revayato.app.core.theme.BrandMint
+import com.revayato.app.core.theme.Brand
 import com.revayato.app.core.theme.NeutralSurface
 import com.revayato.app.core.theme.OnBrand
 import com.revayato.app.core.theme.OutlineSoft
@@ -202,7 +202,7 @@ private fun FilterPill(label: String, active: Boolean, onClick: () -> Unit) {
         label = "filterScale",
     )
     val bg by animateColorAsState(
-        targetValue = if (active) BrandMint else NeutralSurface,
+        targetValue = if (active) Brand else NeutralSurface,
         label = "filterBg",
     )
     Box(
@@ -389,7 +389,7 @@ private fun SearchBar(
                     CircularProgressIndicator(
                         modifier = Modifier.padding(12.dp),
                         strokeWidth = 2.dp,
-                        color = BrandMint,
+                        color = Brand,
                     )
                 } else if (query.isNotEmpty()) {
                     IconButton(onClick = onClear) {
@@ -405,9 +405,9 @@ private fun SearchBar(
         colors = OutlinedTextFieldDefaults.colors(
             focusedContainerColor = BgElevated,
             unfocusedContainerColor = BgElevated,
-            focusedBorderColor = BrandMint,
-            cursorColor = BrandMint,
-            focusedLeadingIconColor = BrandMint,
+            focusedBorderColor = Brand,
+            cursorColor = Brand,
+            focusedLeadingIconColor = Brand,
             unfocusedLeadingIconColor = TextMuted,
             unfocusedBorderColor = Color.Transparent,
         ),

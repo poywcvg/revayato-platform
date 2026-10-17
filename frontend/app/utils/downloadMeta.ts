@@ -243,6 +243,23 @@ export function isRemuxCandidate(url?: string | null): boolean {
   return /\.(mkv|webm)$/.test(path)
 }
 
+/** Chromium (outside iOS) opens MKV in a plain `<video>`; Safari, iOS and Firefox do not. */
+export function browserOpensMkvNatively(): boolean {
+  return isChromiumLikePlayback() && !isSafariLikePlayback()
+}
+
+/**
+ * An Iran-only CDN file (backend `iran_only`: abrtech.top → mehracdn.com) that
+ * this browser has no way to play. Those CDNs send no CORS headers, so the
+ * in-page remuxer cannot read them, and the gateway sits outside Iran where
+ * they answer with a «turn your VPN off» page — which leaves only the browser's
+ * own `<video>`, and that cannot open MKV outside Chromium.
+ */
+export function geoLockedUnplayable(link?: { url?: string | null, iran_only?: boolean } | null): boolean {
+  if (!link?.iran_only) return false
+  return isRemuxCandidate(link.url) && !browserOpensMkvNatively()
+}
+
 /**
  * Browsers that cannot be trusted with an MKV source. Any browser with Media
  * Source can: the player remuxes MKV to MP4 in the page (utils/remux), which
@@ -413,7 +430,7 @@ function containerScore(url: string) {
  * label scores higher — codec probing and failed fallback cost more than a rung.
  * Known-dead Soft CDN hosts are skipped so Hard/Dub live mirrors win.
  */
-export function pickStreamFriendlyLink<T extends { quality?: string, url: string, label?: string }>(
+export function pickStreamFriendlyLink<T extends { quality?: string, url: string, label?: string, iran_only?: boolean }>(
   links: readonly T[],
   preferLean: boolean | StreamNetworkProfile = false,
 ): T | null {
@@ -446,6 +463,9 @@ export function pickStreamFriendlyLink<T extends { quality?: string, url: string
     // Prefer live hosts even when the only remaining candidates are dead.
     if (isDeadPlaybackHost(a.url)) scoreA -= 1000
     if (isDeadPlaybackHost(b.url)) scoreB -= 1000
+    // Any other mirror beats an Iran-only MKV this browser cannot open.
+    if (geoLockedUnplayable(a)) scoreA -= 500
+    if (geoLockedUnplayable(b)) scoreB -= 500
     return scoreB - scoreA
   })[0] || null
 }

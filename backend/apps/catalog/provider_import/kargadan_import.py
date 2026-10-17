@@ -106,7 +106,7 @@ def run_kargadan_missing_import(
     refresh_limit: int | None = None,
     checkpoint_path: str | None = None,
     budget_seconds: float | None = None,
-    delay: float = 0.3,
+    delay: float = 0.2,
     dry_run: bool = False,
     queue_softsub: bool = True,
     should_cancel=lambda: False,

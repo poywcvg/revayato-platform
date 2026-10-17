@@ -111,3 +111,36 @@ class SubzoneParserTests(SimpleTestCase):
             video_urls=['https://cdn.example/Soft/Interstellar.2014.720p.mkv'],
             timeout_seconds=5,
         ))
+
+
+class SubzoneOutageTests(SimpleTestCase):
+    """A 404 is an answer; a 5xx or network failure means Subzone never answered."""
+
+    def _fetch_with(self, side_effect):
+        from apps.catalog.subtitle_provider_health import track_provider_outages
+
+        opener = mock.Mock()
+        opener.open.side_effect = side_effect
+        with mock.patch.object(subzone, 'build_opener', return_value=opener), \
+                mock.patch.object(subzone, '_robots_allows', return_value=True), \
+                mock.patch.object(subzone, '_throttle', return_value=None), \
+                track_provider_outages() as outages:
+            with self.assertRaises(subzone.SubzoneError):
+                subzone._fetch('https://subzone.ir/subtitles/x', max_bytes=100, timeout_seconds=3)
+        return outages
+
+    @override_settings(CACHES={'default': {'BACKEND': 'django.core.cache.backends.locmem.LocMemCache'}})
+    def test_not_found_is_not_an_outage(self):
+        from urllib.error import HTTPError
+
+        cache.clear()
+        self.assertEqual(self._fetch_with(HTTPError('u', 404, 'nf', {}, None)), set())
+
+    @override_settings(CACHES={'default': {'BACKEND': 'django.core.cache.backends.locmem.LocMemCache'}})
+    def test_server_error_and_network_failure_are_outages(self):
+        from urllib.error import HTTPError, URLError
+
+        cache.clear()
+        self.assertEqual(self._fetch_with(HTTPError('u', 502, 'bad', {}, None)), {'subzone'})
+        cache.clear()
+        self.assertEqual(self._fetch_with(URLError('reset')), {'subzone'})

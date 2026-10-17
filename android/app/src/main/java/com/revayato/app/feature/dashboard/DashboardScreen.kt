@@ -28,6 +28,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.ReadOnlyComposable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
@@ -40,11 +41,12 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.revayato.app.core.theme.NeutralSurface
 import com.revayato.app.core.theme.AccentBlue
 import com.revayato.app.core.theme.AccentRed
 import com.revayato.app.core.theme.AccentYellow
 import com.revayato.app.core.theme.BgElevated
-import com.revayato.app.core.theme.BrandMint
+import com.revayato.app.core.theme.Brand
 import com.revayato.app.core.theme.ErrorRed
 import com.revayato.app.core.theme.OnBrand
 import com.revayato.app.core.theme.OutlineSoft
@@ -83,12 +85,12 @@ fun DashboardScreen(
                     .padding(end = 12.dp)
                     .size(42.dp)
                     .clip(CircleShape)
-                    .background(Color(0x1FFFFFFF))
+                    .background(NeutralSurface)
                     .clickable { viewModel.load(refresh = true) },
                 contentAlignment = Alignment.Center,
             ) {
                 if (state.refreshing) {
-                    CircularProgressIndicator(Modifier.size(20.dp), color = BrandMint, strokeWidth = 2.dp)
+                    CircularProgressIndicator(Modifier.size(20.dp), color = Brand, strokeWidth = 2.dp)
                 } else {
                     Icon(Icons.Rounded.Refresh, contentDescription = "به‌روزرسانی", tint = TextPrimary, modifier = Modifier.size(22.dp))
                 }
@@ -97,7 +99,7 @@ fun DashboardScreen(
 
         when {
             state.loading && state.overview == null -> CenterBox {
-                CircularProgressIndicator(color = BrandMint)
+                CircularProgressIndicator(color = Brand)
             }
             state.forbidden -> CenterBox {
                 Text("این بخش فقط برای مدیران است.", color = TextSecondary, textAlign = TextAlign.Center)
@@ -112,7 +114,7 @@ fun DashboardScreen(
                         fontWeight = FontWeight.Bold,
                         modifier = Modifier
                             .clip(RoundedCornerShape(12.dp))
-                            .background(BrandMint)
+                            .background(Brand)
                             .clickable { viewModel.load(refresh = true) }
                             .padding(horizontal = 20.dp, vertical = 10.dp),
                     )
@@ -149,7 +151,7 @@ private fun DashboardContent(
                         color = if (selected) OnBrand else TextSecondary,
                         modifier = Modifier
                             .clip(RoundedCornerShape(12.dp))
-                            .background(if (selected) BrandMint else BgElevated)
+                            .background(if (selected) Brand else BgElevated)
                             .clickable { onPeriod(period) }
                             .padding(horizontal = 16.dp, vertical = 9.dp),
                     )
@@ -316,7 +318,7 @@ private fun DashboardContent(
             // Action mix
             if (behavior.actionMix.any { it.value > 0 }) {
                 item { SectionTitle("ترکیب کنش‌ها") }
-                item { BarListCard(behavior.actionMix.take(10), BrandMint) }
+                item { BarListCard(behavior.actionMix.take(10), Brand) }
             }
 
             // Content interest
@@ -434,7 +436,7 @@ private fun TopContentRow(rank: Int, item: AnalyticsTopContentDto) {
             Modifier.size(28.dp).clip(CircleShape).background(SurfaceHover),
             contentAlignment = Alignment.Center,
         ) {
-            Text(rank.fa(), style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.Bold, color = BrandMint)
+            Text(rank.fa(), style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.Bold, color = Brand)
         }
         Spacer(Modifier.width(12.dp))
         Column(Modifier.weight(1f)) {
@@ -455,7 +457,7 @@ private fun TopContentRow(rank: Int, item: AnalyticsTopContentDto) {
         }
         Spacer(Modifier.width(8.dp))
         Column(horizontalAlignment = Alignment.End) {
-            Text(item.activity.fa(), style = MaterialTheme.typography.bodyLarge, fontWeight = FontWeight.Black, color = BrandMint)
+            Text(item.activity.fa(), style = MaterialTheme.typography.bodyLarge, fontWeight = FontWeight.Black, color = Brand)
             Text("فعالیت", style = MaterialTheme.typography.labelSmall, color = TextMuted)
         }
     }
@@ -492,7 +494,7 @@ private fun SearchTermsFlow(terms: List<AnalyticsSearchTermDto>) {
                             modifier = Modifier.weight(1f),
                         )
                         Spacer(Modifier.width(6.dp))
-                        Text(term.count.fa(), style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.Black, color = BrandMint)
+                        Text(term.count.fa(), style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.Black, color = Brand)
                     }
                 }
                 if (pair.size == 1) Spacer(Modifier.weight(1f))
@@ -637,7 +639,7 @@ private fun RegistrationsBars(points: List<AnalyticsSeriesPointDto>) {
                         .weight(1f)
                         .fillMaxHeight(fraction.coerceIn(0.02f, 1f))
                         .clip(RoundedCornerShape(topStart = 4.dp, topEnd = 4.dp))
-                        .background(if (point.value > 0) BrandMint else SurfaceHover),
+                        .background(if (point.value > 0) Brand else SurfaceHover),
                 )
             }
         }
@@ -667,7 +669,7 @@ private fun TopUserRow(
             Modifier.size(28.dp).clip(CircleShape).background(SurfaceHover),
             contentAlignment = Alignment.Center,
         ) {
-            Text(rank.fa(), style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.Bold, color = BrandMint)
+            Text(rank.fa(), style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.Bold, color = Brand)
         }
         Spacer(Modifier.width(12.dp))
         Column(Modifier.weight(1f)) {
@@ -688,13 +690,14 @@ private fun TopUserRow(
         }
         Spacer(Modifier.width(8.dp))
         Column(horizontalAlignment = Alignment.End) {
-            Text("${watchHours.fa()} س", style = MaterialTheme.typography.bodyLarge, fontWeight = FontWeight.Black, color = BrandMint)
+            Text("${watchHours.fa()} س", style = MaterialTheme.typography.bodyLarge, fontWeight = FontWeight.Black, color = Brand)
             Text("تماشا", style = MaterialTheme.typography.labelSmall, color = TextMuted)
         }
     }
 }
 
-private val funnelPalette = listOf(AccentBlue, BrandMint, AccentYellow, PlayAccent)
+private val funnelPalette: List<Color>
+    @Composable @ReadOnlyComposable get() = listOf(AccentBlue, Brand, AccentYellow, PlayAccent)
 
 @Composable
 private fun FunnelCard(stages: List<AnalyticsFunnelStageDto>) {
@@ -822,7 +825,7 @@ private fun RetentionCard(r: AnalyticsRetentionDto) {
             RetentionStat("ماهانه", r.mau, Modifier.weight(1f))
         }
         Spacer(Modifier.height(14.dp))
-        PercentBar("چسبندگی (DAU/MAU)", r.stickiness, BrandMint)
+        PercentBar("چسبندگی (DAU/MAU)", r.stickiness, Brand)
         Spacer(Modifier.height(10.dp))
         PercentBar("بازگشت هفته‌به‌هفته", r.wowRetentionRate, AccentBlue)
         if (r.wowPriorCohort > 0) {

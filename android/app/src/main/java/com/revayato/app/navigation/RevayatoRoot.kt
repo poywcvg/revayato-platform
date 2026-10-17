@@ -1,5 +1,11 @@
 package com.revayato.app.navigation
 
+import com.revayato.app.core.theme.BgMain
+import com.revayato.app.core.theme.NeutralSurface
+import com.revayato.app.core.theme.OnBrand
+import com.revayato.app.core.theme.RevayatoTheme
+import com.revayato.app.ui.components.ThemeToggle
+
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.tween
@@ -55,7 +61,7 @@ import androidx.navigation.compose.composable
 import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
-import com.revayato.app.core.theme.BrandMint
+import com.revayato.app.core.theme.Brand
 import com.revayato.app.core.theme.TextPrimary
 import com.revayato.app.feature.auth.ForgotPasswordScreen
 import com.revayato.app.feature.auth.LoginScreen
@@ -390,7 +396,8 @@ fun RevayatoRoot(
                     ),
                 ) { entry ->
                     val args = entry.arguments!!
-                    PlayerScreen(
+                    // The cinema stays dark whatever the app theme is.
+                    RevayatoTheme(darkTheme = true) { PlayerScreen(
                         args = PlayerArgs(
                             contentType = args.getString("contentType").orEmpty(),
                             id = args.getInt("id"),
@@ -403,7 +410,7 @@ fun RevayatoRoot(
                             qualitiesEncoded = args.getString("qualities").orEmpty(),
                         ),
                         onBack = navController::navigateUp,
-                    )
+                    ) }
                 }
 
                 // ---- Watch party room ----
@@ -411,11 +418,13 @@ fun RevayatoRoot(
                     route = Routes.WATCH_PARTY_ROOM,
                     arguments = listOf(navArgument("code") { type = NavType.StringType }),
                 ) { entry ->
-                    WatchPartyRoomScreen(
-                        code = entry.arguments?.getString("code").orEmpty(),
-                        onBack = navController::navigateUp,
-                        onOpenPlayer = navController::openPlayer,
-                    )
+                    RevayatoTheme(darkTheme = true) {
+                        WatchPartyRoomScreen(
+                            code = entry.arguments?.getString("code").orEmpty(),
+                            onBack = navController::navigateUp,
+                            onOpenPlayer = navController::openPlayer,
+                        )
+                    }
                 }
 
                 // ---- Collections / lists ----
@@ -620,20 +629,27 @@ fun RevayatoRoot(
                     LoginScreen(
                         onBack = navController::navigateUp,
                         onLoggedIn = navController::navigateUp,
-                        onRegister = { navController.navigate(Routes.REGISTER) },
+                        // The ورود | ثبت‌نام switch swaps screens instead of stacking them,
+                        // so back always returns to where the user came from.
+                        onRegister = {
+                            navController.navigate(Routes.REGISTER) {
+                                popUpTo(Routes.LOGIN) { inclusive = true }
+                                launchSingleTop = true
+                            }
+                        },
                         onForgotPassword = { navController.navigate(Routes.FORGOT_PASSWORD) },
                     )
                 }
                 composable(Routes.REGISTER) {
                     RegisterScreen(
                         onBack = navController::navigateUp,
-                        onRegistered = {
-                            navController.navigate(Routes.HOME) {
-                                popUpTo(Routes.LOGIN) { inclusive = true }
+                        onRegistered = navController::navigateUp,
+                        onLogin = {
+                            navController.navigate(Routes.LOGIN) {
+                                popUpTo(Routes.REGISTER) { inclusive = true }
                                 launchSingleTop = true
                             }
                         },
-                        onLogin = { navController.navigate(Routes.LOGIN) },
                     )
                 }
                 composable(Routes.FORGOT_PASSWORD) {
@@ -654,7 +670,7 @@ private fun RevayatoTopBar(
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .background(Color(0x66101116))
+            .background(BgMain.copy(alpha = 0.72f))
             .padding(top = topInset)
             .padding(horizontal = 12.dp, vertical = 8.dp),
         verticalAlignment = Alignment.CenterVertically,
@@ -668,6 +684,8 @@ private fun RevayatoTopBar(
             color = TextPrimary,
             modifier = Modifier.weight(1f),
         )
+        ThemeToggle(height = 28.dp)
+        Spacer(Modifier.size(8.dp))
         GlassButton(icon = RevIcons.Search, contentDescription = "جستجو", onClick = onSearch)
     }
 }
@@ -681,7 +699,7 @@ private fun GlassButton(
     Box(
         modifier = Modifier
             .size(42.dp)
-            .background(Color(0x1FFFFFFF), CircleShape)
+            .background(NeutralSurface, CircleShape)
             .clickable(onClick = onClick),
         contentAlignment = Alignment.Center,
     ) {
@@ -714,9 +732,9 @@ private fun RevayatoBottomBar(
                 },
                 label = { Text(destination.label, style = MaterialTheme.typography.labelSmall) },
                 colors = NavigationBarItemDefaults.colors(
-                    selectedIconColor = Color(0xFF0D0D0D),
-                    selectedTextColor = BrandMint,
-                    indicatorColor = BrandMint,
+                    selectedIconColor = OnBrand,
+                    selectedTextColor = Brand,
+                    indicatorColor = Brand,
                     unselectedIconColor = MaterialTheme.colorScheme.onSurfaceVariant,
                     unselectedTextColor = MaterialTheme.colorScheme.onSurfaceVariant,
                 ),

@@ -249,17 +249,46 @@ class MovieDetailViewModel @Inject constructor(
         if (trimmed.length < 10 || _state.value.reportSubmitting) return
         _state.value = _state.value.copy(reportSubmitting = true)
         viewModelScope.launch {
-            val url = "https://revayato.com/movies/${movie.slug}"
-            when (val res = engagementRepository.reportProblem(movie.title, movie.releaseYear, url, trimmed)) {
-                is ApiResult.Success -> _state.value = _state.value.copy(
-                    reportSubmitting = false,
-                    showReportSheet = false,
-                    actionMessage = "گزارش تو ثبت شد. ممنون! کد پیگیری: ${res.data.trackingCode}",
-                )
-                is ApiResult.Error -> _state.value = _state.value.copy(
-                    reportSubmitting = false,
-                    actionMessage = res.message,
-                )
+            // Structured path (same engine as the web player): the free-text quick
+            // reason is classified onto the 12-value catalogue so the backend can
+            // auto-remediate, and the mirrored inbox ticket keeps the user in the
+            // «درخواست‌های من» loop. Falls back to the legacy support ticket when
+            // the structured intake is unavailable.
+            val problemType = inferStructuredProblemType(trimmed, isSeries = false)
+            when (val res = catalogRepository.reportContentIssue(
+                contentType = "movie",
+                problemType = problemType,
+                objectId = movie.id,
+                slug = movie.slug,
+                detail = trimmed,
+            )) {
+                is ApiResult.Success -> {
+                    val code = res.data.trackingCode.trim()
+                    val msg = if (code.isNotBlank()) {
+                        "گزارش تو ثبت شد و خودکار بررسی می‌شود. ممنون! کد پیگیری: $code"
+                    } else {
+                        "گزارش تو ثبت شد و خودکار بررسی می‌شود. ممنون!"
+                    }
+                    _state.value = _state.value.copy(
+                        reportSubmitting = false,
+                        showReportSheet = false,
+                        actionMessage = msg,
+                    )
+                }
+                is ApiResult.Error -> {
+                    val url = "https://revayato.com/movies/${movie.slug}"
+                    when (val fallback = engagementRepository.reportProblem(movie.title, movie.releaseYear, url, trimmed)) {
+                        is ApiResult.Success -> _state.value = _state.value.copy(
+                            reportSubmitting = false,
+                            showReportSheet = false,
+                            actionMessage = "گزارش تو ثبت شد. ممنون! کد پیگیری: ${fallback.data.trackingCode}",
+                        )
+                        is ApiResult.Error -> _state.value = _state.value.copy(
+                            reportSubmitting = false,
+                            actionMessage = res.message,
+                        )
+                    }
+                }
             }
         }
     }

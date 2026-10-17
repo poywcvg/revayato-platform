@@ -115,7 +115,7 @@ watch(() => supportModal.isOpen.value, (open, was) => { if (was && !open) void r
 .req-card:focus-visible {
   border-color: color-mix(in srgb, var(--theme-accent-primary, #7c5cff) 50%, transparent);
   transform: translateY(-1px);
-  box-shadow: 0 16px 34px -24px rgb(0 0 0 / 55%);
+  box-shadow: none;
 }
 
 .req-card__icon {

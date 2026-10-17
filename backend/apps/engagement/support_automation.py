@@ -368,7 +368,9 @@ def _resolve_ticket_target(ticket: SupportTicket):
 
 def _handle_content_issue(ticket: SupportTicket) -> Outcome:
     # Ticket mirrored from a player report — close it against that report's fix.
-    report = ticket.content_issue_reports.order_by('-created_at').first()
+    # Covers both the FK-linked first ticket and sibling tickets that reference
+    # the same CIR id from a deduped breakage.
+    report = _find_report_for_ticket(ticket)
     if report is not None:
         return _handle_from_report(report)
 
@@ -596,13 +598,68 @@ def _retry_count(ticket: SupportTicket) -> int:
 _DEAD_END_MARK = 'no_safe_source_notified'
 
 
+_CIR_RE = re.compile(r'CIR-(\d+)', re.IGNORECASE)
+
+
+def _find_report_for_ticket(ticket: SupportTicket):
+    """The ContentIssueReport this ticket speaks for.
+
+    Primary link is the ``report.support_ticket`` FK (first reporter). Sibling
+    tickets created for other users reporting the same deduped breakage carry the
+    same ``CIR-<id>`` reference in their opening body instead of a FK (one row
+    can only point at one ticket) — resolve those via the reference so every
+    reporter gets the same auto-remediation outcome.
+    """
+    try:
+        direct = ticket.content_issue_reports.order_by('-created_at').first()
+    except Exception:  # noqa: BLE001
+        direct = None
+    if direct is not None:
+        return direct
+    try:
+        from apps.catalog.models import ContentIssueReport
+
+        # Newest first: the opening message holds the CIR ref; a later user reply
+        # could theoretically contain a different number.
+        bodies = []
+        try:
+            bodies = [m.body or '' for m in ticket.messages.all().order_by('-created_at')[:5]]
+        except Exception:  # noqa: BLE001
+            bodies = []
+        bodies.append(ticket.body or '')
+        for body in bodies:
+            match = _CIR_RE.search(body or '')
+            if not match:
+                continue
+            report = ContentIssueReport.objects.filter(pk=int(match.group(1))).first()
+            if report is not None:
+                return report
+    except Exception:  # noqa: BLE001
+        logger.info('CIR lookup failed for %s', ticket.tracking_code, exc_info=True)
+    return None
+
+
 def _dead_end_unannounced(ticket: SupportTicket, report) -> bool:
     """Has auto-remediation given up on this report without telling the viewer?"""
     status = str(report.status).lower()
     dead_end = status == 'unavailable' or (
         status == 'needs_review' and report.remediation_action == 'auto_exhausted'
     )
-    return dead_end and _DEAD_END_MARK not in (ticket.staff_note or '')
+    if not dead_end:
+        return False
+    # The mark lives in staff_note — but older silent retries overwrote it with
+    # "still_pending", so also look at the thread itself: the dead-end wording
+    # is unique ("نسخه‌ای که مرورگر بتواند پخش کند"), and posting it twice is
+    # the spam this guard exists to prevent.
+    if _DEAD_END_MARK in (ticket.staff_note or ''):
+        return False
+    try:
+        return not ticket.messages.filter(
+            is_staff_reply=True,
+            body__contains='نسخه‌ای که مرورگر بتواند پخش کند',
+        ).exists()
+    except Exception:  # noqa: BLE001 — a lookup failure must not spam the user
+        return False
 
 
 def _recheck_resolved(ticket: SupportTicket) -> Outcome | None:
@@ -637,7 +694,7 @@ def _recheck_resolved(ticket: SupportTicket) -> Outcome | None:
     # ``related_title`` ("Çukur — قسمت 27") does not resolve to a catalog row, and a
     # series-level check would call the show playable while this episode is still
     # a bare .mkv.
-    report = ticket.content_issue_reports.order_by('-created_at').first()
+    report = _find_report_for_ticket(ticket)
     if report is not None:
         try:
             from apps.catalog.content_remediation import recheck_report
@@ -672,7 +729,8 @@ def _recheck_resolved(ticket: SupportTicket) -> Outcome | None:
             )
         return None  # still broken (or a non-playback type left to its own remediation)
 
-    # A hand-written bug ticket with no report: resolve once the title plays again.
+    # A hand-written bug ticket with no report: resolve once the title plays again
+    # (directly or via the gateway HLS rewrap — both open in the player today).
     target = _resolve_ticket_target(ticket)
     if target is None:
         return None
@@ -680,13 +738,13 @@ def _recheck_resolved(ticket: SupportTicket) -> Outcome | None:
     if not bool(getattr(obj, 'is_published', False)):
         return None
     try:
-        from apps.catalog import playback_sources
+        from apps.catalog.content_remediation import target_playable as _target_playable
 
-        still_unplayable = playback_sources.browser_unplayable(obj)  # DB-only diagnosis
+        plays_now = _target_playable(obj, None)  # DB-only diagnosis
     except Exception as exc:  # noqa: BLE001
         logger.info('recheck diagnose failed for %s: %s', ticket.tracking_code, exc)
         return None
-    if still_unplayable:
+    if not plays_now:
         return None
     name = getattr(obj, 'title', '')
     return Outcome(
@@ -742,10 +800,16 @@ def retry_ticket(ticket: SupportTicket, *, dry_run: bool = False) -> tuple[Outco
             services.reply_support_ticket(
                 ticket=ticket, author=get_bot_user(), body=outcome.reply, is_staff_reply=True,
             )
+        # A silent "still_pending" bump must not wipe the dead-end mark stamped
+        # by an earlier "no browser-safe source yet" update — losing it made the
+        # next tick announce the same update again, spamming the thread.
+        carried_mark = ''
+        if not outcome.reply and _DEAD_END_MARK in (ticket.staff_note or ''):
+            carried_mark = f' · {_DEAD_END_MARK}'
         services.set_support_ticket_status(
             ticket=ticket,
             status=SupportTicket.Status.IN_PROGRESS,
-            staff_note=(f'[auto:{outcome.action}] {outcome.note} · retries={attempts}')[:2000],
+            staff_note=(f'[auto:{outcome.action}] {outcome.note} · retries={attempts}{carried_mark}')[:2000],
         )
     return outcome, False
 
@@ -779,14 +843,41 @@ def close_tickets_for_reports(report_ids) -> int:
     """After reports were resolved by a sweep, tell their tickets' owners now.
 
     Without this a fixed ticket would wait for its next retry window (up to hours)
-    before the user hears the good news.
+    before the user hears the good news. Covers both the FK-linked primary ticket
+    and sibling tickets that reference the same CIR id (different reporters of one
+    deduped breakage).
     """
     from apps.catalog.models import ContentIssueReport
 
+    ids = [int(pk) for pk in list(report_ids or []) if str(pk).strip().isdigit()]
+    if not ids:
+        return 0
     ticket_ids = set(
-        ContentIssueReport.objects.filter(pk__in=list(report_ids), support_ticket__isnull=False)
+        ContentIssueReport.objects.filter(pk__in=ids, support_ticket__isnull=False)
         .values_list('support_ticket_id', flat=True)
     )
+    # Sibling tickets recorded in report.meta['extra_tickets'].
+    try:
+        for meta in ContentIssueReport.objects.filter(pk__in=ids).values_list('meta', flat=True):
+            extra = (meta or {}).get('extra_tickets') if isinstance(meta, dict) else None
+            for tid in extra or []:
+                try:
+                    ticket_ids.add(int(tid))
+                except (TypeError, ValueError):
+                    continue
+    except Exception:  # noqa: BLE001 — meta is best-effort bookkeeping
+        pass
+    # Fallback: any open ticket whose thread references the CIR id (covers older
+    # rows written before meta bookkeeping).
+    try:
+        for rid in ids:
+            for tid in SupportTicket.objects.filter(
+                status=SupportTicket.Status.IN_PROGRESS,
+                messages__body__contains=f'CIR-{rid}',
+            ).values_list('id', flat=True)[:50]:
+                ticket_ids.add(int(tid))
+    except Exception:  # noqa: BLE001
+        pass
     closed = 0
     for ticket_id in ticket_ids:
         with _ticket_lock(ticket_id) as acquired:

@@ -77,3 +77,16 @@ test('only progressive MKV/WebM over http(s) is handed to the in-page remuxer', 
   // No window (SSR, Node): never claims support.
   assert.equal(remuxSupported(), false)
 })
+
+test('an Iran-only MKV this browser cannot open loses to any other mirror', async () => {
+  const { geoLockedUnplayable } = await import('../app/utils/downloadMeta.ts')
+  const abrtech = { quality: '1080p', url: 'https://x.abrtech.top/Breaking.Bad.S01E01.1080p.mkv', iran_only: true }
+  const parsdl = { quality: '720p', url: 'https://dl.parsdl.top/Breaking.Bad.S01E01.720p.mkv' }
+  // Node has no Chromium UA, so it stands in for Firefox/Safari here.
+  assert.equal(geoLockedUnplayable(abrtech), true)
+  assert.equal(geoLockedUnplayable(parsdl), false)
+  assert.equal(geoLockedUnplayable({ ...abrtech, url: 'https://x.abrtech.top/a.mp4' }), false)
+  assert.equal(pickStreamFriendlyLink([abrtech, parsdl], 'fast')?.url, parsdl.url)
+  // Still chosen when it is all there is: the player then offers the way out.
+  assert.equal(pickStreamFriendlyLink([abrtech], 'fast')?.url, abrtech.url)
+})

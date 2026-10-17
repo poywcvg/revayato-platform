@@ -45,13 +45,9 @@
   padding: 1.25rem 1.6rem 1rem;
   border: 1px solid color-mix(in srgb, var(--rl-mint) 22%, transparent);
   border-radius: 1.25rem;
-  background: color-mix(in srgb, var(--theme-bg-elevated, #141414) 82%, transparent);
+  background: color-mix(in srgb, var(--theme-bg-elevated, #141414) 97%, transparent);
   box-shadow:
-    0 18px 48px rgb(0 0 0 / 38%),
-    0 0 0 1px rgb(255 255 255 / 4%) inset,
-    0 0 42px color-mix(in srgb, var(--rl-mint) 10%, transparent);
-  backdrop-filter: blur(14px) saturate(1.2);
-  -webkit-backdrop-filter: blur(14px) saturate(1.2);
+    0 0 0 1px rgb(255 255 255 / 4%) inset;
   transform: translate3d(0, 10px, 0) scale(.94);
   transition: transform 90ms ease;
 }
@@ -71,7 +67,7 @@
   background: conic-gradient(from 0deg, transparent 0 18%, var(--rl-mint-deep) 40%, var(--rl-mint) 72%, var(--rl-mint-light) 88%, transparent 90%);
   -webkit-mask: radial-gradient(farthest-side, transparent calc(100% - 3px), #000 calc(100% - 3px));
   mask: radial-gradient(farthest-side, transparent calc(100% - 3px), #000 calc(100% - 3px));
-  filter: drop-shadow(0 0 6px color-mix(in srgb, var(--rl-mint) 45%, transparent));
+  filter: none;
 }
 
 .route-loader__ring--inner {
@@ -111,46 +107,44 @@
   opacity: .3;
 }
 
-:global(html[data-page-navigating]) .route-loader {
+html[data-page-navigating] .route-loader {
   visibility: visible;
   opacity: 1;
   transition: opacity 160ms ease 180ms, visibility 0s linear 180ms;
 }
 
-:global(html[data-page-navigating]) .route-loader__card {
+html[data-page-navigating] .route-loader__card {
   transform: none;
   transition: transform 260ms cubic-bezier(.22, 1, .36, 1) 180ms;
 }
 
 /* Animations run only while visible, so an idle loader costs nothing. */
-:global(html[data-page-navigating]) .route-loader__ring {
+html[data-page-navigating] .route-loader__ring {
   animation: route-loader-spin 900ms linear infinite;
 }
 
-:global(html[data-page-navigating]) .route-loader__ring--inner {
+html[data-page-navigating] .route-loader__ring--inner {
   animation: route-loader-spin 1400ms linear infinite reverse;
 }
 
-:global(html[data-page-navigating]) .route-loader__mark {
+html[data-page-navigating] .route-loader__mark {
   animation: route-loader-breathe 1400ms ease-in-out infinite;
 }
 
-:global(html[data-page-navigating]) .route-loader__dots i {
+html[data-page-navigating] .route-loader__dots i {
   animation: route-loader-dot 1050ms ease-in-out infinite;
 }
 
-:global(html[data-page-navigating]) .route-loader__dots i:nth-child(2) { animation-delay: 150ms; }
-:global(html[data-page-navigating]) .route-loader__dots i:nth-child(3) { animation-delay: 300ms; }
+html[data-page-navigating] .route-loader__dots i:nth-child(2) { animation-delay: 150ms; }
+html[data-page-navigating] .route-loader__dots i:nth-child(3) { animation-delay: 300ms; }
 
-:global(html[data-theme="light"]) .route-loader {
+html[data-theme="light"] .route-loader {
   background: radial-gradient(circle at 50% 46%, rgb(255 255 255 / 30%), transparent 58%);
 }
 
-:global(html[data-theme="light"]) .route-loader__card {
+html[data-theme="light"] .route-loader__card {
   box-shadow:
-    0 18px 44px rgb(23 33 28 / 16%),
-    0 0 0 1px rgb(255 255 255 / 60%) inset,
-    0 0 36px color-mix(in srgb, var(--rl-mint) 12%, transparent);
+    0 0 0 1px rgb(255 255 255 / 60%) inset;
 }
 
 @keyframes route-loader-spin {
@@ -168,10 +162,10 @@
 }
 
 @media (prefers-reduced-motion: reduce) {
-  :global(html[data-page-navigating]) .route-loader__ring { animation-duration: 2.4s; }
-  :global(html[data-page-navigating]) .route-loader__ring--inner,
-  :global(html[data-page-navigating]) .route-loader__mark,
-  :global(html[data-page-navigating]) .route-loader__dots i { animation: none; opacity: 1; }
+  html[data-page-navigating] .route-loader__ring { animation-duration: 2.4s; }
+  html[data-page-navigating] .route-loader__ring--inner,
+  html[data-page-navigating] .route-loader__mark,
+  html[data-page-navigating] .route-loader__dots i { animation: none; opacity: 1; }
   .route-loader__card { transform: none; }
 }
 </style>

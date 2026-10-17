@@ -35,11 +35,16 @@ class IsStaffUser(BasePermission):
 
 
 class StaffAdminThrottle(UserRateThrottle):
-    rate = '120/minute'
+    # Own scope = own cache key. With the inherited 'user' scope this shared
+    # ``throttle_user_<id>`` with every other request the staff member made
+    # site-wide (and trimmed that history to one minute), so a few dashboard
+    # polls were enough to 429 an admin save or publish.
+    scope = 'staff_admin'
 
 
 class TMDBAdminThrottle(UserRateThrottle):
-    rate = '30/minute'
+    # Guards the TMDB quota, not the admin: separate bucket from the desk.
+    scope = 'staff_tmdb'
 
 
 def _add_imdb_rating_to_preview(preview):
@@ -687,18 +692,23 @@ def admin_movie_list_create(request):
         _audit(request, MovieSyncAudit.Action.MANUAL_CREATE, movie=movie, tmdb_id=movie.tmdb_id, changed=getattr(movie, '_manual_changed_fields', []))
         return Response(AdminMovieSerializer(movie, context={'request': request}).data, status=status.HTTP_201_CREATED)
 
-    queryset = Movie.objects.prefetch_related('genres', 'countries').order_by('-updated_at')
+    queryset = Movie.objects.prefetch_related(
+        'genres', 'countries', 'directors', 'movie_actors__actor',
+    ).order_by('-updated_at')
     query = (request.query_params.get('q') or '').strip()
     publication = (request.query_params.get('status') or '').strip()
     catalog_type = (request.query_params.get('type') or '').strip()
     source = (request.query_params.get('source') or '').strip()
     genre = (request.query_params.get('genre') or '').strip()
     year = (request.query_params.get('year') or '').strip()
+    featured = (request.query_params.get('featured') or '').strip().lower()
+    platform = (request.query_params.get('platform') or '').strip().lower()
     ordering = request.query_params.get('ordering') or '-updated_at'
     allowed_ordering = {
         'title', '-title', 'release_date', '-release_date', 'release_year', '-release_year',
         'created_at', '-created_at', 'updated_at', '-updated_at',
         'imdb_rating', '-imdb_rating', 'rating_average', '-rating_average', 'popularity', '-popularity',
+        'featured_order', '-featured_order', 'is_featured', '-is_featured',
     }
     if query:
         search_query = Q(title__icontains=query) | Q(original_title__icontains=query) | Q(imdb_id__icontains=query)
@@ -715,6 +725,12 @@ def admin_movie_list_create(request):
         queryset = queryset.filter(genres__slug=genre)
     if year.isdigit() and 1888 <= int(year) <= 2100:
         queryset = queryset.filter(release_year=int(year))
+    if featured in {'1', 'true', 'yes'}:
+        queryset = queryset.filter(is_featured=True)
+    elif featured in {'0', 'false', 'no'}:
+        queryset = queryset.filter(is_featured=False)
+    if platform in {'all', 'web', 'app'}:
+        queryset = queryset.filter(slider_platform=platform)
     queryset = queryset.order_by(ordering if ordering in allowed_ordering else '-updated_at').distinct()
     paginator = LimitOffsetPagination()
     paginator.default_limit = 20
@@ -771,11 +787,14 @@ def admin_series_list_create(request):
     source = (request.query_params.get('source') or '').strip()
     genre = (request.query_params.get('genre') or '').strip()
     year = (request.query_params.get('year') or '').strip()
+    featured = (request.query_params.get('featured') or '').strip().lower()
+    platform = (request.query_params.get('platform') or '').strip().lower()
     ordering = request.query_params.get('ordering') or '-updated_at'
     allowed_ordering = {
         'title', '-title', 'start_year', '-start_year',
         'created_at', '-created_at', 'updated_at', '-updated_at',
         'imdb_rating', '-imdb_rating', 'rating_average', '-rating_average', 'popularity', '-popularity',
+        'featured_order', '-featured_order', 'is_featured', '-is_featured',
     }
     if query:
         search_query = Q(title__icontains=query) | Q(original_title__icontains=query) | Q(imdb_id__icontains=query)
@@ -792,6 +811,12 @@ def admin_series_list_create(request):
         queryset = queryset.filter(genres__slug=genre)
     if year.isdigit() and 1888 <= int(year) <= 2100:
         queryset = queryset.filter(start_year=int(year))
+    if featured in {'1', 'true', 'yes'}:
+        queryset = queryset.filter(is_featured=True)
+    elif featured in {'0', 'false', 'no'}:
+        queryset = queryset.filter(is_featured=False)
+    if platform in {'all', 'web', 'app'}:
+        queryset = queryset.filter(slider_platform=platform)
     queryset = queryset.order_by(ordering if ordering in allowed_ordering else '-updated_at').distinct()
     paginator = LimitOffsetPagination()
     paginator.default_limit = 20
@@ -965,3 +990,150 @@ def catalog_sync_run_cancel(request, run_id):
     run = request_catalog_sync_cancel(run_id)
     run = CatalogSyncRun.objects.select_related('requested_by').get(pk=run.pk)
     return Response(catalog_sync_payload(run))
+
+
+def _slider_card(kind, obj):
+    from .serializers import AdminMovieSerializer, AdminSeriesSerializer
+
+    serializer = AdminMovieSerializer if kind == 'movie' else AdminSeriesSerializer
+    payload = serializer(obj, context={}).data
+    payload['content_type'] = kind
+    payload['slider_order'] = int(getattr(obj, 'featured_order', 0) or 0)
+    return payload
+
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated, IsStaffUser])
+@throttle_classes([StaffAdminThrottle])
+def admin_slider_list(request):
+    """Combined admin view of the home slider: featured movies + series.
+
+    ``?platform=web|app`` narrows to one client (default ``all`` = everything
+    the slider shows anywhere); ``?limit=`` caps each side (1–60, default 30).
+    Ordered exactly like the public slider (``featured_order``, recency).
+    """
+    from .slider import slider_items
+
+    limit = _bounded_int(request.query_params.get('limit'), 30, 1, 60)
+    platform = (request.query_params.get('platform') or '').strip().lower()
+    platform = platform if platform in {'web', 'app'} else None
+    cards = [
+        _slider_card(entry['content_type'], entry[entry['content_type']])
+        for entry in slider_items(platform=platform, limit=limit)
+    ]
+    return Response({
+        'platform': platform or 'all',
+        'count': len(cards),
+        'results': cards,
+    })
+
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated, IsStaffUser])
+@throttle_classes([StaffAdminThrottle])
+def admin_slider_reorder(request):
+    """Save the slider in one request: membership, order and platform per item.
+
+    Body: ``{'items': [{'content_type': 'movie'|'series', 'id': int,
+    'is_featured': bool, 'featured_order': int, 'slider_platform': str}]}``.
+    Unknown ids are skipped (reported), validation errors 400 with the index.
+    """
+    from .models import SliderPlatform
+
+    raw_items = request.data.get('items') if isinstance(request.data, dict) else None
+    if not isinstance(raw_items, list) or not raw_items:
+        return Response(
+            {'detail': 'Provide a non-empty items list.', 'code': 'items_required'},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+    if len(raw_items) > 120:
+        return Response(
+            {'detail': 'At most 120 items per reorder.', 'code': 'too_many_items'},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+    updated, skipped = [], []
+    with transaction.atomic():
+        for index, raw in enumerate(raw_items):
+            if not isinstance(raw, dict):
+                return Response(
+                    {'detail': f'Item {index} must be an object.', 'code': 'invalid_item'},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            kind = str(raw.get('content_type') or '').strip().lower()
+            try:
+                object_id = int(raw.get('id'))
+            except (TypeError, ValueError):
+                return Response(
+                    {'detail': f'Item {index} needs a numeric id.', 'code': 'invalid_item'},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            model = Movie if kind == 'movie' else Series if kind == 'series' else None
+            if model is None:
+                return Response(
+                    {'detail': f'Item {index} needs content_type movie|series.', 'code': 'invalid_item'},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            obj = model.objects.filter(pk=object_id).first()
+            if obj is None:
+                skipped.append({'content_type': kind, 'id': object_id})
+                continue
+            fields = []
+            if 'is_featured' in raw:
+                obj.is_featured = _bool_flag(raw.get('is_featured'), False)
+                fields.append('is_featured')
+            if 'featured_order' in raw:
+                try:
+                    order = int(raw.get('featured_order'))
+                except (TypeError, ValueError):
+                    return Response(
+                        {'detail': f'Item {index} needs a numeric featured_order.', 'code': 'invalid_item'},
+                        status=status.HTTP_400_BAD_REQUEST,
+                    )
+                obj.featured_order = max(0, min(9999, order))
+                fields.append('featured_order')
+            if 'slider_platform' in raw:
+                choice = str(raw.get('slider_platform') or '').strip().lower()
+                if choice not in SliderPlatform.values:
+                    return Response(
+                        {'detail': f'Item {index} needs slider_platform all|web|app.', 'code': 'invalid_item'},
+                        status=status.HTTP_400_BAD_REQUEST,
+                    )
+                obj.slider_platform = choice
+                fields.append('slider_platform')
+            if fields:
+                obj.save(update_fields=[*dict.fromkeys(fields), 'updated_at'])
+                _audit(
+                    request, MovieSyncAudit.Action.MANUAL_UPDATE, movie=obj if kind == 'movie' else None,
+                    tmdb_id=getattr(obj, 'tmdb_id', None), changed=[f'slider:{name}' for name in fields],
+                    details={'fields': fields, 'slider': True},
+                )
+            updated.append({'content_type': kind, 'id': obj.pk})
+    try:
+        from .cache import bump_catalog_cache_version
+        bump_catalog_cache_version()
+    except Exception:
+        pass
+    # Featured but unpublished titles never reach the slider (both clients only
+    # read published rows). Name them so the panel can warn instead of looking
+    # out of sync.
+    unpublished = []
+    movie_ids = [item['id'] for item in updated if item['content_type'] == 'movie']
+    series_ids = [item['id'] for item in updated if item['content_type'] == 'series']
+    if movie_ids:
+        unpublished.extend(
+            {'content_type': 'movie', 'id': pk, 'title': title}
+            for pk, title in Movie.objects.filter(
+                pk__in=movie_ids, is_featured=True, is_published=False,
+            ).values_list('pk', 'title')
+        )
+    if series_ids:
+        unpublished.extend(
+            {'content_type': 'series', 'id': pk, 'title': title}
+            for pk, title in Series.objects.filter(
+                pk__in=series_ids, is_featured=True, is_published=False,
+            ).values_list('pk', 'title')
+        )
+    return Response({
+        'updated': updated, 'skipped': skipped, 'count': len(updated),
+        'unpublished': unpublished,
+    })

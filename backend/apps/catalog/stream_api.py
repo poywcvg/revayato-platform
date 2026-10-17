@@ -24,6 +24,7 @@ from rest_framework.throttling import AnonRateThrottle
 
 from apps.catalog.models import Episode, Movie, Series
 from apps.catalog import stream_gateway as gw
+from config.public_urls import is_geo_locked_url
 
 logger = logging.getLogger(__name__)
 
@@ -147,6 +148,10 @@ def stream_open(request):
         return _error('bad_request', 'A title and source are required.')
     if not gw.gateway_candidate(url):
         return _error('unsupported_source', 'This source cannot be converted.')
+    if is_geo_locked_url(url):
+        # The CDN answers only Iranian IPs; from this server it serves its
+        # «turn your VPN off» page, so probing would just burn ~30 s on a 502.
+        return _error('geo_locked', 'This source only plays from an Iranian connection.', 422)
     if url not in _source_urls(kind, obj_id):
         # Either the title moved on since the page loaded, or someone is trying
         # to stream an unrelated host through us. Same answer for both.

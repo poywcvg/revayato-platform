@@ -22,20 +22,21 @@ interface QuickCategory {
 
 /** Shortcuts not already covered by primary header nav */
 const quickCategories: QuickCategory[] = [
-  { label: 'انیمیشن', to: '/movies?format=animation', icon: 'animation' },
-  { label: 'ترندها', to: '/movies?sort=trending', icon: 'trend' },
-  { label: 'منتخب‌ها', to: '/movies?sort=featured', icon: 'sparkles' },
+  { label: 'انیمیشن', to: '/movies?format=animation', icon: 'cartoon' },
+  { label: 'ترندها', to: '/movies?sort=trending', icon: 'hot' },
+  { label: 'منتخب‌ها', to: '/movies?sort=featured', icon: 'featured' },
   { label: 'دوبله', to: '/movies?availability=dubbed', icon: 'audio' },
-  { label: 'پیشنهاد تو', to: '/?section=recommended', icon: 'ai' },
+  { label: 'پیشنهاد تو', to: '/?section=recommended', icon: 'wand' },
 ]
 
 const browseLinks = [
   { label: 'فیلم‌ها', href: '/movies', icon: 'movie' as const },
   { label: 'سریال‌ها', href: '/series', icon: 'series' as const },
   { label: 'تازه‌ها', href: '/new', icon: 'sparkles' as const },
-  { label: '۲۵۰ برتر IMDb', href: '/top250', icon: 'trophy' as const },
-  { label: 'جدول پخش', href: '/schedule', icon: 'calendar' as const },
-  { label: 'کشورها', href: '/countries', icon: 'globe' as const },
+  { label: '۲۵۰ برتر IMDb', href: '/top250', icon: 'top250' as const },
+  { label: 'جدول پخش', href: '/schedule', icon: 'schedule' as const },
+  { label: 'کشورها', href: '/countries', icon: 'countries' as const },
+  { label: 'تماشای گروهی', href: '/watch-party', icon: 'users' as const },
 ]
 
 const sortedGenres = computed(() => {
@@ -178,7 +179,7 @@ onBeforeUnmount(() => {
       aria-controls="header-categories-menu"
       @click="isOpen = !isOpen"
     >
-      <CinematicIcon name="grid" class="size-4.5" />
+      <CinematicIcon name="categories" class="size-4.5" />
       <span class="hidden xl:inline">دسته‌بندی‌ها</span>
       <CinematicIcon name="chevron-down" class="hidden size-3.5 transition-transform xl:block" :class="isOpen && 'rotate-180'" />
       <span v-if="hasActiveCategory" class="absolute inset-x-3 bottom-1 h-0.5 rounded-full bg-white/55" aria-hidden="true" />
@@ -311,8 +312,6 @@ onBeforeUnmount(() => {
   cursor: default;
   border: 0;
   background: rgb(0 0 0 / 48%);
-  -webkit-backdrop-filter: blur(2px);
-  backdrop-filter: blur(2px);
 }
 
 .header-categories__panel {
@@ -322,10 +321,8 @@ onBeforeUnmount(() => {
   overflow: hidden;
   text-align: right;
   border: 1px solid color-mix(in srgb, var(--theme-border) 70%, transparent);
-  background: color-mix(in srgb, var(--theme-bg-elevated) 94%, #0a0a0b);
-  box-shadow: 0 18px 48px rgb(0 0 0 / 38%);
-  -webkit-backdrop-filter: blur(10px) saturate(130%);
-  backdrop-filter: blur(10px) saturate(130%);
+  background: var(--theme-bg-elevated);
+  box-shadow: none;
 }
 
 .header-categories__panel--mobile {
@@ -376,7 +373,7 @@ onBeforeUnmount(() => {
   height: 0.28rem;
   margin-inline: auto;
   border-radius: 999px;
-  background: rgb(255 255 255 / 22%);
+  background: rgb(var(--palette-ink-rgb) / 22%);
 }
 
 .header-categories__sheet-row {
@@ -402,14 +399,14 @@ onBeforeUnmount(() => {
   place-items: center;
   border: 0;
   border-radius: 0.75rem;
-  background: rgb(255 255 255 / 6%);
+  background: rgb(var(--palette-ink-rgb) / 6%);
   color: var(--theme-text-secondary);
   transition: background-color 140ms ease, color 140ms ease;
 }
 
 .header-categories__close:hover,
 .header-categories__close:focus-visible {
-  background: rgb(255 255 255 / 10%);
+  background: rgb(var(--palette-ink-rgb) / 10%);
   color: var(--theme-text-primary);
   outline: none;
 }
@@ -449,7 +446,7 @@ onBeforeUnmount(() => {
   min-width: 1.35rem;
   justify-content: center;
   border-radius: 999px;
-  background: rgb(255 255 255 / 7%);
+  background: rgb(var(--palette-ink-rgb) / 7%);
   padding: 0.05rem 0.4rem;
   font-size: 0.75rem;
   font-weight: 700;
@@ -468,7 +465,7 @@ onBeforeUnmount(() => {
   align-items: center;
   gap: 0.35rem;
   border-radius: 0.85rem;
-  background: rgb(255 255 255 / 5%);
+  background: rgb(var(--palette-ink-rgb) / 5%);
   padding: 0.35rem 0.7rem;
   font-size: 0.78rem;
   font-weight: 700;
@@ -478,7 +475,7 @@ onBeforeUnmount(() => {
 
 .header-categories__chip:hover,
 .header-categories__chip:focus-visible {
-  background: rgb(255 255 255 / 10%);
+  background: rgb(var(--palette-ink-rgb) / 10%);
   outline: none;
 }
 
@@ -500,7 +497,7 @@ onBeforeUnmount(() => {
   align-items: center;
   gap: 0.45rem;
   border-radius: 0.9rem;
-  background: rgb(255 255 255 / 4%);
+  background: rgb(var(--palette-ink-rgb) / 4%);
   padding: 0.45rem 0.65rem;
   font-size: 0.8rem;
   font-weight: 700;
@@ -510,7 +507,7 @@ onBeforeUnmount(() => {
 
 .header-categories__browse-link:hover,
 .header-categories__browse-link:focus-visible {
-  background: rgb(255 255 255 / 9%);
+  background: rgb(var(--palette-ink-rgb) / 9%);
   outline: none;
 }
 
@@ -531,7 +528,7 @@ onBeforeUnmount(() => {
   align-items: center;
   gap: 0.4rem;
   border-radius: 0.8rem;
-  background: rgb(0 0 0 / 28%);
+  background: var(--theme-control-bg);
   padding: 0.3rem 0.65rem;
   color: var(--theme-text-secondary);
 }
@@ -573,7 +570,7 @@ onBeforeUnmount(() => {
   align-items: center;
   gap: 0.45rem;
   border-radius: 0.85rem;
-  background: rgb(255 255 255 / 4%);
+  background: rgb(var(--palette-ink-rgb) / 4%);
   padding: 0.4rem 0.6rem;
   font-size: 0.78rem;
   font-weight: 700;
@@ -590,7 +587,7 @@ onBeforeUnmount(() => {
   flex-shrink: 0;
   margin-inline-start: auto;
   border-radius: 999px;
-  background: rgb(255 255 255 / 8%);
+  background: rgb(var(--palette-ink-rgb) / 8%);
   padding: 0.12rem 0.45rem;
   font-size: 0.75rem;
   font-weight: 700;
@@ -600,7 +597,7 @@ onBeforeUnmount(() => {
 
 .header-categories__genre:hover,
 .header-categories__genre:focus-visible {
-  background: rgb(255 255 255 / 9%);
+  background: rgb(var(--palette-ink-rgb) / 9%);
   outline: none;
 }
 

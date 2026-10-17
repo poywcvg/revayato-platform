@@ -8,7 +8,15 @@ export default defineNuxtRouteMiddleware(async (to) => {
     try {
       await authStore.fetchMe()
     }
-    catch {
+    catch (error) {
+      const status = (error as { status?: number, statusCode?: number, response?: { status?: number } })?.status
+        || (error as { statusCode?: number })?.statusCode
+        || (error as { response?: { status?: number } })?.response?.status
+        || 0
+      // نشست تمام‌شده باید به لاگین برگردد، نه اینکه صفحه با خطای ۵۰۳ قفل شود.
+      if (status === 401) {
+        return navigateTo({ path: '/auth/login', query: { redirect: to.fullPath } })
+      }
       throw createError({ statusCode: 503, message: 'بررسی دسترسی ادمین ممکن نشد.' })
     }
   }

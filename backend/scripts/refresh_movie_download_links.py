@@ -14,7 +14,9 @@ from __future__ import annotations
 import argparse
 import os
 import sys
+import threading
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 _APP_ROOT = Path(__file__).resolve().parents[1]
@@ -55,6 +57,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--delay', type=float, default=0.7)
     parser.add_argument('--limit', type=int, default=0)
+    parser.add_argument('--workers', type=int, default=4)
     parser.add_argument('--popularity-min', type=float, default=0.0)
     parser.add_argument(
         '--year-min',
@@ -73,6 +76,8 @@ def main() -> int:
         ),
     )
     args = parser.parse_args()
+    workers = max(1, min(8, int(args.workers)))
+    request_interval = max(0.0, float(args.delay))
 
     qs = (
         Movie.objects.filter(is_published=True)
@@ -109,41 +114,76 @@ def main() -> int:
         'links_before_total': sum(len(m.download_links or []) for m in movie_rows),
         'grew': 0,
     }
-    print(f'refresh_movies={len(movie_rows)} order={args.order} resting={len(resting)}', flush=True)
+    print(
+        f'refresh_movies={len(movie_rows)} order={args.order} resting={len(resting)} '
+        f'workers={workers}',
+        flush=True,
+    )
+
+    # Same bounded-parallel pattern as the series refresh: network waits
+    # overlap across workers while pace_lock keeps one shared request cadence,
+    # so the provider sees the same polite rate as a sequential walk.
+    pace_lock = threading.Lock()
+    next_request_at = [0.0]
+
+    def refresh_one(movie_id: int, page: str):
+        from django.db import close_old_connections
+
+        close_old_connections()
+        with pace_lock:
+            wait = next_request_at[0] - time.monotonic()
+            if wait > 0:
+                time.sleep(wait)
+            next_request_at[0] = time.monotonic() + request_interval
+        try:
+            movie = Movie.objects.get(pk=movie_id)
+            before = len(movie.download_links or [])
+            result = crawl_myf2m_downloads_for_movie(
+                movie=movie,
+                page_url=page,
+                replace=True,
+                queue_softsub_extract=True,
+            )
+            movie.refresh_from_db(fields=['download_links', 'updated_at', 'has_subtitle', 'is_dubbed'])
+            after = len(movie.download_links or [])
+            forget_failure('movie', movie_id)
+            return 'ok', result.get('imported_count') or after, before, after
+        except ProviderImportError as exc:
+            if is_rotating_failure(exc):
+                remember_failure('movie', movie_id)
+            return 'fail', getattr(exc, 'code', ''), str(exc), 0
+        except Exception as exc:
+            return 'error', type(exc).__name__, str(exc), 0
+        finally:
+            close_old_connections()
 
     with _suppress_provider_publish_signals():
-        for movie in movie_rows:
-            stats['tried'] += 1
-            page = _page_path(movie)
-            before = len(movie.download_links or [])
-            print(f'[{stats["tried"]}/{len(movie_rows)}] movie={movie.pk} {movie.title} page={page}', flush=True)
-            try:
-                result = crawl_myf2m_downloads_for_movie(
-                    movie=movie,
-                    page_url=page,
-                    replace=True,
-                    queue_softsub_extract=True,
-                )
-                movie.refresh_from_db(fields=['download_links', 'updated_at', 'has_subtitle', 'is_dubbed'])
-                after = len(movie.download_links or [])
-                stats['ok'] += 1
-                forget_failure('movie', movie.pk)
-                if after > before:
-                    stats['grew'] += 1
-                print(
-                    f'  -> ok imported={result.get("imported_count")} links {before}->{after}',
-                    flush=True,
-                )
-            except ProviderImportError as exc:
-                stats['failed'] += 1
-                if is_rotating_failure(exc):
-                    remember_failure('movie', movie.pk)
-                print(f'  -> fail {getattr(exc, "code", "")} {exc}', flush=True)
-            except Exception as exc:
-                stats['failed'] += 1
-                print(f'  -> error {type(exc).__name__}: {exc}', flush=True)
-            if args.delay:
-                time.sleep(max(0.0, float(args.delay)))
+        with ThreadPoolExecutor(max_workers=workers, thread_name_prefix='movie-refresh') as pool:
+            pending = {
+                pool.submit(refresh_one, movie.pk, _page_path(movie)): movie
+                for movie in movie_rows
+            }
+            for future in as_completed(pending):
+                movie = pending[future]
+                stats['tried'] += 1
+                status, first, second, after = future.result()
+                if status == 'ok':
+                    before = int(second)
+                    stats['ok'] += 1
+                    if int(after) > before:
+                        stats['grew'] += 1
+                    print(
+                        f'[{stats["tried"]}/{len(movie_rows)}] ok movie={movie.pk} '
+                        f'{movie.title} links {before}->{after} imported={first}',
+                        flush=True,
+                    )
+                else:
+                    stats['failed'] += 1
+                    print(
+                        f'[{stats["tried"]}/{len(movie_rows)}] {status} movie={movie.pk} '
+                        f'{movie.title} {first} {second}',
+                        flush=True,
+                    )
 
     stats['finished_at'] = timezone.now().isoformat()
     print('REFRESH_MOVIES_DONE', stats, flush=True)

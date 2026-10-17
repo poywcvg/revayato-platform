@@ -68,6 +68,7 @@ class HomeViewModel @Inject constructor(
             // whose server-side sort/filter reproduces the same ordering full-screen.
             val recentDef = async { catalogRepository.recent(limit = 20) }
             val recsDef = async { catalogRepository.recommendations() }
+            val sliderDef = async { catalogRepository.homeSlider(limit = 10) }
             val moviesDef = async { catalogRepository.movies(CatalogQuery(sort = "newest", limit = 20)) }
             val seriesDef = async { catalogRepository.series(CatalogQuery(sort = "newest", limit = 20)) }
             val popularMoviesDef = async { catalogRepository.movies(CatalogQuery(sort = "popular", limit = 20)) }
@@ -108,12 +109,23 @@ class HomeViewModel @Inject constructor(
                 publish()
             }
 
-            // Newest movies lead: they seed the hero and a top shelf, so the page can
-            // paint as soon as this single (cached) call returns.
+            // Admin-curated slider first: the panel's order wins on every
+            // client. Empty (nothing featured) falls back to newest below, so
+            // older backends and empty sliders still paint a hero.
+            stage {
+                val curated = sliderDef.await().orNull().orEmpty()
+                if (curated.isNotEmpty()) {
+                    hero = curated.filter { it.backdropUrl != null }.ifEmpty { curated }.take(10)
+                }
+            }
             stage {
                 newest = moviesDef.await().orNull()?.results.orEmpty()
                 if (newest.isNotEmpty()) {
-                    hero = newest.filter { it.backdropUrl != null }.take(6).ifEmpty { newest.take(6) }
+                    // Newest seeds the hero only when the admin slider is empty —
+                    // a curated hero is never overwritten by recency.
+                    if (hero.isEmpty()) {
+                        hero = newest.filter { it.backdropUrl != null }.take(6).ifEmpty { newest.take(6) }
+                    }
                     rails["movies"] = HomeRail("movies", "جدیدترین فیلم‌ها", newest, Routes.catalogList("movies", "جدیدترین فیلم‌ها", sort = "newest"))
                 }
             }

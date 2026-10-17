@@ -206,6 +206,30 @@ def _refresh_in_background() -> None:
         connections.close_all()
 
 
+def prewarm_in_background() -> None:
+    """Build this worker's index right after it boots, off the request path.
+
+    Web workers are recycled every WEB_MAX_REQUESTS; without this the first
+    search after each recycle waited 10–20 s on a cold build on a busy host.
+    """
+    if _sync_mode():
+        return
+
+    def _warm():
+        global _index
+        try:
+            close_old_connections()
+            with _build_lock:
+                if _index is None:
+                    _index = SuggestIndex.build()
+        except Exception:
+            logger.exception('search suggest index prewarm failed')
+        finally:
+            connections.close_all()
+
+    threading.Thread(target=_warm, name='search-suggest-prewarm', daemon=True).start()
+
+
 def get_index() -> SuggestIndex:
     """The current index; stale-while-rebuilding once a worker has one."""
     global _index, _refreshing

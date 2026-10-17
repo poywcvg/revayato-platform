@@ -48,6 +48,26 @@ export function useWatchPartySocket(inviteCode: MaybeRef<string>) {
   const lastPlaybackEvent = shallowRef<WatchPartyPlaybackEvent | null>(null)
   const lastChatMessage = shallowRef<WatchPartyMessage | null>(null)
   const syncRequestSequence = ref(0)
+  /** Server-broadcast fix after POST /api/catalog/playback-failure/ (room_notified). */
+  const lastPlaybackFix = shallowRef<{
+    sequence: number
+    reportId: number | null
+    problemType: string
+    status: string
+    resolved: boolean
+    fixedUrl: string
+    playbackMode: string
+    messageFa: string
+  } | null>(null)
+  /** Another member's player just failed — host files the shared heal. */
+  const lastMemberFailed = shallowRef<{
+    sequence: number
+    errorCode: string
+    sourceUrl: string
+    playedSeconds: number
+    messageFa: string
+  } | null>(null)
+  let fixSequence = 0
 
   let socket: WebSocket | null = null
   let manualDisconnect = false
@@ -120,6 +140,52 @@ export function useWatchPartySocket(inviteCode: MaybeRef<string>) {
       updateLatency(payload)
     } else if (payload.type === 'playback.sync.requested') {
       syncRequestSequence.value += 1
+    } else if (payload.type === 'playback.fix') {
+      const fix = payload as unknown as {
+        report_id?: number | null
+        problem_type?: string
+        status?: string
+        resolved?: boolean
+        fixed_url?: string
+        playback_mode?: string
+        message_fa?: string
+      }
+      lastPlaybackFix.value = {
+        sequence: ++fixSequence,
+        reportId: typeof fix.report_id === 'number' ? fix.report_id : null,
+        problemType: String(fix.problem_type || ''),
+        status: String(fix.status || ''),
+        resolved: Boolean(fix.resolved),
+        fixedUrl: String(fix.fixed_url || ''),
+        playbackMode: String(fix.playback_mode || ''),
+        messageFa: String(fix.message_fa || 'پخش درست شد؛ ادامه از همان لحظه…'),
+      }
+    } else if (payload.type === 'playback.member_failed') {
+      const failed = payload as unknown as {
+        error_code?: string
+        source_url?: string
+        played_seconds?: number
+        message_fa?: string
+      }
+      lastMemberFailed.value = {
+        sequence: ++fixSequence,
+        errorCode: String(failed.error_code || ''),
+        sourceUrl: String(failed.source_url || ''),
+        playedSeconds: Number(failed.played_seconds) || 0,
+        messageFa: String(failed.message_fa || 'پخش یکی از اعضا قطع شد؛ داریم نسخه سالم را آماده می‌کنیم…'),
+      }
+    } else if (payload.type === 'playback.failure_ack') {
+      const ack = payload as unknown as { message_fa?: string }
+      lastPlaybackFix.value = {
+        sequence: ++fixSequence,
+        reportId: null,
+        problemType: '',
+        status: 'open',
+        resolved: false,
+        fixedUrl: '',
+        playbackMode: '',
+        messageFa: String(ack.message_fa || 'خطای پخش ثبت شد؛ داریم نسخه سالم را آماده می‌کنیم…'),
+      }
     }
 
     if (PLAYBACK_EVENTS.has(payload.type as WatchPartyPlaybackEventType) && payload.playback_state) {
@@ -321,6 +387,8 @@ export function useWatchPartySocket(inviteCode: MaybeRef<string>) {
     lastPlaybackEvent: readonly(lastPlaybackEvent),
     lastChatMessage: readonly(lastChatMessage),
     syncRequestSequence: readonly(syncRequestSequence),
+    lastPlaybackFix: readonly(lastPlaybackFix),
+    lastMemberFailed: readonly(lastMemberFailed),
     connect,
     disconnect,
     sendEvent,

@@ -117,8 +117,8 @@ import androidx.media3.ui.AspectRatioFrameLayout
 import androidx.media3.ui.PlayerView
 import com.revayato.app.core.theme.BgElevated
 import com.revayato.app.core.theme.BgSurface
-import com.revayato.app.core.theme.BrandGreen
-import com.revayato.app.core.theme.BrandMint
+import com.revayato.app.core.theme.BrandDeep
+import com.revayato.app.core.theme.Brand
 import com.revayato.app.core.theme.OnBrand
 import com.revayato.app.core.theme.OutlineSoft
 import com.revayato.app.core.theme.TextMuted
@@ -441,7 +441,7 @@ private fun PortraitBody(
             ReactionOverlay(reactions, Modifier.fillMaxSize())
 
             if (state.buffering || state.loading) {
-                CircularProgressIndicator(color = BrandMint, strokeWidth = 2.dp)
+                CircularProgressIndicator(color = Brand, strokeWidth = 2.dp)
             }
             if (state.playerError != null) {
                 PlayerErrorOverlay(message = state.playerError, onRetry = onRetry)
@@ -532,7 +532,7 @@ private fun RoomTopBar(
             )
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                 if (onlineCount > 0) {
-                    Box(Modifier.size(6.dp).background(BrandGreen, CircleShape))
+                    Box(Modifier.size(6.dp).background(BrandDeep, CircleShape))
                     Text("$onlineCount آنلاین", style = MaterialTheme.typography.labelSmall, color = TextMuted)
                 } else {
                     Text("تماشای گروهی", style = MaterialTheme.typography.labelSmall, color = TextMuted)
@@ -549,7 +549,7 @@ private fun RoomTopBar(
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(6.dp),
             ) {
-                Text(inviteCode, style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.Bold, color = BrandMint)
+                Text(inviteCode, style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.Bold, color = Brand)
                 Icon(Icons.Rounded.ContentCopy, contentDescription = "کپی کد دعوت", tint = TextSecondary, modifier = Modifier.size(15.dp))
             }
         }
@@ -557,7 +557,7 @@ private fun RoomTopBar(
             Text(
                 "${latencyMs}ms",
                 style = MaterialTheme.typography.labelSmall,
-                color = if (latencyMs < 200) BrandGreen else TextMuted,
+                color = if (latencyMs < 200) BrandDeep else TextMuted,
                 modifier = Modifier.padding(horizontal = 8.dp),
             )
         }
@@ -581,7 +581,7 @@ private fun PlaybackBar(
                 Icon(
                     if (playing) Icons.Rounded.Pause else Icons.Rounded.PlayArrow,
                     contentDescription = if (playing) "توقف" else "پخش",
-                    tint = if (isHost) BrandMint else TextMuted,
+                    tint = if (isHost) Brand else TextMuted,
                 )
             }
             SeekBar(
@@ -595,7 +595,7 @@ private fun PlaybackBar(
                 Text(
                     "${formatSpeed(speed)}x",
                     style = MaterialTheme.typography.labelSmall,
-                    color = BrandMint,
+                    color = Brand,
                     fontWeight = FontWeight.Bold,
                     modifier = Modifier.padding(start = 6.dp),
                 )
@@ -619,8 +619,8 @@ private fun PlaybackBar(
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(4.dp),
                 ) {
-                    Icon(Icons.Rounded.Sync, contentDescription = null, tint = BrandMint, modifier = Modifier.size(13.dp))
-                    Text("هماهنگ‌سازی", style = MaterialTheme.typography.labelSmall, color = BrandMint)
+                    Icon(Icons.Rounded.Sync, contentDescription = null, tint = Brand, modifier = Modifier.size(13.dp))
+                    Text("هماهنگ‌سازی", style = MaterialTheme.typography.labelSmall, color = Brand)
                 }
             }
         }
@@ -651,9 +651,9 @@ private fun SeekBar(
                 valueRange = 0f..dur.toFloat(),
                 enabled = enabled,
                 colors = SliderDefaults.colors(
-                    thumbColor = BrandMint,
-                    activeTrackColor = BrandMint,
-                    inactiveTrackColor = if (light) Color(0x55FFFFFF) else Color(0x33FFFFFF),
+                    thumbColor = Brand,
+                    activeTrackColor = Brand,
+                    inactiveTrackColor = if (light) Color(0x55FFFFFF) else OutlineSoft,
                 ),
                 modifier = Modifier.weight(1f).padding(horizontal = 8.dp),
             )
@@ -677,7 +677,7 @@ private fun MembersStrip(members: List<RoomMemberDto>) {
         horizontalArrangement = Arrangement.spacedBy(8.dp),
     ) {
         val online = members.count { it.isOnline }
-        Text("$online آنلاین", style = MaterialTheme.typography.labelMedium, color = BrandGreen)
+        Text("$online آنلاین", style = MaterialTheme.typography.labelMedium, color = BrandDeep)
         Spacer(Modifier.size(4.dp))
         members.take(8).forEach { member -> MemberAvatar(member) }
     }
@@ -689,10 +689,10 @@ private fun MemberAvatar(member: RoomMemberDto, size: androidx.compose.ui.unit.D
     Box(
         Modifier
             .size(size)
-            .background(if (member.role == "host") BrandGreen else BgElevated, CircleShape)
+            .background(if (member.role == "host") BrandDeep else BgElevated, CircleShape)
             .border(
                 width = 1.5.dp,
-                color = if (member.isOnline) BrandMint else OutlineSoft,
+                color = if (member.isOnline) Brand else OutlineSoft,
                 shape = CircleShape,
             ),
         contentAlignment = Alignment.Center,
@@ -803,7 +803,7 @@ private fun FullscreenBody(
         ReactionOverlay(reactions, Modifier.fillMaxSize())
 
         if (state.buffering || state.loading) {
-            CircularProgressIndicator(color = BrandMint, strokeWidth = 2.dp, modifier = Modifier.align(Alignment.Center))
+            CircularProgressIndicator(color = Brand, strokeWidth = 2.dp, modifier = Modifier.align(Alignment.Center))
         }
 
         // Double-tap seek ripple (host only).
@@ -1025,7 +1025,7 @@ private fun GestureBubble(feedback: GestureFeedback, modifier: Modifier = Modifi
                     .fillMaxHeight()
                     .fillMaxWidth(feedback.level.coerceIn(0f, 1f))
                     .clip(CircleShape)
-                    .background(BrandMint),
+                    .background(Brand),
             )
         }
         Text("${(feedback.level * 100).roundToInt()}٪", color = Color.White, fontSize = 12.sp)
@@ -1206,7 +1206,7 @@ private fun PlayerErrorOverlay(message: String, onRetry: () -> Unit, modifier: M
         Row(
             Modifier
                 .clip(RoundedCornerShape(999.dp))
-                .background(BrandMint)
+                .background(Brand)
                 .clickable(onClick = onRetry)
                 .padding(horizontal = 18.dp, vertical = 8.dp),
             verticalAlignment = Alignment.CenterVertically,
@@ -1303,19 +1303,19 @@ private fun SheetOptionRow(label: String, selected: Boolean, onClick: () -> Unit
             .fillMaxWidth()
             .clip(RoundedCornerShape(12.dp))
             .clickable(onClick = onClick)
-            .background(if (selected) BrandMint.copy(alpha = 0.14f) else Color.Transparent)
+            .background(if (selected) Brand.copy(alpha = 0.14f) else Color.Transparent)
             .padding(horizontal = 14.dp, vertical = 12.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Text(
             label,
             style = MaterialTheme.typography.bodyLarge,
-            color = if (selected) BrandMint else TextPrimary,
+            color = if (selected) Brand else TextPrimary,
             fontWeight = if (selected) FontWeight.Bold else FontWeight.Normal,
             modifier = Modifier.weight(1f),
         )
         if (selected) {
-            Icon(Icons.Rounded.Check, contentDescription = null, tint = BrandMint, modifier = Modifier.size(18.dp))
+            Icon(Icons.Rounded.Check, contentDescription = null, tint = Brand, modifier = Modifier.size(18.dp))
         }
     }
 }
@@ -1325,7 +1325,7 @@ private fun AppearanceChip(label: String, selected: Boolean, onClick: () -> Unit
     Box(
         Modifier
             .clip(RoundedCornerShape(999.dp))
-            .background(if (selected) BrandMint else BgSurface)
+            .background(if (selected) Brand else BgSurface)
             .clickable(onClick = onClick)
             .padding(horizontal = 16.dp, vertical = 8.dp),
     ) {
@@ -1419,7 +1419,7 @@ private fun ChatSidePanel(
             Modifier.fillMaxWidth().padding(start = 16.dp, end = 8.dp, top = 10.dp, bottom = 6.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            Icon(Icons.Rounded.ChatBubbleOutline, contentDescription = null, tint = BrandMint, modifier = Modifier.size(18.dp))
+            Icon(Icons.Rounded.ChatBubbleOutline, contentDescription = null, tint = Brand, modifier = Modifier.size(18.dp))
             Spacer(Modifier.size(8.dp))
             Text("گفتگوی زنده", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold, color = Color.White, modifier = Modifier.weight(1f))
             IconButton(onClick = onClose) {
@@ -1468,7 +1468,7 @@ private fun ChatBubble(msg: ChatMessageDto, translucent: Boolean) {
         Text(
             msg.user?.displayName ?: "کاربر",
             style = MaterialTheme.typography.labelSmall,
-            color = BrandMint,
+            color = Brand,
             fontWeight = FontWeight.Bold,
         )
         Spacer(Modifier.size(2.dp))
@@ -1510,15 +1510,15 @@ private fun ChatInput(
             keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
             keyboardActions = KeyboardActions(onSend = { onSend() }),
             colors = OutlinedTextFieldDefaults.colors(
-                focusedBorderColor = BrandMint,
-                cursorColor = BrandMint,
+                focusedBorderColor = Brand,
+                cursorColor = Brand,
                 focusedTextColor = if (translucent) Color.White else MaterialTheme.colorScheme.onSurface,
                 unfocusedTextColor = if (translucent) Color.White else MaterialTheme.colorScheme.onSurface,
                 unfocusedBorderColor = if (translucent) Color(0x44FFFFFF) else OutlineSoft,
             ),
         )
         IconButton(onClick = onSend) {
-            Icon(Icons.AutoMirrored.Rounded.Send, contentDescription = "ارسال", tint = BrandMint)
+            Icon(Icons.AutoMirrored.Rounded.Send, contentDescription = "ارسال", tint = Brand)
         }
     }
 }

@@ -20,7 +20,7 @@ const config = useRuntimeConfig()
 const route = useRoute()
 const siteUrl = computed(() => String(config.public.siteUrl).replace(/\/$/, ''))
 
-useTheme()
+installTheme()
 
 // One address per page: no trailing slash, no query (filters/sort/tracking are
 // views of the same page). Pages whose query IS the content (landing ?page=N)

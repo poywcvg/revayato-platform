@@ -238,17 +238,42 @@ class SeriesDetailViewModel @Inject constructor(
         if (trimmed.length < 10 || _state.value.reportSubmitting) return
         _state.value = _state.value.copy(reportSubmitting = true)
         viewModelScope.launch {
-            val url = "https://revayato.com/series/${series.slug}"
-            when (val res = engagementRepository.reportProblem(series.title, series.startYear, url, trimmed)) {
-                is ApiResult.Success -> _state.value = _state.value.copy(
-                    reportSubmitting = false,
-                    showReportSheet = false,
-                    actionMessage = "گزارش تو ثبت شد. ممنون! کد پیگیری: ${res.data.trackingCode}",
-                )
-                is ApiResult.Error -> _state.value = _state.value.copy(
-                    reportSubmitting = false,
-                    actionMessage = res.message,
-                )
+            // Same structured engine as movie + web player (see MovieDetailViewModel).
+            val problemType = inferStructuredProblemType(trimmed, isSeries = true)
+            when (val res = catalogRepository.reportContentIssue(
+                contentType = "series",
+                problemType = problemType,
+                objectId = series.id,
+                slug = series.slug,
+                detail = trimmed,
+            )) {
+                is ApiResult.Success -> {
+                    val code = res.data.trackingCode.trim()
+                    val msg = if (code.isNotBlank()) {
+                        "گزارش تو ثبت شد و خودکار بررسی می‌شود. ممنون! کد پیگیری: $code"
+                    } else {
+                        "گزارش تو ثبت شد و خودکار بررسی می‌شود. ممنون!"
+                    }
+                    _state.value = _state.value.copy(
+                        reportSubmitting = false,
+                        showReportSheet = false,
+                        actionMessage = msg,
+                    )
+                }
+                is ApiResult.Error -> {
+                    val url = "https://revayato.com/series/${series.slug}"
+                    when (val fallback = engagementRepository.reportProblem(series.title, series.startYear, url, trimmed)) {
+                        is ApiResult.Success -> _state.value = _state.value.copy(
+                            reportSubmitting = false,
+                            showReportSheet = false,
+                            actionMessage = "گزارش تو ثبت شد. ممنون! کد پیگیری: ${fallback.data.trackingCode}",
+                        )
+                        is ApiResult.Error -> _state.value = _state.value.copy(
+                            reportSubmitting = false,
+                            actionMessage = res.message,
+                        )
+                    }
+                }
             }
         }
     }

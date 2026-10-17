@@ -16,7 +16,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
-import com.revayato.app.core.theme.BrandMint
+import com.revayato.app.core.theme.Brand
 import kotlin.math.PI
 import kotlin.math.cos
 import kotlin.math.max
@@ -33,7 +33,7 @@ import kotlin.math.sin
 fun RevayatoSpinner(
     modifier: Modifier = Modifier,
     size: Dp = 44.dp,
-    color: Color = BrandMint,
+    color: Color = Brand,
 ) {
     val bladeCount = 10
     val periodMs = 1000

@@ -92,7 +92,7 @@ class DornatvConnector:
         self.provider = provider_source
         self.base_url = getattr(settings, 'DORNATV_BASE_URL', 'https://dornatv.com').rstrip('/')
         self.timeout = int(getattr(settings, 'DORNATV_TIMEOUT_SECONDS', 30))
-        self.rate_limit = max(1, int(getattr(settings, 'DORNATV_RATE_LIMIT_PER_MINUTE', 30)))
+        self.rate_limit = max(1, int(getattr(settings, 'DORNATV_RATE_LIMIT_PER_MINUTE', 60)))
         self.verify_ssl = bool(getattr(settings, 'DORNATV_VERIFY_SSL', True))
         self.user_agent = getattr(
             settings,
@@ -171,6 +171,11 @@ class DornatvConnector:
         except (TypeError, ValueError):
             ttl = 1500
         if ttl <= 0 or not self._cacheable_detail_path(path):
+            return None
+        from apps.catalog.title_rebuild import is_fresh_fetch
+
+        if is_fresh_fetch():
+            # A rebuild re-asks the provider; the fresh page refills the cache.
             return None
         try:
             blob = cache.get(self._cache_key(path))
@@ -264,7 +269,10 @@ class DornatvConnector:
         if search:
             params['search'] = search
         if embed:
-            params['_embed'] = '1'
+            # Only the featured image is read (poster + the IMDb id in its file
+            # name). A bare ``_embed=1`` also inlines author/terms/replies and
+            # makes each 50-row page ~880 KB / ~9 s instead of ~300 KB / ~2 s.
+            params['_embed'] = 'wp:featuredmedia'
         query = '&'.join(f'{k}={quote_plus(str(v))}' for k, v in params.items())
         path = f'/wp-json/wp/v2/{endpoint}?{query}'
         response = self._request('GET', path)
@@ -569,8 +577,11 @@ class DornatvConnector:
             original_title=str(payload.get('original_title') or ''),
             year=payload.get('year'),
         )
+        # Only the bare slug is probed. Over 24h the «دانلود-فیلم-/دانلود-سریال-»
+        # prefixed guesses answered 404 to 5,885 of 5,886 probes, yet each one
+        # spent a rate-limited request, so they tripled the cost of every miss.
         for slug in candidates[:4]:
-            paths = [f'/{slug}/', f'/دانلود-فیلم-{slug}/', f'/دانلود-سریال-{slug}/']
+            paths = [f'/{slug}/']
             for path in paths:
                 try:
                     response = self._request('GET', path)

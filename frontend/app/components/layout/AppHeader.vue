@@ -12,7 +12,7 @@ const sidebarOpen = ref(false)
 const sidebarEverOpened = ref(false)
 const searchOpen = ref(false)
 const searchRoot = useTemplateRef<HTMLElement>('searchRoot')
-// Transparent over the page at rest; a floating glass capsule once scrolled.
+// A solid bar at all times; once scrolled it only gains a soft shadow.
 const { y: scrollY } = useWindowScroll()
 const isScrolled = computed(() => scrollY.value > 8)
 
@@ -106,31 +106,35 @@ function handleSwipeEnd() {
       <div class="site-header__bar">
         <AppLogo class="site-header__logo" :compact-on-mobile="false" />
 
-        <div class="site-header__actions">
-          <button
-            type="button"
-            class="site-header__search-button"
-            :class="searchOpen && 'site-header__search-button--active'"
-            :aria-label="searchOpen ? 'بستن جستجو' : 'جستجو'"
-            :aria-expanded="searchOpen"
-            aria-controls="header-search-panel"
-            @click="toggleSearch"
-          >
-            <CinematicIcon :name="searchOpen ? 'x' : 'search'" class="size-[1.15rem]" />
-            <span class="site-header__search-label" aria-hidden="true">جستجو</span>
-          </button>
+        <!-- Uiverse-style search field: reads as an input, opens the real one. -->
+        <button
+          type="button"
+          class="site-header__search"
+          :class="searchOpen && 'site-header__search--active'"
+          :aria-label="searchOpen ? 'بستن جستجو' : 'جستجوی فیلم و سریال'"
+          :aria-expanded="searchOpen"
+          aria-controls="header-search-panel"
+          @click="toggleSearch"
+        >
+          <CinematicIcon :name="searchOpen ? 'x' : 'search'" class="site-header__search-icon" />
+          <span class="site-header__search-label" aria-hidden="true">جستجوی فیلم و سریال</span>
+        </button>
 
+        <div class="site-header__actions">
+          <ThemeToggle size="sm" class="site-header__theme" />
+
+          <!-- Uiverse burger: three bars that fold into an X while the menu is open. -->
           <button
             type="button"
-            class="site-header__login"
-            :class="sidebarOpen && 'site-header__login--active'"
-            aria-label="باز کردن منو"
+            class="site-header__burger"
+            :class="sidebarOpen && 'site-header__burger--open'"
+            :aria-label="sidebarOpen ? 'بستن منو' : 'باز کردن منو'"
             aria-controls="mobile-sidebar"
             :aria-expanded="sidebarOpen"
             title="منو"
             @click="toggleSidebar"
           >
-            <CinematicIcon :name="sidebarOpen ? 'x' : 'menu'" class="size-[1.3rem]" aria-hidden="true" />
+            <span class="site-header__burger-bars" aria-hidden="true"><i /><i /><i /></span>
           </button>
         </div>
       </div>
@@ -184,14 +188,14 @@ function handleSwipeEnd() {
 </template>
 
 <style scoped>
-/* Mobile / tablet header (below lg). Same language as the desktop bar:
-   soft glass rails, mint for anything active, every control a pill. */
+/* Mobile / tablet header (below lg): a solid bar that never sits on top of the
+   page, so artwork underneath can't tint it or swallow its controls. */
 .site-header-root {
   --mh-accent: var(--theme-accent-primary, #b0e4cc);
   --mh-ink: var(--theme-text-primary, #fff);
   --mh-ink-soft: var(--theme-text-secondary, #c4c4c4);
-  --mh-rail: color-mix(in srgb, var(--mh-ink) 6%, transparent);
-  --mh-rail-line: color-mix(in srgb, var(--mh-ink) 10%, transparent);
+  --mh-field: var(--theme-bg-soft, #1b1d1c);
+  --mh-line: var(--theme-border, rgb(255 255 255 / 10%));
   --mh-tint: color-mix(in srgb, var(--mh-accent) 15%, transparent);
   display: contents;
 }
@@ -200,12 +204,15 @@ function handleSwipeEnd() {
   position: sticky;
   min-height: calc(var(--header-height) + env(safe-area-inset-top, 0px));
   padding-top: env(safe-area-inset-top, 0px);
-  border-bottom: 0;
-  background: none;
+  border-bottom: 1px solid var(--mh-line);
+  background: var(--theme-bg-main, #0f1211);
   color: var(--mh-ink);
   box-shadow: none;
-  -webkit-backdrop-filter: none;
-  backdrop-filter: none;
+  transition: box-shadow 220ms ease;
+}
+
+.site-header--scrolled {
+  box-shadow: none;
 }
 
 .site-header__bar {
@@ -215,118 +222,148 @@ function handleSwipeEnd() {
   height: var(--header-height);
   margin-inline: auto;
   align-items: center;
-  justify-content: space-between;
-  gap: .75rem;
+  gap: .6rem;
   padding-inline: var(--layout-gutter);
-  border: 1px solid transparent;
-  transition:
-    background-color 280ms ease,
-    border-color 280ms ease,
-    border-radius 280ms cubic-bezier(.22, 1, .36, 1),
-    box-shadow 280ms ease,
-    margin 280ms cubic-bezier(.22, 1, .36, 1),
-    padding 280ms cubic-bezier(.22, 1, .36, 1);
-}
-
-/* Scrolled: the bar lifts into a floating glass capsule. */
-.site-header--scrolled .site-header__bar {
-  width: auto;
-  height: calc(var(--header-height) - .5rem);
-  margin: .35rem var(--layout-gutter) 0;
-  padding-inline: .9rem .35rem;
-  border-color: var(--mh-rail-line);
-  border-radius: 999px;
-  background: color-mix(in srgb, var(--theme-bg-soft, #161518) 86%, transparent);
-  box-shadow: 0 .75rem 1.8rem rgb(0 0 0 / 30%);
-  -webkit-backdrop-filter: blur(14px) saturate(1.3);
-  backdrop-filter: blur(14px) saturate(1.3);
 }
 
 .site-header__logo {
+  flex: none;
   color: var(--mh-ink);
+}
+
+/* Search field — after Uiverse's "search input" pattern: a filled pill with an
+   inset hairline, the icon leading, and the accent ring on focus/active. */
+.site-header__search {
+  display: flex;
+  min-width: 0;
+  height: 2.5rem;
+  flex: 1 1 auto;
+  align-items: center;
+  gap: .5rem;
+  padding-inline: .85rem;
+  border: 0;
+  border-radius: 999px;
+  background: var(--mh-field);
+  box-shadow: inset 0 0 0 1px var(--mh-line);
+  color: var(--theme-text-muted, var(--mh-ink-soft));
+  text-align: start;
+  transition: box-shadow 180ms ease, color 180ms ease, background-color 180ms ease;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.site-header__search-icon {
+  width: 1.1rem;
+  height: 1.1rem;
+  flex: none;
+  color: var(--mh-ink-soft);
+}
+
+.site-header__search-label {
+  overflow: hidden;
+  font-size: .82rem;
+  font-weight: 500;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.site-header__search--active,
+.site-header__search:focus-visible {
+  outline: none;
+  box-shadow: inset 0 0 0 1.5px var(--mh-accent), 0 0 0 3px var(--mh-tint);
+  color: var(--mh-accent);
+}
+
+.site-header__search--active .site-header__search-icon {
+  color: var(--mh-accent);
 }
 
 .site-header__actions {
   display: flex;
   flex: none;
   align-items: center;
-  gap: .4rem;
+  gap: .45rem;
 }
 
-.site-header__search-button,
-.site-header__login {
-  display: inline-flex;
-  height: 2.6rem;
+/* Burger — after Uiverse's animated hamburger: three bars, the outer two
+   rotate into an X and the middle one collapses. */
+.site-header__burger {
+  display: inline-grid;
+  width: 2.5rem;
+  height: 2.5rem;
   flex: none;
-  align-items: center;
-  justify-content: center;
-  gap: .45rem;
+  place-items: center;
   border: 0;
   border-radius: 999px;
-  background: var(--mh-rail);
-  box-shadow: inset 0 0 0 1px var(--mh-rail-line);
-  color: var(--mh-ink-soft);
-  transition:
-    background-color 180ms ease,
-    color 180ms ease,
-    box-shadow 180ms ease,
-    transform 200ms cubic-bezier(.34, 1.56, .64, 1);
+  background: var(--mh-field);
+  box-shadow: inset 0 0 0 1px var(--mh-line);
+  color: var(--mh-ink);
+  transition: background-color 180ms ease, color 180ms ease, transform 200ms cubic-bezier(.34, 1.56, .64, 1);
   -webkit-tap-highlight-color: transparent;
 }
 
-/* Search reads as a field, not an icon: a short pill with its label. */
-.site-header__search-button {
-  padding-inline: .85rem 1rem;
+.site-header__burger-bars {
+  position: relative;
+  display: block;
+  width: 1.15rem;
+  height: .85rem;
 }
 
-.site-header__search-label {
-  font-size: .82rem;
-  font-weight: 600;
+.site-header__burger-bars i {
+  position: absolute;
+  inset-inline: 0;
+  height: 2px;
+  border-radius: 2px;
+  background: currentColor;
+  transition: transform 260ms cubic-bezier(.22, 1, .36, 1), opacity 160ms ease, width 260ms ease;
 }
 
-.site-header__login {
-  width: 2.6rem;
+.site-header__burger-bars i:nth-child(1) { top: 0; }
+.site-header__burger-bars i:nth-child(2) { top: calc(50% - 1px); width: 70%; }
+.site-header__burger-bars i:nth-child(3) { bottom: 0; }
+
+.site-header__burger--open {
+  background: var(--mh-tint);
+  color: var(--mh-accent);
 }
 
-.site-header__search-button:active,
-.site-header__login:active {
-  transform: scale(.94);
+.site-header__burger--open .site-header__burger-bars i:nth-child(1) {
+  transform: translateY(calc(.425rem - 1px)) rotate(45deg);
 }
 
-.site-header__search-button:focus-visible,
-.site-header__login:focus-visible {
+.site-header__burger--open .site-header__burger-bars i:nth-child(2) {
+  opacity: 0;
+  width: 0;
+}
+
+.site-header__burger--open .site-header__burger-bars i:nth-child(3) {
+  transform: translateY(calc(-.425rem + 1px)) rotate(-45deg);
+}
+
+.site-header__burger:active,
+.site-header__search:active {
+  transform: scale(.96);
+}
+
+.site-header__burger:focus-visible {
   outline: 2px solid var(--mh-accent);
   outline-offset: 2px;
 }
 
-.site-header__search-button--active,
-.site-header__login--active {
-  background: var(--mh-tint);
-  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--mh-accent) 32%, transparent);
-  color: var(--mh-accent);
-}
-
-/* Open search collapses the trigger to a round close button. */
-.site-header__search-button--active {
-  width: 2.6rem;
-  padding: 0;
-}
-
-.site-header__search-button--active .site-header__search-label {
-  display: none;
-}
-
 @media (hover: hover) and (pointer: fine) {
-  .site-header__search-button:hover,
-  .site-header__login:hover {
+  .site-header__search:hover {
+    box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--mh-accent) 45%, transparent);
+  }
+
+  .site-header__burger:hover {
     background: var(--mh-tint);
     color: var(--mh-accent);
   }
 }
 
+/* Narrow phones: the field keeps its icon, the hint text shortens away. */
 @media (max-width: 359px) {
-  .site-header__search-button { width: 2.6rem; padding: 0; }
   .site-header__search-label { display: none; }
+  .site-header__search { flex: 0 0 2.5rem; justify-content: center; padding: 0; margin-inline-start: auto; }
 }
 
 .site-header__skip-link {
@@ -358,12 +395,10 @@ function handleSwipeEnd() {
   max-width: 34rem;
   margin-inline: auto;
   padding: .4rem;
-  border: 1px solid var(--mh-rail-line);
+  border: 1px solid var(--mh-line);
   border-radius: 1.9rem;
   background: color-mix(in srgb, var(--theme-bg-elevated, #141414) 96%, transparent);
-  box-shadow: 0 1.25rem 3rem rgb(0 0 0 / 42%);
-  -webkit-backdrop-filter: blur(16px) saturate(1.3);
-  backdrop-filter: blur(16px) saturate(1.3);
+  box-shadow: none;
 }
 
 .site-header__search-panel :deep(.header-search__panel) {
@@ -383,20 +418,20 @@ function handleSwipeEnd() {
   transform: translateY(-.4rem) scale(.97);
 }
 
-:global(html[data-theme="light"]) .site-header--scrolled .site-header__bar {
-  background: color-mix(in srgb, var(--theme-bg-surface, #fff) 88%, transparent);
-  box-shadow: 0 .75rem 1.8rem rgb(23 50 38 / 12%);
+html[data-theme="light"] .site-header--scrolled {
+  box-shadow: none;
 }
 
-:global(html[data-theme="light"]) .site-header__search-panel {
+html[data-theme="light"] .site-header__search-panel {
   background: var(--theme-bg-surface, #fff);
   box-shadow: var(--theme-shadow-float, 0 18px 40px rgb(23 50 38 / 14%));
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .site-header__bar,
-  .site-header__search-button,
-  .site-header__login,
+  .site-header,
+  .site-header__search,
+  .site-header__burger,
+  .site-header__burger-bars i,
   .search-drop-enter-active,
   .search-drop-leave-active {
     transition: none;

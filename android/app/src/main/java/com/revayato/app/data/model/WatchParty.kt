@@ -18,6 +18,15 @@ data class RoomUserDto(
 )
 
 @Serializable
+data class RoomSeriesRefDto(
+    val id: Int = 0,
+    val slug: String = "",
+    val title: String = "",
+    @SerialName("season_number") val seasonNumber: Int = 1,
+    @SerialName("episode_number") val episodeNumber: Int = 0,
+)
+
+@Serializable
 data class RoomContentDto(
     val type: String = "movie",
     val id: Int = 0,
@@ -31,6 +40,9 @@ data class RoomContentDto(
     @SerialName("poster_url") val posterUrl: String? = null,
     @SerialName("backdrop_url") val backdropUrl: String? = null,
     @SerialName("subtitle_tracks") val subtitleTracks: List<SubtitleTrackDto> = emptyList(),
+    // Episode rooms nest the parent series so auto-heal can map to the catalog
+    // target (objectId=series id, episodeId=episode id) like the web client.
+    val series: RoomSeriesRefDto? = null,
 )
 
 /** Watch-party member as broadcast over the socket (nested user). */

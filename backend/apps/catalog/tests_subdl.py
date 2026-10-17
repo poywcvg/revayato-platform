@@ -161,3 +161,75 @@ class SubdlProviderTests(SimpleTestCase):
         cache.set('catalog:subdl:miss:tt1877830', True)
         subdl.clear_subdl_miss_for_movie(self.movie)
         self.assertIsNone(cache.get('catalog:subdl:miss:tt1877830'))
+
+
+@override_settings(
+    SUBDL_API_KEY='secret-key-123',
+    SUBDL_ENABLED=True,
+    SUBDL_REQUEST_INTERVAL_SECONDS=0.1,
+    SUBDL_BULK_INTERVAL_SECONDS=0.1,
+    SUBDL_BULK_HOURLY_BUDGET=2,
+    CACHES={'default': {'BACKEND': 'django.core.cache.backends.locmem.LocMemCache'}},
+)
+class SubdlQuotaLaneTests(SimpleTestCase):
+    """Bulk backfill must never drain the quota an open player needs."""
+
+    URL = f'{subdl.API_URL}?api_key=secret-key-123&imdb_id=tt1'
+
+    def setUp(self):
+        cache.clear()
+
+    def _opener(self, *, fail_code=None):
+        response = mock.MagicMock()
+        response.__enter__.return_value = response
+        response.read.return_value = b'{}'
+        response.geturl.return_value = self.URL
+        opener = mock.Mock()
+        if fail_code:
+            opener.open.side_effect = HTTPError(self.URL, fail_code, 'x', {}, None)
+        else:
+            opener.open.return_value = response
+        return opener
+
+    def _fetch(self):
+        return subdl._fetch(self.URL, max_bytes=1024, timeout_seconds=3, urgent=False)
+
+    def test_bulk_lane_stops_at_its_hourly_share_but_live_does_not(self):
+        from apps.catalog.subtitle_provider_health import LIVE, subtitle_lane
+
+        opener = self._opener()
+        with mock.patch.object(subdl, 'build_opener', return_value=opener):
+            self._fetch()
+            self._fetch()
+            with self.assertRaises(subdl.SubdlDeferred):
+                self._fetch()
+            with subtitle_lane(LIVE):
+                self._fetch()
+        self.assertEqual(opener.open.call_count, 3)
+
+    def test_rate_limit_pauses_bulk_for_long_but_live_only_briefly(self):
+        from apps.catalog.subtitle_provider_health import LIVE, subtitle_lane
+
+        with mock.patch.object(subdl, 'build_opener', return_value=self._opener(fail_code=429)):
+            with self.assertRaises(subdl.SubdlBlocked):
+                self._fetch()
+        self.assertTrue(cache.get(subdl.CIRCUIT_OPEN_KEY))
+        self.assertTrue(cache.get(subdl.BULK_PAUSED_KEY))
+        # The short global back-off expires; bulk stays parked, live resumes.
+        cache.delete(subdl.CIRCUIT_OPEN_KEY)
+        opener = self._opener()
+        with mock.patch.object(subdl, 'build_opener', return_value=opener):
+            with self.assertRaises(subdl.SubdlDeferred):
+                self._fetch()
+            with subtitle_lane(LIVE):
+                self._fetch()
+        self.assertEqual(opener.open.call_count, 1)
+
+    def test_blocked_lookup_is_recorded_as_outage_not_miss(self):
+        from apps.catalog.subtitle_provider_health import track_provider_outages
+
+        movie = SimpleNamespace(pk=1, imdb_id='tt1877830', tmdb_id=414906)
+        cache.set(subdl.CIRCUIT_OPEN_KEY, True, 60)
+        with track_provider_outages() as outages:
+            self.assertIsNone(subdl.find_movie_subtitle(movie, video_urls=[_MOVIE_URL]))
+        self.assertEqual(outages, {'subdl'})

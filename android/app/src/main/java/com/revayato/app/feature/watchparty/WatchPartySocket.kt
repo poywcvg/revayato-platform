@@ -41,6 +41,23 @@ sealed interface WsEvent {
     data class Closed(val code: Int, val reason: String) : WsEvent
     data class Failure(val reason: String) : WsEvent
     data object Open : WsEvent
+    /** Server-broadcast fix after POST api/catalog/playback-failure/ (room_notified). */
+    data class PlaybackFix(
+        val reportId: Int?,
+        val problemType: String,
+        val status: String,
+        val resolved: Boolean,
+        val fixedUrl: String,
+        val playbackMode: String,
+        val messageFa: String,
+    ) : WsEvent
+    /** Another member's player just failed — host files the shared heal. */
+    data class MemberFailed(
+        val errorCode: String,
+        val sourceUrl: String,
+        val playedSeconds: Double,
+        val messageFa: String,
+    ) : WsEvent
 }
 
 /**
@@ -111,6 +128,16 @@ class WatchPartySocket(
     }
 
     fun requestSync() = send(buildJsonObject { put("type", "playback.sync.request") })
+
+    /** Tell the room this viewer's player just failed so the host heals once for everybody. */
+    fun sendPlaybackFailed(errorCode: String, sourceUrl: String, playedSeconds: Double) {
+        send(buildJsonObject {
+            put("type", "playback.failed")
+            put("error_code", errorCode)
+            put("source_url", sourceUrl)
+            put("played_seconds", playedSeconds)
+        })
+    }
 
     fun heartbeat() = send(buildJsonObject { put("type", "heartbeat") })
 
@@ -187,6 +214,33 @@ class WatchPartySocket(
             "error" -> WsEvent.Error(
                 code = obj["code"]?.jsonPrimitive?.content ?: "error",
                 message = obj["message"]?.jsonPrimitive?.content ?: "خطا",
+            )
+            "playback.fix" -> WsEvent.PlaybackFix(
+                reportId = obj["report_id"]?.jsonPrimitive?.content?.toIntOrNull(),
+                problemType = obj["problem_type"]?.jsonPrimitive?.content.orEmpty(),
+                status = obj["status"]?.jsonPrimitive?.content.orEmpty(),
+                resolved = obj["resolved"]?.jsonPrimitive?.content?.toBooleanStrictOrNull() == true,
+                fixedUrl = obj["fixed_url"]?.jsonPrimitive?.content.orEmpty(),
+                playbackMode = obj["playback_mode"]?.jsonPrimitive?.content.orEmpty(),
+                messageFa = obj["message_fa"]?.jsonPrimitive?.content
+                    ?: "پخش درست شد؛ ادامه از همان لحظه…",
+            )
+            "playback.member_failed" -> WsEvent.MemberFailed(
+                errorCode = obj["error_code"]?.jsonPrimitive?.content.orEmpty(),
+                sourceUrl = obj["source_url"]?.jsonPrimitive?.content.orEmpty(),
+                playedSeconds = obj["played_seconds"]?.jsonPrimitive?.content?.toDoubleOrNull() ?: 0.0,
+                messageFa = obj["message_fa"]?.jsonPrimitive?.content
+                    ?: "پخش یکی از اعضا قطع شد؛ داریم نسخه سالم را آماده می‌کنیم…",
+            )
+            "playback.failure_ack" -> WsEvent.PlaybackFix(
+                reportId = null,
+                problemType = "",
+                status = "open",
+                resolved = false,
+                fixedUrl = "",
+                playbackMode = "",
+                messageFa = obj["message_fa"]?.jsonPrimitive?.content
+                    ?: "خطای پخش ثبت شد؛ داریم نسخه سالم را آماده می‌کنیم…",
             )
             else -> null
         }

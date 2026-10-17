@@ -31,6 +31,7 @@ can answer "who archived this and when" without reading container logs.
 from __future__ import annotations
 
 import logging
+import time
 from datetime import timedelta
 
 from django.db.models import Count, Q
@@ -266,7 +267,9 @@ def _audit_row(entry) -> dict:
         'movie_id': entry.movie_id,
         'actor': getattr(entry.actor, 'username', '') or '',
         'changed_fields': entry.changed_fields or [],
-        'details': entry.details or {},
+        # A rebuild backup holds the title's whole link set; the feed needs
+        # only its summary.
+        'details': {k: v for k, v in (entry.details or {}).items() if k != 'snapshot'},
         'created_at': entry.created_at.isoformat(),
     }
 
@@ -388,6 +391,12 @@ def _desk_payload(request, obj) -> dict:
             ).order_by('-created_at')[:8]
         ],
     }
+    from .title_completion import completion_state
+
+    payload['completion'] = completion_state(obj)
+    from .title_rebuild import backup_summary
+
+    payload['rebuild_backup'] = backup_summary(obj)
     if is_series:
         payload['episodes'] = _episode_rows(obj, probes)
         payload['audits'] = []
@@ -424,6 +433,12 @@ def _save_links(obj, links: list, *, request, reason: str, removed: list | None 
     if getattr(obj, 'subtitle_tracks', None):
         obj.has_subtitle = True
     obj.save(update_fields=fields)
+    try:
+        from .cache import bump_catalog_cache_version
+
+        bump_catalog_cache_version(force=True)
+    except Exception:
+        logger.exception('admin_ops: cache bump failed after %s', reason)
     _audit(
         request,
         MovieSyncAudit.Action.MANUAL_UPDATE,
@@ -440,6 +455,18 @@ def _save_links(obj, links: list, *, request, reason: str, removed: list | None 
         },
     )
     return normalized
+
+
+def _may_probe(request) -> bool:
+    """Whether this request may still spend network time verifying media.
+
+    A single desk action always may. A bulk publish sets a deadline so a large
+    selection cannot run past the proxy timeout; titles after it fall back to
+    the stored verdict and say ``media_unverified`` — publishing them again
+    probes the rest.
+    """
+    deadline = getattr(request, '_rv_probe_deadline', None)
+    return deadline is None or time.monotonic() < deadline
 
 
 def _set_publication(obj, state: str, *, request, force: bool = False) -> dict:
@@ -461,7 +488,19 @@ def _set_publication(obj, state: str, *, request, force: bool = False) -> dict:
     blockers: list[str] = []
     if state == 'published':
         blockers = list(publish_blockers(obj))
-        blockers += media_verification.media_publish_blockers(obj)
+        if blockers and not force:
+            # Structural gaps first: no point probing hosts for a title that
+            # cannot go live anyway.
+            return {'error': 'publish_blocked', 'blockers': blockers}
+        media = media_verification.media_publish_blockers(obj)
+        if media and not force and _may_probe(request):
+            # The stored verdict is missing, stale or a refusal — which is the
+            # normal state for most of the catalog (only the importer and the
+            # decay sweep write MediaCheck rows), so reading it alone refused
+            # nearly every admin publish with «media_unverified». Ask the
+            # hosts now, exactly as the importer does before it publishes.
+            media = media_verification.media_publish_blockers(obj, verify=True)
+        blockers += media
         if blockers and not force:
             return {'error': 'publish_blocked', 'blockers': blockers}
 
@@ -475,6 +514,12 @@ def _set_publication(obj, state: str, *, request, force: bool = False) -> dict:
         }[state]
         fields.append('publication_status')
     obj.save(update_fields=fields)
+    try:
+        from .cache import bump_catalog_cache_version
+
+        bump_catalog_cache_version(force=True)
+    except Exception:
+        logger.exception('admin_ops: cache bump failed after publication %s', state)
 
     action = (
         MovieSyncAudit.Action.ARCHIVE if state == 'archived'
@@ -515,6 +560,9 @@ def _queue_discover(obj, *, request, mode: str, force: bool) -> dict:
         trigger=ProviderImportJob.Trigger.MANUAL,
         mode=mode,
     )
+    if getattr(job, 'reused', False):
+        # A worker is already crawling this title; the desk shows that job.
+        return {'job_id': str(job.id), 'status': job.status, 'mode': job.mode, 'already_running': True}
     append_log(job, 'info', 'Re-crawl requested from the operations desk.')
     try:
         _queue_job(job)
@@ -629,7 +677,70 @@ def _act_strip_contaminated(obj, request, body):
     }
 
 
-def _act_recrawl(obj, request, body):
+def _act_complete(obj, request, body):
+    """«جستجوی دوباره و تکمیل»: the whole importer pipeline for this one title.
+
+    Runs in the background on its own lane (see :mod:`.title_completion`); the
+    desk polls ``completion`` in its payload for step-by-step progress.
+    """
+    from .title_completion import request_completion
+
+    return request_completion(
+        obj,
+        user_id=getattr(request.user, 'pk', None),
+        publish=bool(body.get('publish', True)),
+        bulk=bool(getattr(request, '_rv_bulk', False)),
+    )
+
+
+def _act_rebuild(obj, request, body):
+    """«بازسازی کامل از صفر»: re-place every source and episode as the importer would.
+
+    Same lane and progress as ``complete``, plus a backup first and a prune of
+    whatever the providers no longer answer with. No test gate: what the providers
+    return replaces the title outright, and ``rebuild_undo`` puts the backup back.
+    See :mod:`.title_rebuild`. Bulk selections go to the imports lane.
+    """
+    from .title_completion import request_completion
+
+    return request_completion(
+        obj,
+        user_id=getattr(request.user, 'pk', None),
+        publish=bool(body.get('publish', True)),
+        bulk=bool(getattr(request, '_rv_bulk', False)),
+        mode='rebuild',
+    )
+
+
+def _act_rebuild_staged(obj, request, body):
+    """«بازسازی تست‌شده»: rebuild off to the side, test, and apply only if it passes.
+
+    See :mod:`.title_staging`. Bulk selections go to the imports lane like
+    every other queued bulk action.
+    """
+    from .title_completion import request_completion
+
+    return request_completion(
+        obj,
+        user_id=getattr(request.user, 'pk', None),
+        publish=bool(body.get('publish', True)),
+        bulk=bool(getattr(request, '_rv_bulk', False)),
+        mode='staged',
+    )
+
+
+def _act_rebuild_undo(obj, request, body):
+    """Put back the links and episodes the latest rebuild replaced."""
+    from .title_completion import is_running
+    from .title_rebuild import restore_backup
+
+    if is_running(obj):
+        return {'error': 'completion_running'}
+    return restore_backup(obj, user=request.user)
+
+
+def _act_discover(obj, request, body):
+    """The older discovery job (myf2m search, reviewable candidates)."""
     mode = str(body.get('mode') or ProviderImportJob.Mode.DISCOVER_ONLY)
     if mode not in dict(ProviderImportJob.Mode.choices):
         mode = ProviderImportJob.Mode.DISCOVER_ONLY
@@ -638,19 +749,23 @@ def _act_recrawl(obj, request, body):
 
 def _act_refresh_subtitles(obj, request, body):
     """Queue a fresh subtitle hunt for this title (or one episode of it)."""
-    from .tasks import extract_movie_softsub_task, extract_series_softsub_task
+    from .tasks import enqueue_movie_softsub_urgent, extract_series_softsub_task
 
     force = bool(body.get('force', True))
+    if not obj.is_published:
+        # Both workers filter on is_published, so a draft would silently no-op.
+        return {'error': 'subtitle_worker_needs_published_title'}
+    # The urgent lane: the regular ``softsub`` queue is routinely thousands
+    # deep, so a click there did nothing anyone could see for hours.
     if isinstance(obj, Series):
         episode = _episode_of(obj, body.get('episode_id'))
-        extract_series_softsub_task.delay(
-            obj.pk, force=force, preferred_episode_id=getattr(episode, 'pk', 0) or 0,
+        extract_series_softsub_task.apply_async(
+            args=(obj.pk,),
+            kwargs={'force': force, 'preferred_episode_id': getattr(episode, 'pk', 0) or 0},
+            queue='softsub-urgent',
         )
         return {'queued': 'series', 'episode_id': getattr(episode, 'pk', 0) or 0}
-    if not obj.is_published:
-        # The worker filters on is_published, so a draft would silently no-op.
-        return {'error': 'subtitle_worker_needs_published_title'}
-    extract_movie_softsub_task.delay(obj.pk, force=force)
+    enqueue_movie_softsub_urgent(obj.pk, force=force)
     return {'queued': 'movie'}
 
 
@@ -773,7 +888,13 @@ DESK_ACTIONS = {
     'add_link': _act_add_link,
     'prune_dead': _act_prune_dead,
     'strip_contaminated': _act_strip_contaminated,
-    'recrawl': _act_recrawl,
+    'complete': _act_complete,
+    # The old button name: same full pipeline, so bookmarks and bulk keep working.
+    'recrawl': _act_complete,
+    'rebuild': _act_rebuild,
+    'rebuild_undo': _act_rebuild_undo,
+    'rebuild_staged': _act_rebuild_staged,
+    'discover': _act_discover,
     'refresh_subtitles': _act_refresh_subtitles,
     'remove_subtitle': _act_remove_subtitle,
     'publish': _act_publish,
@@ -826,7 +947,7 @@ def media_desk(request, kind, object_id):
 BULK_FAST = {'publish', 'unpublish', 'archive', 'prune_dead', 'strip_contaminated', 'resolve_gaps'}
 #: Actions that hand work to a worker. Cheap per title, so a large selection is
 #: still fine — the cost lands on the queue, not on this request.
-BULK_QUEUED = {'recrawl', 'refresh_subtitles'}
+BULK_QUEUED = {'complete', 'recrawl', 'refresh_subtitles', 'rebuild', 'rebuild_staged'}
 #: Actions that talk to the network *inside this request*. Capped hard, because
 #: a 200-title verify would hold an HTTP worker for the better part of an hour
 #: and time out long before it finished — leaving the admin with no idea how far
@@ -834,6 +955,13 @@ BULK_QUEUED = {'recrawl', 'refresh_subtitles'}
 BULK_SLOW = {'verify', 'sync_tmdb'}
 BULK_SLOW_LIMIT = 20
 BULK_MAX_IDS = 250
+#: Wall-clock ceiling for one bulk request. Cloudflare drops the connection at
+#: 100 s and the admin then sees a bare failure for work that mostly succeeded;
+#: stopping early and reporting the rest as ``time_budget`` keeps every
+#: response truthful — running the same selection again finishes it.
+BULK_TIME_BUDGET = 70
+#: How much of that budget a bulk publish may spend verifying media inline.
+BULK_PUBLISH_PROBE_SECONDS = 45
 
 
 @api_view(['POST'])
@@ -871,8 +999,19 @@ def bulk_action(request):
     found = {obj.pk: obj for obj in model.objects.filter(pk__in=ids)}
     results = []
     succeeded = failed = 0
+    started = time.monotonic()
+    if action == 'publish':
+        request._rv_probe_deadline = started + BULK_PUBLISH_PROBE_SECONDS
+    # Bulk completions go to the imports worker, not the desk's own lane.
+    request._rv_bulk = True
     for object_id in ids:
         obj = found.get(object_id)
+        if time.monotonic() - started > BULK_TIME_BUDGET:
+            results.append({
+                'id': object_id, 'title': getattr(obj, 'title', ''), 'ok': False, 'error': 'time_budget',
+            })
+            failed += 1
+            continue
         if obj is None:
             results.append({'id': object_id, 'ok': False, 'error': 'not_found'})
             failed += 1
@@ -888,7 +1027,8 @@ def bulk_action(request):
         results.append({
             'id': object_id, 'title': obj.title, 'ok': ok,
             'error': (outcome or {}).get('error') if not ok else None,
-            'result': outcome if ok else outcome,
+            'blockers': (outcome or {}).get('blockers') if not ok else None,
+            'result': outcome,
         })
         succeeded += 1 if ok else 0
         failed += 0 if ok else 1
@@ -1170,6 +1310,50 @@ def _health_counts() -> dict:
     }
 
 
+def _attach_repair_runs(rows: list[dict]) -> None:
+    """The last repair run per row — so a queue shows what was already tried.
+
+    One ``get_many`` for the page. A staged rebuild's verdict (applied, or the
+    reason it was rejected) is the column an admin works the queue by.
+    """
+    from django.core.cache import cache as django_cache
+
+    from .title_completion import _is_active, _key
+
+    keys = {}
+    for row in rows:
+        target = row.get('target') or {}
+        if target.get('kind') in KINDS and target.get('id'):
+            keys[_key(target['kind'], target['id'])] = row
+    if not keys:
+        return
+    try:
+        states = django_cache.get_many(list(keys))
+    except Exception:
+        logger.exception('admin_ops: repair-run lookup failed')
+        return
+    for key, row in keys.items():
+        state = states.get(key)
+        if not state:
+            continue
+        running = _is_active(state)
+        current = next(
+            (step['key'] for step in state.get('steps') or [] if step.get('status') == 'running'), '',
+        )
+        row['repair'] = {
+            'mode': state.get('mode', 'complete'),
+            'state': state.get('state') if running or state.get('state') == 'done' else 'failed',
+            'step': current,
+            'verdict': state.get('verdict', ''),
+            'verdict_reason': state.get('verdict_reason', ''),
+            'finished_at': state.get('finished_at'),
+            # What the run did about the problems that put the title here.
+            'problems_fixed': state.get('problems_fixed', []),
+            'problems_queued': state.get('problems_queued', []),
+            'problems_left': state.get('problems_left', []),
+        }
+
+
 @api_view(['GET'])
 @permission_classes([IsAuthenticated, IsStaffUser])
 @throttle_classes([StaffAdminThrottle])
@@ -1187,13 +1371,58 @@ def catalog_health(request):
         offset = max(0, int(request.GET.get('offset') or 0))
     except (TypeError, ValueError):
         limit, offset = 50, 0
+    results = QUEUES[queue](limit, offset)
+    _attach_repair_runs(results)
     return Response({
         'queue': queue,
         'counts': _health_counts(),
-        'results': QUEUES[queue](limit, offset),
+        'results': results,
         'limit': limit,
         'offset': offset,
     })
+
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated, IsStaffUser])
+@throttle_classes([StaffAdminThrottle])
+def content_reports_purge(request):
+    """Permanently delete finished viewer reports (resolved/rejected/unavailable).
+
+    Body (all optional): ``{ status, problem_type, limit }``. Without ``status``
+    all three finished states are removed. ``limit`` caps a single click
+    (default 200, max 1000). Only finished rows are ever touched — open queues
+    from :func:`catalog_health` already exclude these, so this just clears the
+    Django-admin backlog. Returns ``{ ok, deleted }``.
+    """
+    data = request.data if isinstance(request.data, dict) else {}
+    status_filter = (data.get('status') or '').strip()
+    problem_type = (data.get('problem_type') or '').strip() or None
+    try:
+        limit = int(data.get('limit') or 200)
+    except (TypeError, ValueError):
+        limit = 200
+    limit = max(1, min(limit, 1000))
+
+    finished = [
+        ContentIssueReport.Status.RESOLVED,
+        ContentIssueReport.Status.REJECTED,
+        ContentIssueReport.Status.UNAVAILABLE,
+    ]
+    valid = {choice for choice, _label in ContentIssueReport.Status.choices}
+    if status_filter:
+        if status_filter not in valid or status_filter not in finished:
+            return _bad_request('فقط گزارش‌های تمام‌شده قابل حذف‌اند.', 'invalid_status')
+        statuses = [status_filter]
+    else:
+        statuses = finished
+
+    qs = ContentIssueReport.objects.filter(status__in=statuses)
+    if problem_type:
+        qs = qs.filter(problem_type=problem_type)
+    ids = list(qs.order_by('updated_at').values_list('pk', flat=True)[:limit])
+    _audit(request, MovieSyncAudit.Action.MANUAL_UPDATE, details={'purged_reports': ids})
+    ContentIssueReport.objects.filter(pk__in=ids).delete()
+    return Response({'ok': True, 'deleted': len(ids)})
 
 
 # --------------------------------------------------------------------------
@@ -1209,6 +1438,7 @@ QUEUE_LANES = (
     ('imports', 'ایمپورت و خزش'),
     ('softsub', 'استخراج زیرنویس (انبوه)'),
     ('softsub-urgent', 'زیرنویس فوری پلیر'),
+    ('softsub-drain', 'پیگیری گزارش‌های زیرنویس'),
     ('support', 'پشتیبانی و گزارش‌ها'),
 )
 

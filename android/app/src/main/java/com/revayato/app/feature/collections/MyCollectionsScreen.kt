@@ -1,5 +1,6 @@
 package com.revayato.app.feature.collections
 
+import androidx.compose.material3.FloatingActionButtonDefaults
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -72,6 +73,7 @@ fun MyCollectionsScreen(
                 onClick = { showCreate = true },
                 containerColor = MaterialTheme.colorScheme.primary,
                 contentColor = OnBrand,
+                elevation = FloatingActionButtonDefaults.elevation(0.dp, 0.dp, 0.dp, 0.dp),
                 icon = { Icon(Icons.Rounded.Add, contentDescription = null) },
                 text = { Text("کالکشن جدید", fontWeight = FontWeight.Bold) },
             )

@@ -57,10 +57,9 @@ export default defineNuxtConfig({
     },
     families: [
       // Persian UI faces are self-hosted from public/fonts (see main.css @font-face).
-      { name: 'Yekan Plus', provider: 'none' },
-      { name: 'Yekan Boom', provider: 'none' },
+      { name: 'Mikhak', provider: 'none' },
       {
-        // English / Latin UI — Yekan has no Latin glyphs, so Latin text lands here.
+        // English / Latin UI — Latin is routed away from Mikhak by unicode-range, so Latin text lands here.
         name: 'Plus Jakarta Sans',
         provider: 'npm',
         weights: [500, 700],
@@ -111,9 +110,12 @@ export default defineNuxtConfig({
       title: 'روایتو',
       titleTemplate: '%s | روایتو',
       link: [
-        { rel: 'preload', href: '/fonts/yekan-plus-regular.woff', as: 'font', type: 'font/woff', crossorigin: '' },
-        { rel: 'preload', href: '/fonts/yekan-plus-medium.woff', as: 'font', type: 'font/woff', crossorigin: '' },
-        { rel: 'preload', href: '/fonts/yekan-plus.woff', as: 'font', type: 'font/woff', crossorigin: '' },
+        { rel: 'preload', href: '/fonts/mikhak-variable.woff2', as: 'font', type: 'font/woff2', crossorigin: '' },
+        // Early connection hints for the hottest third-party / media origins.
+        // Static hints only (no structure change): the browser opens TLS while
+        // Vue hydrates, so LCP posters and API JSON start sooner.
+        { rel: 'preconnect', href: 'https://image.tmdb.org', crossorigin: '' },
+        { rel: 'dns-prefetch', href: 'https://image.tmdb.org' },
         { rel: 'icon', type: 'image/svg+xml', href: '/favicon.svg?v=2' },
         { rel: 'icon', type: 'image/png', sizes: '32x32', href: '/favicon-32.png?v=2' },
         { rel: 'apple-touch-icon', sizes: '180x180', href: '/apple-touch-icon.png?v=2' },
@@ -129,15 +131,16 @@ export default defineNuxtConfig({
       ],
       script: [
         {
-          // Dark-only theme + kill browser scroll restore before first paint.
-          innerHTML: `(function(){try{localStorage.setItem('revayato-theme','dark');document.documentElement.dataset.theme='dark';document.documentElement.style.colorScheme='dark';var m=document.querySelector('meta[name="theme-color"]');if(m)m.setAttribute('content','#1d1c21');if('scrollRestoration'in history)history.scrollRestoration='manual';if(!location.hash){var r=document.documentElement;r.scrollTop=0;if(document.body)document.body.scrollTop=0;window.scrollTo(0,0)}}catch(e){document.documentElement.dataset.theme='dark';document.documentElement.style.colorScheme='dark'}})()`,
+          // Stamp the viewer's theme (stored choice, else the OS) before first
+          // paint so there is no flash, + kill browser scroll restore.
+          innerHTML: `(function(){var d=document.documentElement,t='dark';try{var p=localStorage.getItem('revayato-theme-pref');t=p==='light'||p==='dark'?p:(window.matchMedia&&matchMedia('(prefers-color-scheme: light)').matches?'light':'dark')}catch(e){}d.dataset.theme=t;d.style.colorScheme=t;try{var m=document.querySelector('meta[name="theme-color"]');if(m)m.setAttribute('content',t==='light'?'#f4f7f5':'#1d1c21');if('scrollRestoration'in history)history.scrollRestoration='manual';if(!location.hash){d.scrollTop=0;if(document.body)document.body.scrollTop=0;window.scrollTo(0,0)}}catch(e){}})()`,
           tagPosition: 'head',
         },
       ],
     },
   },
 
-  experimental: { payloadExtraction: true, renderJsonPayloads: true },
+  experimental: { payloadExtraction: true, renderJsonPayloads: true, inlineRouteRules: true },
   devtools: { enabled: false },
   nitro: {
     compressPublicAssets: true,
@@ -193,7 +196,10 @@ export default defineNuxtConfig({
     '/privacy': { prerender: true },
     '/terms': { prerender: true },
     '/welcome': { prerender: true },
-    '/app': { prerender: true },
+    // Not content-free: the page reads the live release from /api/app/version/.
+    // Prerendering baked the build-time fallback in (the API is unreachable at
+    // build), so the download button kept offering an old APK after every release.
+    '/app': { swr: 300 },
     '/_nuxt/**': { headers: { 'cache-control': 'public, max-age=31536000, immutable' } },
     '/_ipx/**': { headers: { 'cache-control': 'public, max-age=2592000, stale-while-revalidate=86400' } },
     // Media URLs here are not content-hashed, so a 30-day cache would serve stale

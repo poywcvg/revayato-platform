@@ -78,7 +78,9 @@ def softsub_queue_saturated() -> bool:
     if depth < 0:
         return False
     if depth >= limit:
-        logger.info('catalog.softsub_queue_saturated depth=%s limit=%s', depth, limit)
+        # Hot path (every catalog detail hit): stay quiet at info level while
+        # saturated so the log volume itself stops costing request time.
+        logger.debug('catalog.softsub_queue_saturated depth=%s limit=%s', depth, limit)
         return True
     return False
 
@@ -98,11 +100,47 @@ def enqueue_movie_softsub(movie_id: int, *, force: bool = False) -> bool:
     return True
 
 
+# Drain re-runs of old viewer reports. The urgent worker reads this queue only
+# after ``softsub-urgent`` is empty (``queue_order_strategy: priority``), and a
+# pass from here hunts on the bulk provider lane: twenty drained titles every
+# beat used to spend SubDL's live quota (HTTP 429 → breaker open) and sit in
+# front of the viewer who had just pressed play.
+SOFTSUB_DRAIN_QUEUE = 'softsub-drain'
+
+
+def _task_is_live(task) -> bool:
+    """True when this run came off ``softsub-urgent``: a viewer has the player open."""
+    info = getattr(getattr(task, 'request', None), 'delivery_info', None) or {}
+    return 'softsub-urgent' in {str(info.get('routing_key') or ''), str(info.get('queue') or '')}
+
+
+def _open_subtitle_hunt(task):
+    """Enter the provider lane + outage tracker for one worker pass.
+
+    Returns the ExitStack (closed in the task's ``finally``) and the live outage
+    set the pass fills; see ``subtitle_provider_health``.
+    """
+    from contextlib import ExitStack
+
+    from apps.catalog.subtitle_provider_health import (
+        BULK,
+        LIVE,
+        subtitle_lane,
+        track_provider_outages,
+    )
+
+    stack = ExitStack()
+    outages = stack.enter_context(track_provider_outages())
+    stack.enter_context(subtitle_lane(LIVE if _task_is_live(task) else BULK))
+    return stack, outages
+
+
 def enqueue_movie_softsub_urgent(
     movie_id: int,
     *,
     force: bool = True,
     preferred_source_url: str = '',
+    queue: str = 'softsub-urgent',
 ) -> bool:
     """Bypass the long queue lock so an open player can refresh SoftSub immediately."""
     key = _softsub_queue_lock('movie', movie_id)
@@ -116,7 +154,7 @@ def enqueue_movie_softsub_urgent(
                 'force': bool(force),
                 'preferred_source_url': str(preferred_source_url or '')[:2000],
             },
-            queue='softsub-urgent',
+            queue=queue,
             countdown=0,
         )
     except Exception:
@@ -156,6 +194,7 @@ def enqueue_series_softsub_urgent(
     episode_limit: int = 40,
     episode_id: int = 0,
     preferred_source_url: str = '',
+    queue: str = 'softsub-urgent',
 ) -> bool:
     """Bypass the long queue lock for an open series player SoftSub gap."""
     key = _softsub_queue_lock('series', series_id)
@@ -171,7 +210,7 @@ def enqueue_series_softsub_urgent(
                 'preferred_episode_id': max(0, int(episode_id or 0)),
                 'preferred_source_url': str(preferred_source_url or '')[:2000],
             },
-            queue='softsub-urgent',
+            queue=queue,
             countdown=0,
         )
     except Exception:
@@ -373,6 +412,7 @@ def extract_movie_softsub_task(
     from apps.catalog.subtitle_extract import attach_extracted_subtitle
 
     release_lock = True
+    hunt, outages = _open_subtitle_hunt(self)
     try:
         cache.set(
             _softsub_queue_lock('movie', movie_id),
@@ -433,17 +473,18 @@ def extract_movie_softsub_task(
                 last_result=provider,
             )
         else:
-            from apps.catalog.playback_subtitle import mark_playback_subtitle_gaps_exhausted
+            from apps.catalog.playback_subtitle import settle_empty_playback_gaps
 
-            # The whole pipeline (own container, SubtitleStar, Subzone) ran and
-            # came back empty: stop viewers re-queueing and polling it.
-            mark_playback_subtitle_gaps_exhausted(content_type='movie', object_id=movie.pk)
+            # The whole pipeline ran and came back empty. Only a pass where every
+            # provider answered may tell viewers "no subtitle"; an outage defers.
+            settle_empty_playback_gaps(content_type='movie', object_id=movie.pk, outages=outages)
     except Exception as exc:
         if self.request.retries < self.max_retries:
             release_lock = False
             raise self.retry(exc=exc, countdown=60)
         raise
     finally:
+        hunt.close()
         if release_lock:
             cache.delete(_softsub_queue_lock('movie', movie_id))
     return {'movie_id': movie_id, 'status': 'extracted' if changed else 'unchanged'}
@@ -475,6 +516,7 @@ def extract_series_softsub_task(
 
     release_lock = True
     batch_limit = min(200, max(1, int(episode_limit or 60)))
+    hunt, outages = _open_subtitle_hunt(self)
     try:
         cache.set(
             _softsub_queue_lock('series', series_id),
@@ -556,27 +598,34 @@ def extract_series_softsub_task(
                 # re-demuxing the same first batch and starve later episodes.
                 kwargs={'force': False, 'episode_limit': batch_limit},
                 countdown=30,
+                **({'queue': 'softsub-urgent'} if _task_is_live(self) else {}),
             )
             cache.set(_softsub_queue_lock('series', series_id), 'queued', timeout=SOFTSUB_QUEUE_LOCK_TTL)
             result['requeued'] = True
         elif int(result.get('extracted') or 0) == 0:
             # A pass that found nothing: the episode the viewer is on (or the
             # series-level report when none was given) is exhausted for now.
-            from apps.catalog.playback_subtitle import mark_playback_subtitle_gaps_exhausted
+            from apps.catalog.playback_subtitle import settle_empty_playback_gaps
 
             target_episode = max(0, int(preferred_episode_id or 0))
             if target_episode not in ready_episode_ids and (target_episode or not ready_episode_ids):
-                result['exhausted'] = mark_playback_subtitle_gaps_exhausted(
+                settled = settle_empty_playback_gaps(
                     content_type='series',
                     object_id=series.pk,
                     episode_ids=[target_episode],
+                    outages=outages,
                 )
+                result['exhausted'] = settled['exhausted']
+                result['deferred'] = settled['deferred']
+                if outages:
+                    result['provider_outages'] = sorted(outages)
     except Exception as exc:
         if self.request.retries < self.max_retries:
             release_lock = False
             raise self.retry(exc=exc, countdown=90)
         raise
     finally:
+        hunt.close()
         if release_lock:
             cache.delete(_softsub_queue_lock('series', series_id))
     return {'status': 'ok', **result}
@@ -680,13 +729,17 @@ def drain_playback_subtitle_gaps(
         stats['processed'] += 1
         # Per-row claim so concurrent beats/commands never double-enqueue.
         lock_key = f'catalog:gap-drain:{gap.pk}'
+        # A pass deferred because a provider was down is not an empty retry:
+        # it never spends drain attempts (the worker's deferral cap bounds it).
+        deferred = gap.last_result == PROVIDER_UNAVAILABLE_RESULT
         if dry_run:
-            attempts = 0 if reset_drain_count else int((gap.meta or {}).get('drain_count') or 0)
+            spent_attempts = 0 if reset_drain_count else int((gap.meta or {}).get('drain_count') or 0)
+            attempts = 0 if deferred else spent_attempts
             if _gap_has_tracks(gap):
                 stats['resolved'] += 1
             elif _gap_close_reason(gap):
                 stats['closed'] += 1
-            elif attempts >= 1 and _gap_burned_in_only(gap):
+            elif spent_attempts >= 1 and _gap_burned_in_only(gap):
                 stats['exhausted'] += 1
             elif attempts < max(1, int(max_attempts)):
                 stats['re_enqueued'] += 1
@@ -699,6 +752,9 @@ def drain_playback_subtitle_gaps(
 
         attempts = int((gap.meta or {}).get('drain_count') or 0)
         if reset_drain_count:
+            attempts = 0
+        spent_attempts = attempts
+        if deferred:
             attempts = 0
         try:
             # If tracks landed since the report, just close it.
@@ -724,7 +780,7 @@ def drain_playback_subtitle_gaps(
                 stats['closed'] += 1
                 continue
 
-            if attempts >= 1 and _gap_burned_in_only(gap):
+            if spent_attempts >= 1 and _gap_burned_in_only(gap):
                 # The worker already probed these files once and every one is
                 # Dubbed/HardSub by name: no sidecar can bind, so answer viewers
                 # at once for a week (a new encode's source_path reopens it).
@@ -761,6 +817,7 @@ def drain_playback_subtitle_gaps(
                     gap.object_id,
                     force=True,
                     preferred_source_url=preferred_source_url,
+                    queue=SOFTSUB_DRAIN_QUEUE,
                 )
             else:
                 ep_id = int(gap.episode_id or 0)
@@ -770,10 +827,11 @@ def drain_playback_subtitle_gaps(
                     episode_limit=8 if ep_id else 24,
                     episode_id=ep_id,
                     preferred_source_url=preferred_source_url,
+                    queue=SOFTSUB_DRAIN_QUEUE,
                 )
             if queued:
                 # Worker holds the 2h queue lock now; next beat may resolve us.
-                _touch_gap_meta(gap, {'drain_count': attempts + 1})
+                _touch_gap_meta(gap, {'drain_count': spent_attempts if deferred else attempts + 1})
                 gap.status = PlaybackSubtitleGap.Status.QUEUED
                 gap.last_result = 'drain_re_enqueued'
                 gap.save(update_fields=['status', 'last_result', 'meta', 'updated_at'])
@@ -785,6 +843,9 @@ def drain_playback_subtitle_gaps(
             cache.delete(lock_key)
     return stats
 
+
+# Mirrors playback_subtitle.PROVIDER_UNAVAILABLE (kept literal: no import cycle).
+PROVIDER_UNAVAILABLE_RESULT = 'provider_unavailable'
 
 # Verdicts the drain never revisits; only a new viewer report reopens them.
 _GAP_FINAL_RESULTS = ('exhausted', 'not_needed', 'dubbed_stream', 'persian_original', 'object_missing')
@@ -1029,4 +1090,61 @@ def fill_link_sizes_task(limit: int = 0):
     return fill_missing_sizes(
         limit=limit or settings.CATALOG_LINK_SIZE_TITLES_PER_TICK,
         budget_seconds=settings.CATALOG_LINK_SIZE_BUDGET_SECONDS,
+        workers=settings.CATALOG_LINK_SIZE_WORKERS,
+        max_links_per_title=settings.CATALOG_LINK_SIZE_LINKS_PER_TITLE,
     )
+
+
+@shared_task(soft_time_limit=35 * 60, time_limit=37 * 60, acks_late=False)
+def complete_title_task(
+    kind: str, pk: int, user_id: int | None = None, publish: bool = True, mode: str = 'complete',
+):
+    """Admin desk «جستجوی دوباره و تکمیل» / «بازسازی کامل از صفر»: every importer step for one title."""
+    from apps.catalog.title_completion import run_completion
+
+    state = run_completion(kind, int(pk), user_id=user_id, publish=bool(publish), mode=mode)
+    return {'state': state.get('state'), 'failed_steps': state.get('failed_steps', [])}
+
+
+@shared_task(soft_time_limit=5 * 60, time_limit=6 * 60)
+def size_title_links_task(label: str, pk: int):
+    """Measure one freshly imported title's links. Queued by link_sizes.queue_title_sizing."""
+    from apps.catalog.link_sizes import run_title_sizing
+
+    return run_title_sizing(label, pk)
+
+
+@shared_task(soft_time_limit=2 * 60, time_limit=3 * 60)
+def indexnow_flush_task():
+    """Send the queued title URLs to IndexNow. See apps.catalog.indexnow."""
+    from apps.catalog.indexnow import flush_pending
+
+    return flush_pending()
+
+
+def _airing_locked(name: str, task_id, run):
+    from django.core.cache import cache
+
+    lock = f'airing:lock:{name}'
+    if not cache.add(lock, task_id or '1', timeout=15 * 60):
+        return {'status': 'already_running'}
+    try:
+        return run()
+    finally:
+        cache.delete(lock)
+
+
+@shared_task(bind=True, soft_time_limit=10 * 60, time_limit=11 * 60, acks_late=False)
+def sync_airing_schedule_task(self):
+    """جدول پخش: re-read TMDB release dates of every tracked title that is due. See apps.catalog.airing."""
+    from apps.catalog.airing import sync_schedule
+
+    return _airing_locked('sync', self.request.id, sync_schedule)
+
+
+@shared_task(bind=True, soft_time_limit=12 * 60, time_limit=13 * 60, acks_late=False)
+def hunt_airing_releases_task(self):
+    """Crawl the providers for releases that aired and are not on the site yet. See apps.catalog.airing."""
+    from apps.catalog.airing import hunt
+
+    return _airing_locked('hunt', self.request.id, hunt)

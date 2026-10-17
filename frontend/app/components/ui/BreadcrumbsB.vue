@@ -61,7 +61,7 @@ const wrapperClasses = computed(() => [
 
         <span v-if="index < items.length - 1" class="breadcrumbs-b__separator" aria-hidden="true">
           <slot name="separator">
-            <svg v-if="separator === 'arrow'" viewBox="0 0 16 16"><path d="m10.85 7.65-5-5a.5.5 0 0 0-.7.7L9.79 8l-4.64 4.65a.5.5 0 0 0 .7.7l5-5a.5.5 0 0 0 0-.7Z" fill="currentColor" /></svg>
+            <CinematicIcon v-if="separator === 'arrow'" name="chevron-left" />
             <svg v-else-if="separator === 'bar'" viewBox="0 0 16 16"><rect x="10.74" y="2" width="1" height="12.95" rx=".5" transform="rotate(26.32 10.74 2)" fill="currentColor" /></svg>
             <svg v-else viewBox="0 0 16 16"><circle cx="8" cy="8" r="3" fill="currentColor" /></svg>
           </slot>

@@ -3,7 +3,7 @@
     <color name="brand_bg_main">#1d1c21</color>
     <color name="brand_bg_surface">#0d0d0d</color>
     <color name="brand_accent">#b0e4cc</color>
-    <color name="brand_on_accent">#0d1a14</color>
+    <color name="brand_on_accent">#07110d</color>
     <color name="white">#ffffff</color>
     <color name="black">#000000</color>
 </resources>

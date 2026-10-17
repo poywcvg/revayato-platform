@@ -103,7 +103,6 @@ useSeoMeta({
 
     <section class="content-section">
       <div class="page-hero relative isolate overflow-hidden rounded-[1.75rem] px-5 py-7 sm:px-8 sm:py-9">
-        <span class="pointer-events-none absolute -left-16 top-0 -z-10 size-52 rounded-full bg-elevated/35 blur-3xl" aria-hidden="true" />
         <div class="flex flex-col gap-5 sm:flex-row sm:items-center sm:justify-between">
           <div>
             <p class="text-xs font-black tracking-wide text-muted">همین حالا</p>

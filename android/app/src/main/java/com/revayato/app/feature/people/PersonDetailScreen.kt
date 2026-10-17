@@ -1,5 +1,6 @@
 package com.revayato.app.feature.people
 
+import com.revayato.app.ui.components.posterGridColumns
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
@@ -26,7 +27,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import com.revayato.app.core.theme.BrandMint
+import com.revayato.app.core.theme.Brand
 import com.revayato.app.core.ui.UiState
 import com.revayato.app.data.model.PersonDetailDto
 import com.revayato.app.feature.collection.BackTopBar
@@ -70,18 +71,19 @@ private fun PersonContent(
     onOpenTitle: (String, String) -> Unit,
 ) {
     val films = person.filmography
+    val columns = posterGridColumns()
     LazyVerticalGrid(
-        columns = GridCells.Fixed(3),
+        columns = GridCells.Fixed(columns),
         modifier = Modifier.fillMaxSize(),
         contentPadding = PaddingValues(16.dp),
         horizontalArrangement = Arrangement.spacedBy(12.dp),
         verticalArrangement = Arrangement.spacedBy(16.dp),
     ) {
-        item(span = { GridItemSpan(3) }) {
+        item(span = { GridItemSpan(columns) }) {
             PersonHeader(person)
         }
         if (films.isNotEmpty()) {
-            item(span = { GridItemSpan(3) }) {
+            item(span = { GridItemSpan(columns) }) {
                 Text(
                     text = "آثار (${films.size})",
                     style = MaterialTheme.typography.titleMedium,

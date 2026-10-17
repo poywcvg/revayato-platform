@@ -10,7 +10,8 @@ import ChevronLeft from '~icons/lucide/chevron-left'
 definePageMeta({ layout: 'admin', middleware: 'staff' })
 useSeoMeta({ title: 'درخواست‌های پشتیبانی — روایتو' })
 
-const { listTickets, refreshOverview } = useAdminInteraction()
+const { listTickets, refreshOverview, purgeTickets } = useAdminInteraction()
+const notify = useNotifications()
 
 const PAGE_SIZE = 20
 const q = ref('')
@@ -18,6 +19,9 @@ const qDebounced = ref('')
 const statusFilter = ref('')
 const categoryFilter = ref('')
 const unreadOnly = ref(false)
+// Resolved/closed conversations are hidden by default so the panel only shows
+// work to do; they stay reachable via the status filter until purged.
+const hideResolved = ref(true)
 const offset = ref(0)
 
 let searchTimer: ReturnType<typeof setTimeout> | null = null
@@ -25,7 +29,7 @@ watch(q, (val) => {
   if (searchTimer) clearTimeout(searchTimer)
   searchTimer = setTimeout(() => { qDebounced.value = val.trim(); offset.value = 0 }, 350)
 })
-watch([statusFilter, categoryFilter, unreadOnly], () => { offset.value = 0 })
+watch([statusFilter, categoryFilter, unreadOnly, hideResolved], () => { offset.value = 0 })
 
 const { data, pending, error, refresh } = await useAsyncData(
   'admin-support',
@@ -33,11 +37,12 @@ const { data, pending, error, refresh } = await useAsyncData(
     status: statusFilter.value || undefined,
     category: categoryFilter.value || undefined,
     unread: unreadOnly.value ? 'true' : undefined,
+    hide_resolved: !statusFilter.value && hideResolved.value ? 'true' : undefined,
     q: qDebounced.value || undefined,
     limit: PAGE_SIZE,
     offset: offset.value,
   }),
-  { watch: [qDebounced, statusFilter, categoryFilter, unreadOnly, offset] },
+  { watch: [qDebounced, statusFilter, categoryFilter, unreadOnly, hideResolved, offset] },
 )
 
 const rows = computed(() => data.value?.results ?? [])
@@ -69,6 +74,26 @@ function statusTone(t: SupportTicketListItem): 'accent' | 'success' | 'warning' 
 function dateOf(iso: string) {
   try { return new Intl.DateTimeFormat('fa-IR', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }).format(new Date(iso)) }
   catch { return '—' }
+}
+
+// Permanent removal of finished conversations. Capped server-side (200 per
+// click) so one press cannot wipe history unseen; the list refreshes after.
+const purging = ref(false)
+async function purgeResolved() {
+  if (purging.value) return
+  const scope = categoryFilter.value ? ' همین دسته' : ''
+  if (!window.confirm(`گفتگوهای حل‌شده و بسته${scope} برای همیشه از پنل حذف شوند؟ این کار قابل بازگشت نیست.`)) return
+  purging.value = true
+  try {
+    const res = await purgeTickets(categoryFilter.value ? { category: categoryFilter.value } : {})
+    notify.success('حذف شد', `${fa(res.deleted)} گفتگوی حل‌شده از پنل حذف شد.`)
+    await refresh()
+    await refreshOverview()
+  } catch (err) {
+    notify.notifyError(err, 'حذف گروهی ممکن نشد.')
+  } finally {
+    purging.value = false
+  }
 }
 
 onMounted(() => { void refreshOverview() })
@@ -106,6 +131,26 @@ onMounted(() => { void refreshOverview() })
         @click="unreadOnly = !unreadOnly"
       >
         <MailOpen class="size-4" /> فقط خوانده‌نشده
+      </button>
+      <button
+        v-if="!statusFilter"
+        type="button"
+        class="rv-btn rv-focus !min-h-[2.6rem]"
+        :class="hideResolved ? 'rv-btn--primary' : 'rv-btn--ghost'"
+        title="گفتگوهای حل‌شده و بسته از فهرست مخفی می‌شوند"
+        @click="hideResolved = !hideResolved"
+      >
+        مخفی کردن حل‌شده‌ها
+      </button>
+      <button
+        type="button"
+        class="rv-btn rv-focus !min-h-[2.6rem]"
+        :style="{ color: 'var(--rv-danger)' }"
+        :disabled="purging"
+        title="حذف دائمی گفتگوهای حل‌شده و بسته (تا ۲۰۰ مورد در هر کلیک)"
+        @click="purgeResolved"
+      >
+        {{ purging ? 'در حال حذف…' : 'حذف حل‌شده‌ها' }}
       </button>
     </div>
 

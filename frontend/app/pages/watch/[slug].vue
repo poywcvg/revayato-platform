@@ -1,12 +1,12 @@
 <script setup lang="ts">
 import { reportClientDiag } from '~/utils/clientDiag'
 import type { ContentType, DownloadLink, Episode, PlaybackEpisodeOption, PlaybackQuality, PlaybackTextTrack, PlaybackVersion, PlaybackVersionKind, SubtitleSyncFeedback } from '~/types'
-import { codecLikelyUnsupported, episodeNumberOf, isExpiredPlaybackUrl, isPlayablePlaybackUrl, linkMatchesEpisode, pickStreamFriendlyLink, playbackOrigin, prefersBrowserSafeContainers, qualityHeightOf, seasonNumberOf, streamNetworkProfile, videoCodecFamily, warmPlaybackOrigin } from '~/utils/downloadMeta'
+import { browserOpensMkvNatively, codecLikelyUnsupported, episodeNumberOf, isExpiredPlaybackUrl, isPlayablePlaybackUrl, linkMatchesEpisode, pickStreamFriendlyLink, playbackOrigin, prefersBrowserSafeContainers, qualityHeightOf, seasonNumberOf, streamNetworkProfile, videoCodecFamily, warmPlaybackOrigin } from '~/utils/downloadMeta'
 import { buildPlaybackVersions, isDubLink, isSoftsubLink, linksForVersionKind, pairSubtitleTracksForSource, resolvePlaybackVersion } from '~/utils/playbackVersions'
 import { classifyPlayerToast, type PlayerToastMeta } from '~/utils/playerToast'
 import type { ReportProblemType } from '~/composables/useContentReport'
 import type { StreamGatewaySession } from '~/composables/useStreamGateway'
-import { pickDefaultPlaybackVersion, softsubBannerCopy, subtitleFindingNotice, subtitleReadyNotice, type SoftsubBannerTone } from '~/utils/subtitlePolicy'
+import { pickDefaultPlaybackVersion, subtitleHuntStatus, subtitleReadyNotice, type SubtitleHuntPhase, type SubtitleHuntStatus } from '~/utils/subtitlePolicy'
 
 definePageMeta({ layout: 'player', pageTransition: false, ssr: false })
 
@@ -36,6 +36,7 @@ const watchProgress = useWatchProgress()
 const { ensurePlaybackSubtitles, getPlaybackSubtitleStatus } = usePlaybackSubtitleEnsure()
 const { reportSubtitleSync } = useSubtitleSyncReport()
 const { reportIssue } = useContentReport()
+const { healFailure, pollFixedUrl } = usePlaybackSelfHeal()
 const { openGatewayStream, isGatewayUrl, gatewayMessageFor } = useStreamGateway()
 
 if (!item.value) throw createError({ statusCode: 404, message: 'محتوا پیدا نشد' })
@@ -451,10 +452,16 @@ const resumeSeconds = computed(() => {
 })
 const selectedQuality = ref<PlaybackQuality>('auto')
 const playerToast = ref<(PlayerToastMeta & { id: number, message: string }) | null>(null)
-const softsubBanner = ref<{ tone: SoftsubBannerTone, title: string, detail: string } | null>(null)
 const shouldAutoplay = computed(() => route.query.player === '1' || Boolean(route.query.source) || confirmed.value)
 let toastTimer: number | undefined
-let softsubBannerTimer: number | undefined
+// Status card of the automatic subtitle hunt (separate from the toast, which
+// keeps the one "added" message). Dismissing it hides it for this file only.
+const subtitleHunt = ref<SubtitleHuntStatus | null>(null)
+let subtitleHuntTimer: number | undefined
+let subtitleHuntDismissed = false
+// Once the fast poll rounds run out, one slow read-only status poll keeps
+// watching so cues the server finds later still reach this open player.
+let softsubBackgroundPollStarted = false
 let softsubPollTimer: number | undefined
 let softsubRetryTimer: number | undefined
 let softsubReportId: number | null = null
@@ -471,10 +478,13 @@ const EMBEDDED_PROBE_WAIT_MS = 4_000
 let embeddedPersianAvailable = false
 let embeddedProbeSettled = false
 let embeddedProbeTimer: number | undefined
-let pendingSoftsubEnsure: { showBanner?: boolean } | null = null
+let pendingSoftsubEnsure = false
 // The server already searched every source for this title and found nothing;
 // it answers 'exhausted' until its cooldown ends, so polling would be noise.
 let softsubExhausted = false
+// The one toast the subtitle hunt shows ("added") fires once per file, only
+// after cues are really in the player; progress lives in the status card.
+let softsubAnnounced = false
 let autoUpgradeDone = false
 let toastSeq = 0
 const failedPlaybackSources = new Set<string>()
@@ -488,7 +498,52 @@ let reportedPlaybackGap = false
 // reason (HEVC/AV1 codec, or MKV on Safari/Firefox), so the viewer sees a clear
 // app/download CTA instead of a silent black frame. Transient/network failures
 // keep using the auto-dismissing toast.
-const playbackBlocked = ref<{ family: string, container: string } | null>(null)
+const playbackBlocked = ref<{ family: string, container: string, url?: string } | null>(null)
+
+/** The title's own link for ``url`` — carries the backend's ``iran_only`` flag. */
+function linkForUrl(url: string) {
+  const target = String(url || '').trim()
+  if (!target) return undefined
+  return episodeScopedLinks.value.find(link => link.url === target)
+    || (item.value?.download_links || []).find(link => link.url === target)
+}
+
+/** Served only to Iranian IPs, without CORS: no remuxer, no gateway — native or nothing. */
+const playerSourceGeoLocked = computed(() => Boolean(linkForUrl(playerSource.value)?.iran_only))
+
+// --- Iran-only CDN fallback ---------------------------------------------------
+// When the browser cannot open such a file, the viewer still has two ways that
+// need no CORS: an external player (Android intent, the way myf2m's own KMPlayer
+// button works) or the file itself. Both go straight to the CDN from their
+// device, which is exactly what that CDN accepts.
+const isAndroidViewer = computed(() => import.meta.client && /Android/i.test(navigator.userAgent || ''))
+
+const geoExternalPlayerHref = computed(() => {
+  const url = playbackBlocked.value?.container === 'geo' ? playbackBlocked.value.url || '' : ''
+  if (!url || !isAndroidViewer.value) return ''
+  try {
+    const parsed = new URL(url)
+    const scheme = parsed.protocol.replace(':', '')
+    return `intent://${parsed.host}${parsed.pathname}${parsed.search}#Intent;action=android.intent.action.VIEW;scheme=${scheme};type=video/*;end`
+  }
+  catch {
+    return ''
+  }
+})
+
+const geoLinkCopied = ref(false)
+async function copyGeoLink() {
+  const url = playbackBlocked.value?.url || ''
+  if (!url) return
+  try {
+    await navigator.clipboard.writeText(url)
+    geoLinkCopied.value = true
+    setTimeout(() => { geoLinkCopied.value = false }, 2500)
+  }
+  catch {
+    showPlayerNotice('کپی خودکار ممکن نشد؛ لینک را از دکمهٔ دانلود بردارید.')
+  }
+}
 
 const { blocked: regionBlocked, countryName: regionCountryName, dismissed: regionNoticeDismissed, dismissRegionNotice, resolveRegion } = useViewerRegion()
 /**
@@ -583,7 +638,6 @@ function selectEpisode(episode: Episode | PlaybackEpisodeOption, notice = '') {
   if (!fullEpisode || fullEpisode.id === currentEpisode.value?.id) return
   const selected = pickEpisodeSource(fullEpisode)
   clearSoftsubPoll()
-  clearSoftsubBanner()
   resetSoftsubRetry()
   failedPlaybackSources.clear()
   reportedPlaybackGap = false
@@ -627,29 +681,38 @@ function showPlayerNotice(message: string, durationMs = 2800) {
   }, durationMs)
 }
 
+function clearSubtitleHuntTimer() {
+  if (subtitleHuntTimer) window.clearTimeout(subtitleHuntTimer)
+  subtitleHuntTimer = undefined
+}
+
+function setSubtitleHunt(phase: SubtitleHuntPhase) {
+  if (subtitleHuntDismissed) return
+  clearSubtitleHuntTimer()
+  const status = subtitleHuntStatus(phase, item.value?.type === 'series')
+  subtitleHunt.value = status
+  if (status.durationMs > 0) {
+    subtitleHuntTimer = window.setTimeout(() => {
+      subtitleHuntTimer = undefined
+      if (subtitleHunt.value?.phase === phase) subtitleHunt.value = null
+    }, status.durationMs)
+  }
+}
+
+function clearSubtitleHunt() {
+  clearSubtitleHuntTimer()
+  subtitleHunt.value = null
+}
+
+function dismissSubtitleHunt() {
+  subtitleHuntDismissed = true
+  clearSubtitleHunt()
+}
+
 function dismissPlayerToast() {
   if (toastTimer) window.clearTimeout(toastTimer)
   toastTimer = undefined
   playerToast.value = null
-}
-
-function showSoftsubBanner(tone: SoftsubBannerTone, durationMs = 0) {
-  const copy = softsubBannerCopy(tone)
-  softsubBanner.value = { tone, title: copy.title, detail: copy.detail }
-  if (softsubBannerTimer) window.clearTimeout(softsubBannerTimer)
-  if (durationMs <= 0) {
-    softsubBannerTimer = undefined
-    return
-  }
-  softsubBannerTimer = window.setTimeout(() => {
-    softsubBanner.value = null
-  }, durationMs)
-}
-
-function clearSoftsubBanner() {
-  if (softsubBannerTimer) window.clearTimeout(softsubBannerTimer)
-  softsubBannerTimer = undefined
-  softsubBanner.value = null
 }
 
 function qualityMatches(linkQuality: string | undefined, target: PlaybackQuality) {
@@ -800,6 +863,51 @@ function selfHealPlaybackGap() {
 }
 
 /**
+ * Automatic heal for *every* playback failure (not just unplayable codecs).
+ *
+ * Files through POST /api/catalog/playback-failure/ — the same deduped intake
+ * and crawler repair as a manual «گزارش خطا», classified from the exact error
+ * code — then retries immediately when the catalog already serves something
+ * better, or polls in the background and swaps it in when the repair lands.
+ * The viewer sees one Persian notice; recovery is automatic.
+ */
+function autoHealFailedSource(failed: string, code: number | string, gatewayCode = '') {
+  const type = item.value?.type
+  if (!item.value || (type !== 'movie' && type !== 'series') || mode.value === 'trailer') return
+  const failedUrl = String(failed || '').trim()
+  if (!failedUrl) return
+  const played = lastPositionSeconds || 0
+  void healFailure({
+    type: type as ContentType,
+    objectId: item.value.id || 0,
+    slug: item.value.slug || slug.value,
+    episodeId: currentEpisode.value?.id || 0,
+    errorCode: String(code ?? ''),
+    errorMessage: `auto heal watch page code=${String(code ?? '')}`,
+    gatewayCode,
+    sourceUrl: failedUrl,
+    version: activeVersion.value?.kind || String(route.query.version || ''),
+    playedSeconds: played,
+    hadPlayed: played > 1,
+  }).then((healed) => {
+    if (!healed) return
+    showPlayerNotice(healed.messageFa, 4200)
+    if (healed.shouldRetry && healed.fixedUrl && healed.fixedUrl !== playerSource.value) {
+      applySource(healed.fixedUrl, 'پخش درست شد؛ ادامه از همان لحظه')
+      return
+    }
+    // Repair queued — keep watching for the fixed URL and swap it in.
+    if (healed.reportId && !healed.shouldRetry) {
+      void pollFixedUrl(healed.reportId, failedUrl).then((fixed) => {
+        if (fixed && fixed !== playerSource.value && !failedPlaybackSources.has(fixed)) {
+          applySource(fixed, 'پخش درست شد؛ ادامه از همین لحظه')
+        }
+      })
+    }
+  })
+}
+
+/**
  * Ask the backend to rewrap the failed source into HLS and play that instead.
  *
  * Resolves true once a session is playing. Every caller is a dead end in
@@ -816,6 +924,8 @@ async function tryGatewayPlayback(
   const source = String(failedUrl || '').trim()
   // A gateway URL must never be fed back into the gateway.
   if (!source || isGatewayUrl(source)) return false
+  // The gateway runs outside Iran, where these CDNs serve a «VPN off» page.
+  if (linkForUrl(source)?.iran_only) return false
 
   const episodeId = type === 'series' ? currentEpisode.value?.id || 0 : 0
   const kind: ContentType | 'episode' = episodeId ? 'episode' : type
@@ -945,6 +1055,12 @@ watch(() => gatewaySession.value?.playlist || '', (playlist) => {
 
 function handleSourceFailed(payload: { src: string, code: number }) {
   const failed = String(payload?.src || playerSource.value || '').trim()
+  // Every failure — network, decode, stall, gateway — is filed once through
+  // the auto-heal intake so the exact repair starts while local mirrors are
+  // tried. Deduped per source; never blocks the fallback chain below.
+  if (failed && !isGatewayUrl(failed)) {
+    autoHealFailedSource(failed, Number(payload?.code) || 0)
+  }
   // The gateway stream itself broke — nearly always a session reaped while the
   // viewer sat paused. Reopening at the playhead is cheap and invisible. Note
   // the session has to be cleared before any fallback, or playerSource would
@@ -1014,6 +1130,13 @@ function handleSourceFailed(payload: { src: string, code: number }) {
   // serve, that is the likeliest reason and the only one they can act on, so
   // it is said again here even if they closed the notice on arrival.
   revealRegionNotice()
+  // An Iran-only CDN: the gateway cannot fetch it (it sits outside Iran) and the
+  // remuxer cannot read it (no CORS), so offer what does work instead.
+  if (linkForUrl(failed)?.iran_only) {
+    playbackBlocked.value = { family: failedFamily, container: 'geo', url: failed }
+    selfHealPlaybackGap()
+    return
+  }
   // Before giving up on this browser, let the backend rewrap the file into
   // HLS — that is the whole point of the gateway, and it is only reached here,
   // after a real failure on a real file.
@@ -1194,7 +1317,7 @@ function scheduleSoftsubRetry() {
     softsubRetryTimer = undefined
     if (!item.value || activeSubtitleSourceTracks.value.length || activeVersionIsDub.value) return
     if (embeddedPersianAvailable || softsubExhausted) return
-    void runPlaybackSubtitleEnsure({ showBanner: false })
+    void runPlaybackSubtitleEnsure()
   }, backoffMs)
 }
 
@@ -1207,27 +1330,27 @@ function resetEmbeddedSubtitleProbe() {
   clearEmbeddedProbeWait()
   embeddedPersianAvailable = false
   embeddedProbeSettled = false
-  pendingSoftsubEnsure = null
+  pendingSoftsubEnsure = false
 }
 
 function flushPendingSoftsubEnsure() {
   clearEmbeddedProbeWait()
   const pending = pendingSoftsubEnsure
-  pendingSoftsubEnsure = null
+  pendingSoftsubEnsure = false
   if (!pending || embeddedPersianAvailable) return
   if (!item.value || activeSubtitleSourceTracks.value.length || activeVersionIsDub.value) return
-  void runPlaybackSubtitleEnsure(pending)
+  void runPlaybackSubtitleEnsure()
 }
 
 /** Entry point for the automatic subtitle hunt: holds it until the player has
  *  looked inside the file (or a short timeout), then runs it only if needed. */
-function requestPlaybackSubtitleEnsure(options: { showBanner?: boolean } = {}) {
+function requestPlaybackSubtitleEnsure() {
   if (embeddedPersianAvailable) return
   if (embeddedProbeSettled) {
-    void runPlaybackSubtitleEnsure(options)
+    void runPlaybackSubtitleEnsure()
     return
   }
-  pendingSoftsubEnsure = options
+  pendingSoftsubEnsure = true
   if (!embeddedProbeTimer) {
     embeddedProbeTimer = window.setTimeout(() => {
       embeddedProbeTimer = undefined
@@ -1242,20 +1365,19 @@ function handleEmbeddedSubtitles(payload: { src: string, probed: boolean, count:
   if (!payload.persian) {
     // Fell back to a file without the Persian track (mirror/gateway): the
     // cues left with the old file, so the server hunt is needed again.
-    if (embeddedPersianAvailable && mode.value === 'full') pendingSoftsubEnsure ??= { showBanner: false }
+    if (embeddedPersianAvailable && mode.value === 'full') pendingSoftsubEnsure = true
     embeddedPersianAvailable = false
     flushPendingSoftsubEnsure()
     return
   }
   embeddedPersianAvailable = true
-  pendingSoftsubEnsure = null
+  pendingSoftsubEnsure = false
   clearEmbeddedProbeWait()
   // Late probe: an ensure may already be polling — stop it, the file has cues.
   softsubRequestEpoch += 1
   clearSoftsubPoll()
   clearSoftsubRetry()
-  clearSoftsubBanner()
-  dismissPlayerToast()
+  clearSubtitleHunt()
 }
 
 function resetSoftsubRetry() {
@@ -1270,7 +1392,7 @@ function handleSoftsubVisibility() {
   if (activeSubtitleSourceTracks.value.length || softsubEnsureRounds >= SOFTSUB_ENSURE_MAX_ROUNDS) return
   if (softsubPollTimer || softsubRetryTimer || pendingSoftsubEnsure) return
   if (embeddedPersianAvailable || softsubExhausted) return
-  void runPlaybackSubtitleEnsure({ showBanner: false })
+  void runPlaybackSubtitleEnsure()
 }
 
 function normalizeEnsuredTracks(tracks: PlaybackTextTrack[] | undefined | null): PlaybackTextTrack[] {
@@ -1325,13 +1447,12 @@ function injectEnsuredSubtitleTracks(tracks: PlaybackTextTrack[] | undefined | n
   return true
 }
 
-function startSoftsubPoll(options: { maxAttempts?: number, intervalMs?: number, retryAt?: number } = {}) {
+function startSoftsubPoll(options: { maxAttempts?: number, intervalMs?: number } = {}) {
   clearSoftsubPoll()
   let attempts = 0
   // Keep polling light so SoftSub backfill never competes with the video CDN.
   const maxAttempts = options.maxAttempts ?? 12
   const intervalMs = options.intervalMs ?? 4_000
-  const retryAt = options.retryAt ?? 4
   softsubPollTimer = window.setInterval(() => {
     attempts += 1
     if (attempts > maxAttempts || activeSubtitleSourceTracks.value.length) {
@@ -1339,23 +1460,31 @@ function startSoftsubPoll(options: { maxAttempts?: number, intervalMs?: number, 
       if (activeSubtitleSourceTracks.value.length) {
         applySoftsubWhenReady()
       } else if (softsubEnsureRounds < SOFTSUB_ENSURE_MAX_ROUNDS) {
-        showSoftsubBanner('retrying', 0)
         scheduleSoftsubRetry()
-      } else {
-        showSoftsubBanner('failed', 0)
+      } else if (!softsubBackgroundPollStarted && !softsubExhausted) {
+        // Out of fast rounds: the server keeps hunting (beat drain). Say so
+        // once, then a slow read-only poll (~30 min) brings late cues in.
+        softsubBackgroundPollStarted = true
+        setSubtitleHunt('background')
+        startSoftsubPoll({ maxAttempts: 30, intervalMs: 60_000 })
+      } else if (subtitleHunt.value?.busy) {
+        clearSubtitleHunt()
       }
       return
     }
-    if (attempts === retryAt) showSoftsubBanner('retrying', 0)
     void pollSoftsubOnce(softsubRequestEpoch)
   }, intervalMs)
 }
 
 function applySoftsubWhenReady() {
-  showSoftsubBanner('ready', 6500)
-  dismissPlayerToast()
-  showPlayerNotice(subtitleReadyNotice(true), 3200)
   clearSoftsubPoll()
+  clearSubtitleHunt()
+  // The status card gives way to the true message, once per title/episode:
+  // cues were really injected into this player.
+  if (!softsubAnnounced) {
+    softsubAnnounced = true
+    showPlayerNotice(subtitleReadyNotice(true), 3200)
+  }
   // Prefer keeping the stream already playing — source switches stall the buffer.
   const currentUrl = String(route.query.source || activeVersion.value?.url || playerSource.value || '')
   const pairedHere = pairSubtitleTracksForSource(
@@ -1403,7 +1532,7 @@ async function pollSoftsubOnce(requestEpoch = softsubRequestEpoch) {
       return true
     }
     if (result?.status === 'exhausted') {
-      stopSoftsubHuntExhausted(true)
+      stopSoftsubHuntExhausted()
       return false
     }
     if (result?.has_subtitle_tracks || result?.status === 'ready') {
@@ -1432,26 +1561,26 @@ async function pollSoftsubOnce(requestEpoch = softsubRequestEpoch) {
   return false
 }
 
-function stopSoftsubHuntExhausted(showBanner: boolean) {
+function stopSoftsubHuntExhausted() {
   softsubExhausted = true
   clearSoftsubPoll()
   clearSoftsubRetry()
-  dismissPlayerToast()
-  if (showBanner) showSoftsubBanner('failed', 6000)
-  else clearSoftsubBanner()
+  setSubtitleHunt('missing')
 }
 
-async function runPlaybackSubtitleEnsure(options: { showBanner?: boolean } = {}) {
+/** One round of the automatic subtitle hunt. Playback never waits on it; its
+ *  progress shows in the status card (searching → preparing → added / not
+ *  found) so the viewer keeps watching instead of leaving the player. */
+async function runPlaybackSubtitleEnsure() {
   if (!item.value) return
   // Never import subtitles onto a Farsi dub — the audio already carries Persian.
-  if (activeVersionIsDub.value) return
+  if (activeVersionIsDub.value) {
+    clearSubtitleHunt()
+    return
+  }
   if (embeddedPersianAvailable || softsubExhausted) return
   const requestEpoch = softsubRequestEpoch
-  const showBanner = options.showBanner !== false
-  if (showBanner) {
-    showSoftsubBanner('finding', 0)
-    showPlayerNotice(subtitleFindingNotice(), 0)
-  }
+  if (subtitleHunt.value?.phase !== 'preparing') setSubtitleHunt('searching')
   try {
     const result = await ensurePlaybackSubtitles({
       type: item.value.type,
@@ -1473,29 +1602,31 @@ async function runPlaybackSubtitleEnsure(options: { showBanner?: boolean } = {})
       if (ready) return
     }
     if (result?.status === 'exhausted') {
-      stopSoftsubHuntExhausted(showBanner)
+      stopSoftsubHuntExhausted()
       return
     }
     if (result?.status === 'not_needed') {
       // Dubbed stream or a Persian-language title: nothing to find, stay quiet.
       softsubExhausted = true
       clearSoftsubPoll()
-      clearSoftsubBanner()
-      dismissPlayerToast()
+      clearSubtitleHunt()
       return
     }
     if (result?.status === 'burned_in' && !result?.queued) {
       clearSoftsubPoll()
-      clearSoftsubBanner()
-      dismissPlayerToast()
+      clearSubtitleHunt()
       return
     }
     if (result?.status === 'unavailable') {
       // Transient queue/broker failures must not end the hunt: the beat drain
       // re-enqueues server-side, and one bounded local retry covers restarts.
       clearSoftsubPoll()
-      showSoftsubBanner('retrying', 0)
-      scheduleSoftsubRetry()
+      if (softsubEnsureRounds < SOFTSUB_ENSURE_MAX_ROUNDS) {
+        setSubtitleHunt('preparing')
+        scheduleSoftsubRetry()
+      } else {
+        setSubtitleHunt('background')
+      }
       return
     }
     // Only poll after the sync call when the worker still needs time —
@@ -1503,14 +1634,15 @@ async function runPlaybackSubtitleEnsure(options: { showBanner?: boolean } = {})
     if (result?.queued || result?.status === 'queued' || result?.status === 'loading') {
       // Remote container demux can outlive the short provider path; keep polling
       // long enough for a complete (never partial) WebVTT to be persisted.
-      startSoftsubPoll({ maxAttempts: 40, intervalMs: 3_000, retryAt: 6 })
-      if (showBanner) showSoftsubBanner('finding', 0)
+      setSubtitleHunt('preparing')
+      startSoftsubPoll({ maxAttempts: 40, intervalMs: 3_000 })
       return
     }
-    if (showBanner) showSoftsubBanner('finding', 0)
+    clearSubtitleHunt()
   } catch {
-    if (showBanner) showSoftsubBanner('retrying', 0)
-    startSoftsubPoll({ maxAttempts: 24, intervalMs: 5_000, retryAt: 2 })
+    if (requestEpoch !== softsubRequestEpoch) return
+    setSubtitleHunt('preparing')
+    startSoftsubPoll({ maxAttempts: 24, intervalMs: 5_000 })
   }
 }
 
@@ -1570,7 +1702,7 @@ onMounted(() => {
     && !activeVersionIsDub.value
 
   if (needsSoftsubEnsure) {
-    requestPlaybackSubtitleEnsure({ showBanner: true })
+    requestPlaybackSubtitleEnsure()
   }
   document.addEventListener('visibilitychange', handleSoftsubVisibility)
 })
@@ -1593,15 +1725,18 @@ watch([() => currentEpisode.value?.id, () => activeVersion.value?.id], (current,
 
   softsubRequestEpoch += 1
   clearSoftsubPoll()
-  clearSoftsubBanner()
   resetSoftsubRetry()
   // New file: its embedded tracks and the server verdict are unknown again.
   resetEmbeddedSubtitleProbe()
   softsubExhausted = false
+  softsubAnnounced = false
+  softsubBackgroundPollStarted = false
+  subtitleHuntDismissed = false
+  clearSubtitleHunt()
   if (episodeChanged) softsubReportId = null
   if (activeSubtitleSourceTracks.value.length) return
   if (activeVersionIsDub.value) return
-  requestPlaybackSubtitleEnsure({ showBanner: true })
+  requestPlaybackSubtitleEnsure()
 })
 
 // When the viewer switches episode and SoftSub is still missing, re-trigger ensure.
@@ -1610,7 +1745,7 @@ watch(() => confirmed.value, (isConfirmed, wasConfirmed) => {
   if (!isConfirmed || wasConfirmed) return
   if (activeSubtitleSourceTracks.value.length) return
   if (activeVersionIsDub.value) return
-  requestPlaybackSubtitleEnsure({ showBanner: true })
+  requestPlaybackSubtitleEnsure()
 })
 
 onBeforeUnmount(() => {
@@ -1618,7 +1753,7 @@ onBeforeUnmount(() => {
   clearEmbeddedProbeWait()
   if (gatewayHeartbeat) clearInterval(gatewayHeartbeat)
   if (toastTimer) window.clearTimeout(toastTimer)
-  if (softsubBannerTimer) window.clearTimeout(softsubBannerTimer)
+  clearSubtitleHuntTimer()
   clearSoftsubPoll()
   clearSoftsubRetry()
   document.removeEventListener('visibilitychange', handleSoftsubVisibility)
@@ -1647,7 +1782,7 @@ useHead(() => (item.value?.slug ? {
     <template v-if="confirmed">
       <NuxtLink
         :to="detailPath"
-        class="watch-back absolute z-30 inline-flex size-11 items-center justify-center rounded-full bg-black/55 text-white ring-1 ring-white/15 backdrop-blur-sm transition hover:bg-black/75"
+        class="watch-back absolute z-30 inline-flex size-11 items-center justify-center rounded-full bg-black/55 text-white ring-1 ring-white/15 transition hover:bg-black/75"
         aria-label="بازگشت به صفحه عنوان"
       >
         <CinematicIcon name="arrow-right" class="size-5" />
@@ -1658,6 +1793,7 @@ useHead(() => (item.value?.slug ? {
           :key="`${item.slug}-${currentEpisode?.id || 'movie'}-${mode}-${activeVersion?.kind || 'play'}`"
           fill
           :src="playerSource"
+          :geo-locked="playerSourceGeoLocked"
           :poster="currentEpisode?.thumbnail_url || item.playback?.poster_url || item.backdrop_url"
           :title="currentEpisode ? `${item.title} · فصل ${(currentEpisode.season_number || 1).toLocaleString('fa-IR')} · ${currentEpisode.title}` : item.title"
           :start-at-percent="resumeProgress"
@@ -1700,56 +1836,6 @@ useHead(() => (item.value?.slug ? {
           enter-active-class="watch-msg-enter"
           leave-active-class="watch-msg-leave"
         >
-          <aside
-            v-if="softsubBanner"
-            class="watch-msg overflow-hidden text-white"
-            role="status"
-            aria-live="polite"
-          >
-            <div class="watch-msg__row">
-              <span class="watch-msg__icon" aria-hidden="true">
-                <span
-                  v-if="softsubBanner.tone === 'finding' || softsubBanner.tone === 'retrying'"
-                  class="watch-msg__spinner"
-                />
-                <CinematicIcon
-                  v-else-if="softsubBanner.tone === 'ready'"
-                  name="check"
-                  class="size-4"
-                />
-                <CinematicIcon
-                  v-else
-                  name="info"
-                  class="size-4"
-                />
-              </span>
-              <div class="watch-msg__body">
-                <p class="watch-msg__title">{{ softsubBanner.title }}</p>
-                <p class="watch-msg__detail">{{ softsubBanner.detail }}</p>
-              </div>
-              <button
-                type="button"
-                class="watch-msg__dismiss"
-                aria-label="بستن"
-                @click="clearSoftsubBanner"
-              >
-                بستن
-              </button>
-            </div>
-            <div
-              v-if="softsubBanner.tone === 'finding' || softsubBanner.tone === 'retrying'"
-              class="watch-msg__track"
-              aria-hidden="true"
-            >
-              <div class="watch-msg__progress" />
-            </div>
-          </aside>
-        </Transition>
-
-        <Transition
-          enter-active-class="watch-msg-enter"
-          leave-active-class="watch-msg-leave"
-        >
           <div
             v-if="playerToast"
             :key="playerToast.id"
@@ -1776,6 +1862,42 @@ useHead(() => (item.value?.slug ? {
             </div>
             <span class="watch-msg__ttl" aria-hidden="true" />
           </div>
+        </Transition>
+
+        <Transition
+          enter-active-class="watch-msg-enter"
+          leave-active-class="watch-msg-leave"
+        >
+          <aside
+            v-if="subtitleHunt"
+            :key="subtitleHunt.phase"
+            class="watch-msg overflow-hidden text-white"
+            role="status"
+            aria-live="polite"
+          >
+            <div class="watch-msg__row watch-msg__row--toast">
+              <span class="watch-msg__icon" aria-hidden="true">
+                <span v-if="subtitleHunt.busy" class="watch-msg__spinner" />
+                <CinematicIcon v-else name="captions" class="size-4 sm:size-5" />
+              </span>
+              <div class="watch-msg__body">
+                <p class="watch-msg__label">زیرنویس</p>
+                <p class="watch-msg__title">{{ subtitleHunt.title }}</p>
+                <p class="watch-msg__detail">{{ subtitleHunt.detail }}</p>
+              </div>
+              <button
+                type="button"
+                class="watch-msg__dismiss"
+                aria-label="بستن وضعیت زیرنویس"
+                @click="dismissSubtitleHunt"
+              >
+                بستن
+              </button>
+            </div>
+            <div v-if="subtitleHunt.busy" class="watch-msg__track" aria-hidden="true">
+              <div class="watch-msg__progress" />
+            </div>
+          </aside>
         </Transition>
 
         <Transition
@@ -1810,47 +1932,99 @@ useHead(() => (item.value?.slug ? {
       >
         <div
           v-if="playbackBlocked"
-          class="watch-blocked absolute inset-0 z-40 grid place-items-center bg-black/85 backdrop-blur-sm"
+          class="watch-blocked absolute inset-0 z-40 grid place-items-center bg-black/85"
           role="alertdialog"
           aria-live="assertive"
         >
-          <div class="watch-blocked__card mx-4 w-full max-w-md rounded-3xl bg-night-900/95 p-6 text-center text-white ring-1 ring-white/10 shadow-2xl sm:p-8">
+          <div class="watch-blocked__card mx-4 w-full max-w-md rounded-3xl bg-night-900/95 p-6 text-center text-white ring-1 ring-white/10 sm:p-8">
             <span class="mx-auto grid size-14 place-items-center rounded-2xl bg-primary-500/15 text-primary-300 ring-1 ring-primary-400/25">
               <CinematicIcon name="film" class="size-7" />
             </span>
-            <h2 class="mt-4 text-xl font-black leading-8">این فایل در مرورگر پخش نمی‌شود</h2>
-            <p class="mt-2 text-sm leading-7 text-secondary">
-              {{ playbackBlocked.container === 'mkv'
-                ? 'این نسخه با ساختار MKV است و این نسخه از مرورگر آن را پخش نمی‌کند (iOS 17.1 به بعد مشکلی ندارد).'
-                : 'این نسخه با کُدک HEVC/x265 انکود شده و مرورگر شما نمی‌تواند آن را رمزگشایی کند.' }}
-              برای تماشای بی‌دردسر، اپ اندروید روایتو یا یک نسخهٔ دیگر را امتحان کنید.
-            </p>
-            <div class="mt-6 flex flex-col gap-3">
-              <NuxtLink
-                to="/app"
-                class="inline-flex items-center justify-center gap-2 rounded-xl bg-primary-500 px-5 py-3 text-sm font-black text-night-950 transition hover:bg-primary-400"
-              >
-                <CinematicIcon name="play" class="size-5" />
-                تماشا در اپ اندروید روایتو
-              </NuxtLink>
-              <a
-                v-if="directDownloadLink"
-                :href="directDownloadLink.url"
-                target="_blank"
-                rel="noopener"
-                class="inline-flex items-center justify-center gap-2 rounded-xl bg-white/10 px-5 py-3 text-sm font-bold text-white ring-1 ring-white/15 transition hover:bg-white/15"
-              >
-                <CinematicIcon name="download" class="size-5" />
-                دانلود مستقیم فایل{{ directDownloadLink.quality ? ` · ${directDownloadLink.quality}` : '' }}
-              </a>
-              <button
-                type="button"
-                class="text-xs font-semibold text-muted underline-offset-4 transition hover:text-secondary hover:underline"
-                @click="playbackBlocked = null"
-              >
-                بستن و امتحان کیفیت/نسخهٔ دیگر
-              </button>
-            </div>
+            <template v-if="playbackBlocked.container === 'geo'">
+              <h2 class="mt-4 text-xl font-black leading-8">پخش این فایل در این مرورگر ممکن نشد</h2>
+              <p class="mt-2 text-sm leading-7 text-secondary">
+                {{ browserOpensMkvNatively()
+                  ? 'این نسخه روی سرور ایرانی است و فقط با اینترنت ایران باز می‌شود. اگر فیلترشکن روشن است، خاموشش کنید و دوباره امتحان کنید.'
+                  : 'این نسخه روی سرور ایرانی است و این مرورگر فایل MKV آن را پخش نمی‌کند. با پلیر گوشی یا کامپیوتر (VLC، KMPlayer) یا مرورگر کروم پخش می‌شود.' }}
+              </p>
+              <p class="mt-2 text-xs leading-6 text-muted">فیلترشکن باید خاموش باشد؛ این سرور فقط به اینترنت ایران جواب می‌دهد.</p>
+              <div class="mt-6 flex flex-col gap-3">
+                <a
+                  v-if="geoExternalPlayerHref"
+                  :href="geoExternalPlayerHref"
+                  class="inline-flex items-center justify-center gap-2 rounded-xl bg-primary-500 px-5 py-3 text-sm font-black text-night-950 transition hover:bg-primary-400"
+                >
+                  <CinematicIcon name="play" class="size-5" />
+                  پخش با پلیر گوشی (VLC، MX، KMPlayer)
+                </a>
+                <button
+                  v-else
+                  type="button"
+                  class="inline-flex items-center justify-center gap-2 rounded-xl bg-primary-500 px-5 py-3 text-sm font-black text-night-950 transition hover:bg-primary-400"
+                  @click="copyGeoLink"
+                >
+                  <CinematicIcon name="play" class="size-5" />
+                  {{ geoLinkCopied ? 'لینک کپی شد؛ در VLC یا KMPlayer باز کنید' : 'کپی لینک برای پخش در VLC / KMPlayer' }}
+                </button>
+                <a
+                  :href="playbackBlocked.url"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  class="inline-flex items-center justify-center gap-2 rounded-xl bg-white/10 px-5 py-3 text-sm font-bold text-white ring-1 ring-white/15 transition hover:bg-white/15"
+                >
+                  <CinematicIcon name="download" class="size-5" />
+                  دانلود همین فایل
+                </a>
+                <NuxtLink
+                  to="/app"
+                  class="inline-flex items-center justify-center gap-2 rounded-xl bg-white/10 px-5 py-3 text-sm font-bold text-white ring-1 ring-white/15 transition hover:bg-white/15"
+                >
+                  تماشا در اپ اندروید روایتو
+                </NuxtLink>
+                <button
+                  type="button"
+                  class="text-xs font-semibold text-muted underline-offset-4 transition hover:text-secondary hover:underline"
+                  @click="playbackBlocked = null"
+                >
+                  بستن و امتحان کیفیت/نسخهٔ دیگر
+                </button>
+              </div>
+            </template>
+            <template v-else>
+              <h2 class="mt-4 text-xl font-black leading-8">این فایل در مرورگر پخش نمی‌شود</h2>
+              <p class="mt-2 text-sm leading-7 text-secondary">
+                {{ playbackBlocked.container === 'mkv'
+                  ? 'این نسخه با ساختار MKV است و این نسخه از مرورگر آن را پخش نمی‌کند (iOS 17.1 به بعد مشکلی ندارد).'
+                  : 'این نسخه با کُدک HEVC/x265 انکود شده و مرورگر شما نمی‌تواند آن را رمزگشایی کند.' }}
+                برای تماشای بی‌دردسر، اپ اندروید روایتو یا یک نسخهٔ دیگر را امتحان کنید.
+              </p>
+              <div class="mt-6 flex flex-col gap-3">
+                <NuxtLink
+                  to="/app"
+                  class="inline-flex items-center justify-center gap-2 rounded-xl bg-primary-500 px-5 py-3 text-sm font-black text-night-950 transition hover:bg-primary-400"
+                >
+                  <CinematicIcon name="play" class="size-5" />
+                  تماشا در اپ اندروید روایتو
+                </NuxtLink>
+                <a
+                  v-if="directDownloadLink"
+                  :href="directDownloadLink.url"
+                  target="_blank"
+                  rel="noopener"
+                  class="inline-flex items-center justify-center gap-2 rounded-xl bg-white/10 px-5 py-3 text-sm font-bold text-white ring-1 ring-white/15 transition hover:bg-white/15"
+                >
+                  <CinematicIcon name="download" class="size-5" />
+                  دانلود مستقیم فایل{{ directDownloadLink.quality ? ` · ${directDownloadLink.quality}` : '' }}
+                </a>
+                <button
+                  type="button"
+                  class="text-xs font-semibold text-muted underline-offset-4 transition hover:text-secondary hover:underline"
+                  @click="playbackBlocked = null"
+                >
+                  بستن و امتحان کیفیت/نسخهٔ دیگر
+                </button>
+              </div>
+            </template>
           </div>
         </div>
       </Transition>
@@ -1921,7 +2095,7 @@ useHead(() => (item.value?.slug ? {
   border: 0;
   border-radius: 1rem;
   background: #000;
-  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.55);
+  box-shadow: none;
 }
 
 .watch-msg__row {
@@ -1970,7 +2144,6 @@ useHead(() => (item.value?.slug ? {
   margin: 0;
   font-size: 0.75rem;
   font-weight: 700;
-  letter-spacing: 0.06em;
   color: rgba(255, 255, 255, 0.5);
 }
 

@@ -480,7 +480,9 @@ onBeforeUnmount(() => {
   display: flex;
   width: 100%;
   flex-direction: column;
-  margin-top: calc((var(--header-height) + env(safe-area-inset-top, 0px)) * -1);
+  /* Starts directly under the solid sticky header (never slides beneath
+     it), so header controls and the artwork never overlap. */
+  margin-top: 0;
   background: #020303;
   color: #fff;
   outline: none;
@@ -619,7 +621,7 @@ onBeforeUnmount(() => {
      title block was starting at the top of the content box and overlapping the
      poster dock. align-content pins the row to the bottom instead. */
   align-content: end;
-  padding-top: calc(var(--header-height) + env(safe-area-inset-top, 0px) + clamp(.5rem, 2vw, 1.25rem));
+  padding-top: clamp(.75rem, 2vw, 1.5rem);
   padding-bottom: calc(var(--hero-dock-height) + clamp(.75rem, 2vw, 1.25rem));
   overflow: hidden;
   pointer-events: none;
@@ -783,7 +785,6 @@ onBeforeUnmount(() => {
   line-height: 1;
   color: #fff;
   text-decoration: none;
-  backdrop-filter: blur(12px);
   transition: transform 160ms ease, background-color 160ms ease, border-color 160ms ease;
 }
 
@@ -990,7 +991,7 @@ onBeforeUnmount(() => {
      overlaps the thumbnails (was inheriting an undersized desktop padding). */
   .hero-movie-slider__stage {
     padding-inline: max(5vw, var(--layout-gutter));
-    padding-top: calc(var(--header-height) + env(safe-area-inset-top, 0px) + clamp(.5rem, 2vh, 1rem));
+    padding-top: clamp(.75rem, 2vh, 1rem);
     padding-bottom: calc(var(--hero-dock-height) + env(safe-area-inset-bottom, 0px) + 0.75rem);
   }
 
@@ -1131,6 +1132,30 @@ onBeforeUnmount(() => {
 
   .hero-movie-slider__title {
     font-size: clamp(2.35rem, 3.4vw, 3.15rem);
+  }
+}
+
+/* Phones + tablets: tighter top breathing room under the compact header. */
+@media (max-width: 1023px) {
+  .hero-movie-slider__media,
+  .hero-movie-slider__stage {
+    padding-top: clamp(.75rem, 2vh, 1.25rem);
+  }
+}
+
+@media (max-width: 767px) {
+  .hero-movie-slider__media {
+    height: calc(100svh - var(--sticky-offset));
+    height: calc(100dvh - var(--sticky-offset));
+    min-height: calc(100svh - var(--sticky-offset));
+    min-height: calc(100dvh - var(--sticky-offset));
+  }
+}
+
+@media (max-width: 767px) and (max-height: 560px) {
+  .hero-movie-slider__media {
+    height: max(22rem, calc(100svh - var(--sticky-offset)));
+    min-height: max(22rem, calc(100svh - var(--sticky-offset)));
   }
 }
 

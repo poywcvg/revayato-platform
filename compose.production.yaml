@@ -45,8 +45,8 @@ services:
       retries: 5
       start_period: 45s
     mem_limit: 1536m
-    cpus: 1.25
-    cpu_shares: 1536
+    cpus: 2
+    cpu_shares: 2048
     logging: *default-logging
     networks:
       - edge
@@ -82,11 +82,14 @@ services:
       CELERY_RESULT_BACKEND: redis://redis-queue:6379/1
       CHANNEL_LAYER_BACKEND: channels_redis.core.RedisChannelLayer
       # 2 workers fit a 4Gi host; raise via WEB_CONCURRENCY when more RAM is available.
-      WEB_CONCURRENCY: ${WEB_CONCURRENCY:-2}
+      WEB_CONCURRENCY: ${WEB_CONCURRENCY:-3}
       WEB_LIMIT_CONCURRENCY: ${WEB_LIMIT_CONCURRENCY:-80}
       WEB_KEEPALIVE_SECONDS: ${WEB_KEEPALIVE_SECONDS:-15}
-      WEB_MAX_REQUESTS: ${WEB_MAX_REQUESTS:-1500}
-      WEB_MAX_REQUESTS_JITTER: ${WEB_MAX_REQUESTS_JITTER:-150}
+      # Each recycle throws away the worker's in-memory search index and caches
+      # and re-imports Django on a CPU-starved host: recycle rarely.
+      WEB_MAX_REQUESTS: ${WEB_MAX_REQUESTS:-20000}
+      WEB_MAX_REQUESTS_JITTER: ${WEB_MAX_REQUESTS_JITTER:-2000}
+      SEARCH_SUGGEST_PREWARM: "1"
     volumes:
       - static_data:/app/staticfiles
       - media_data:/app/media
@@ -117,7 +120,8 @@ services:
       retries: 5
       start_period: 60s
     mem_limit: 1536m
-    cpus: 1.5
+    # 2.5 of 4 vCPU: the public API was starved at 1.5 under host steal; workers stay low.
+    cpus: ${BACKEND_CPUS:-3.5}
     cpu_shares: 2048
     logging: *default-logging
     networks:
@@ -218,6 +222,53 @@ services:
       - edge
       - data
 
+  # Admin desk lane: «جستجوی دوباره و تکمیل» for one title (TMDB, titles, all
+  # providers, sizes, verify, publish). Its own worker so a click runs within
+  # seconds instead of waiting behind the ~30-minute playback crawl on ``celery``,
+  # and so an admin run never takes a slot a viewer's support ticket needs.
+  # Concurrency 1: several clicks queue and run one after another.
+  catalog-worker-admin:
+    image: revayato-backend
+    restart: unless-stopped
+    init: true
+    read_only: true
+    tmpfs:
+      - /tmp:size=256m,noexec,nosuid
+    env_file:
+      - .env.production
+    entrypoint: []
+    command: ["celery", "-A", "config", "worker", "--loglevel=INFO", "--concurrency=${CATALOG_ADMIN_WORKER_CONCURRENCY:-1}", "--prefetch-multiplier=1", "--max-tasks-per-child=10", "-Q", "admin-ops"]
+    environment:
+      DJANGO_DEBUG: "False"
+      DB_ENGINE: django.db.backends.postgresql
+      DB_NAME: ${POSTGRES_DB}
+      DB_USER: ${POSTGRES_USER}
+      DB_PASSWORD: ${POSTGRES_PASSWORD}
+      DB_HOST: postgres
+      DB_PORT: "5432"
+      DB_CONN_MAX_AGE: "30"
+      REDIS_URL: redis://redis:6379/0
+      CACHE_URL: redis://redis:6379/1
+      CELERY_BROKER_URL: redis://redis-queue:6379/0
+      CELERY_RESULT_BACKEND: redis://redis-queue:6379/1
+    volumes:
+      - media_data:/app/media
+      - ${CATALOG_MEDIA_MANIFEST_HOST_PATH:-./backend/catalog-media-manifest.example.json}:/run/catalog-media-manifest.json:ro
+    depends_on:
+      backend:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      redis-queue:
+        condition: service_healthy
+    mem_limit: 640m
+    cpus: ${CATALOG_ADMIN_WORKER_CPUS:-0.35}
+    cpu_shares: 256
+    logging: *default-logging
+    networks:
+      - edge
+      - data
+
   catalog-worker-urgent:
     image: revayato-backend
     restart: unless-stopped
@@ -228,7 +279,7 @@ services:
     env_file:
       - .env.production
     entrypoint: []
-    command: ["celery", "-A", "config", "worker", "--loglevel=INFO", "--concurrency=${CATALOG_URGENT_WORKER_CONCURRENCY:-1}", "--prefetch-multiplier=1", "--max-tasks-per-child=15", "-Q", "softsub-urgent"]
+    command: ["celery", "-A", "config", "worker", "--loglevel=INFO", "--concurrency=${CATALOG_URGENT_WORKER_CONCURRENCY:-1}", "--prefetch-multiplier=1", "--max-tasks-per-child=15", "-Q", "softsub-urgent,softsub-drain"]
     environment:
       DJANGO_DEBUG: "False"
       DB_ENGINE: django.db.backends.postgresql
@@ -299,7 +350,7 @@ services:
         condition: service_healthy
       redis-queue:
         condition: service_healthy
-    mem_limit: 768m
+    mem_limit: ${CATALOG_SOFTSUB_WORKER_MEM:-768m}
     cpus: ${CATALOG_SOFTSUB_WORKER_CPUS:-0.45}
     cpu_shares: 96
     logging: *default-logging
@@ -325,7 +376,9 @@ services:
     # trending titles, the IMDb Top 250 shelf and the lane that finds new titles
     # are always served before the per-title
     # auto_crawl retries that routinely sit ~790 deep on ``imports``.
-    command: ["celery", "-A", "config", "worker", "--loglevel=INFO", "--concurrency=${CATALOG_IMPORTS_WORKER_CONCURRENCY:-1}", "--prefetch-multiplier=1", "--max-tasks-per-child=10", "-Q", "imports-hot,imports-top250,imports-discovery,imports"]
+    # ``link-sizes`` measures the file size of every link an import just stored
+    # (plus the backlog sweep); it moved here off the two support slots.
+    command: ["celery", "-A", "config", "worker", "--loglevel=INFO", "--concurrency=${CATALOG_IMPORTS_WORKER_CONCURRENCY:-1}", "--prefetch-multiplier=1", "--max-tasks-per-child=10", "--max-memory-per-child=${CATALOG_IMPORTS_WORKER_MAX_CHILD_KB:-300000}", "-Q", "imports-hot,imports-top250,imports-discovery,imports,link-sizes"]
     environment:
       DJANGO_DEBUG: "False"
       DB_ENGINE: django.db.backends.postgresql
@@ -349,7 +402,7 @@ services:
         condition: service_healthy
       redis-queue:
         condition: service_healthy
-    mem_limit: 640m
+    mem_limit: ${CATALOG_IMPORTS_WORKER_MEM:-640m}
     cpus: ${CATALOG_IMPORTS_WORKER_CPUS:-0.35}
     cpu_shares: 96
     logging: *default-logging
@@ -846,7 +899,7 @@ services:
       - -c
       - >-
         exec uvicorn config.asgi:application --host 0.0.0.0 --port 8000
-        --workers ${STREAM_WEB_CONCURRENCY:-2}
+        --workers ${STREAM_WEB_CONCURRENCY:-3}
         --proxy-headers --forwarded-allow-ips='127.0.0.1,172.16.0.0/12,10.0.0.0/8'
         --timeout-keep-alive 30
         --limit-concurrency ${STREAM_LIMIT_CONCURRENCY:-120}
@@ -905,7 +958,7 @@ services:
       retries: 5
       start_period: 45s
     mem_limit: ${STREAM_GATEWAY_MEM:-768m}
-    cpus: ${STREAM_GATEWAY_CPUS:-0.9}
+    cpus: ${STREAM_GATEWAY_CPUS:-2}
     # Well below the API's 2048: when both want the CPU, the page load wins and
     # the rewrap simply runs a little behind its viewer.
     cpu_shares: 256

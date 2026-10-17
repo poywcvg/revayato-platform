@@ -81,8 +81,7 @@ useHead({
   border-radius: 50%;
   background: var(--palette-mid);
   content: "";
-  filter: blur(100px);
-  opacity: .22;
+  display: none;
 }
 
 .auth-layout__header {
@@ -147,7 +146,6 @@ useHead({
   color: var(--theme-text-secondary);
   font-size: .72rem;
   font-weight: 700;
-  backdrop-filter: blur(12px);
 }
 
 .auth-home-link:hover {
@@ -233,14 +231,12 @@ useHead({
 :global(html[data-theme="light"] .auth-layout__header) {
   border-bottom: 1px solid color-mix(in srgb, var(--theme-border) 75%, transparent);
   background: color-mix(in srgb, var(--theme-bg-surface) 72%, transparent);
-  -webkit-backdrop-filter: blur(16px) saturate(120%);
-  backdrop-filter: blur(16px) saturate(120%);
 }
 
 :global(html[data-theme="light"] .auth-home-link) {
   border-color: var(--theme-border-strong);
   background: color-mix(in srgb, var(--theme-bg-surface) 90%, transparent);
-  box-shadow: 0 5px 16px rgb(23 50 38 / 6%);
+  box-shadow: none;
 }
 
 :global(html[data-theme="light"] .auth-skip-link) {

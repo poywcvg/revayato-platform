@@ -18,6 +18,12 @@ from django.core.asgi import get_asgi_application
 
 django_asgi_application = get_asgi_application()
 
+# Only the public web service opts in (the stream gateway shares this module).
+if os.environ.get('SEARCH_SUGGEST_PREWARM', '').strip() in {'1', 'true', 'yes'}:
+    from apps.catalog.search_suggest import prewarm_in_background
+
+    prewarm_in_background()
+
 from apps.watchparty.auth import JwtAuthMiddleware
 from apps.watchparty.routing import websocket_urlpatterns
 

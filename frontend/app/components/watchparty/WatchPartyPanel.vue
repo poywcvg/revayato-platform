@@ -79,7 +79,7 @@ function requestEnd() {
 
 <template>
   <aside
-    class="watch-party-panel flex max-h-[78dvh] flex-col bg-[#0c0c0c]/95 p-3.5 shadow-2xl shadow-black/50 backdrop-blur-xl sm:p-4 lg:h-[min(78vh,760px)] lg:max-h-none"
+    class="watch-party-panel flex max-h-[78dvh] flex-col bg-[#0c0c0c]/95 p-3.5 sm:p-4 lg:h-[min(78vh,760px)] lg:max-h-none"
     aria-label="پنل تماشای گروهی"
     role="dialog"
     aria-modal="true"
@@ -129,7 +129,7 @@ function requestEnd() {
         role="tab"
         class="inline-flex min-h-11 items-center justify-center gap-1.5 rounded-lg text-xs font-black transition"
         :class="activeTab === tab.id
-          ? tab.id === 'invite'
+ ? tab.id === 'invite'
             ? 'bg-info/15 text-info ring-1 ring-info/15'
             : tab.id === 'members'
               ? 'bg-success/12 text-success ring-1 ring-success/15'
@@ -254,7 +254,7 @@ function requestEnd() {
   color: #fff1f2;
   background: rgb(239 68 68 / 22%);
   border-color: rgb(248 113 113 / 48%);
-  box-shadow: 0 8px 20px rgb(239 68 68 / 18%);
+  box-shadow: none;
 }
 
 .party-panel-btn--danger-solid {
@@ -264,7 +264,7 @@ function requestEnd() {
 
 .party-panel-btn--danger-solid:hover:not(:disabled) {
   filter: brightness(1.08);
-  box-shadow: 0 8px 20px rgb(239 68 68 / 28%);
+  box-shadow: none;
 }
 
 .party-panel-btn--leave {
@@ -277,7 +277,7 @@ function requestEnd() {
   color: #fff7ed;
   background: rgb(245 158 11 / 20%);
   border-color: rgb(251 191 36 / 42%);
-  box-shadow: 0 8px 20px rgb(245 158 11 / 16%);
+  box-shadow: none;
 }
 
 @media (orientation: landscape) and (max-height: 500px) and (max-width: 1023px) {

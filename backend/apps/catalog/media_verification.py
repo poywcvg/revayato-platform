@@ -647,25 +647,58 @@ def screen_links(obj, links: list, *, limit: int = MAX_SCREEN_PROBES) -> tuple[l
             continue
         groups.setdefault(_group_key(item), []).append(index)
 
-    dead_indexes: dict[int, str] = {}
-    probes = 0
-    for key in sorted(groups)[:MAX_SCREEN_GROUPS]:
-        # Browser-safe mirrors first: they are the ones that become video_url.
+    try:
+        from django.conf import settings
+
+        group_workers = max(1, min(6, int(getattr(settings, 'CATALOG_SCREEN_PROBE_WORKERS', 4) or 4)))
+    except (TypeError, ValueError):
+        group_workers = 4
+
+    def _settle_group(key) -> tuple[tuple[int, int], list[tuple[int, str]], int]:
+        """Probe one episode's mirrors in rank order; first live/unverifiable wins.
+
+        Sequential inside the group on purpose: a healthy episode still costs a
+        single probe, and the verdict is identical to the old serial loop. Only
+        independent episodes run in parallel.
+        """
         candidates = sorted(
             groups[key],
             key=lambda i: _classify_link(links[i]) != 'safe',
         )[:MAX_SCREEN_PER_GROUP]
+        dead_here: list[tuple[int, str]] = []
+        used = 0
         for index in candidates:
-            if probes >= limit:
-                break
-            probes += 1
+            used += 1
             result = _probe(_link_url(links[index]))
             if result.dead:
-                dead_indexes[index] = result.reason
+                dead_here.append((index, result.reason))
                 continue
             break  # live or unverifiable — this episode has something to serve
-        if probes >= limit:
-            break
+        return key, dead_here, used
+
+    ordered_keys = sorted(groups)[:MAX_SCREEN_GROUPS]
+    dead_indexes: dict[int, str] = {}
+    probes = 0
+    if group_workers <= 1 or len(ordered_keys) <= 1:
+        for key in ordered_keys:
+            if probes >= limit:
+                break
+            _key, dead_here, used = _settle_group(key)
+            probes += used
+            for dead_index, reason in dead_here:
+                dead_indexes[dead_index] = reason
+    else:
+        from concurrent.futures import ThreadPoolExecutor
+
+        with ThreadPoolExecutor(max_workers=min(group_workers, len(ordered_keys))) as pool:
+            # map() preserves input order, so results stay deterministic even
+            # though the probes themselves run concurrently.
+            for _key, dead_here, used in pool.map(_settle_group, ordered_keys):
+                if probes >= limit:
+                    break
+                probes += used
+                for dead_index, reason in dead_here:
+                    dead_indexes[dead_index] = reason
 
     if not dead_indexes:
         return list(links), []

@@ -33,7 +33,18 @@ const VERBS: Verb[] = [
   { action: 'publish', label: 'انتشار' },
   { action: 'unpublish', label: 'پیش‌نویس' },
   { action: 'archive', label: 'بایگانی', confirm: 'بایگانی شوند؟', tone: 'danger' },
-  { action: 'recrawl', label: 'جستجوی دوباره' },
+  { action: 'complete', label: 'جستجو و تکمیل با خزنده' },
+  {
+    action: 'rebuild_staged',
+    label: 'بازسازی از صفر با تست',
+    confirm: 'از صفر روی نسخهٔ آزمایشی ساخته و تست شوند و فقط در صورت قبولی جایگزین شوند؟',
+  },
+  {
+    action: 'rebuild',
+    label: 'جایگزینی از صفر بدون تست',
+    confirm: 'بدون تست، مستقیم از صفر با لینک‌های تازهٔ منابع جایگزین شوند؟ نسخهٔ فعلی پشتیبان‌گیری می‌شود و از میز هر عنوان قابل بازگردانی است.',
+    tone: 'danger',
+  },
   { action: 'refresh_subtitles', label: 'استخراج زیرنویس' },
   { action: 'verify', label: 'تست منابع', slow: true },
   { action: 'sync_tmdb', label: 'هم‌گام با TMDB', slow: true },
@@ -67,26 +78,22 @@ async function run(verb: Verb) {
     emit('done')
   }
   catch (err) {
-    const data = (err as { data?: { code?: string, detail?: string } })?.data
-    notify.error('انجام نشد', data?.detail || 'سرور درخواست را نپذیرفت')
+    notify.error('انجام نشد', adminErrorMessage(err, 'سرور درخواست را نپذیرفت'))
   }
   finally { running.value = '' }
 }
 
-/** Why a failed title failed, in words the panel already uses elsewhere. */
-const ERROR_LABEL: Record<string, string> = {
-  not_found: 'یافت نشد',
-  publish_blocked: 'شرایط انتشار کامل نیست',
-  queue_failed: 'صف در دسترس نبود',
-  action_failed: 'اجرا با خطا مواجه شد',
-  no_tmdb_id: 'شناسهٔ TMDB ندارد',
+/** Why a failed title failed — with the gate's blockers, not just «کامل نیست». */
+function failureLabel(row: BulkResultRow) {
+  if (row.error === 'no_tmdb_id') return 'شناسهٔ TMDB ندارد'
+  return adminErrorCodeLabel(row.error, row.blockers)
 }
 </script>
 
 <template>
   <div
     v-if="ids.length"
-    class="sticky bottom-3 z-20 rounded-[var(--rv-radius)] border border-[var(--rv-border)] bg-[var(--rv-surface-2)] p-3 shadow-lg"
+    class="sticky bottom-3 z-20 rounded-[var(--rv-radius)] border border-[var(--rv-border)] bg-[var(--rv-surface-2)] p-3"
   >
     <div class="flex flex-wrap items-center gap-2">
       <span class="text-xs font-black text-[var(--rv-text)]">{{ fa(ids.length) }} انتخاب‌شده</span>
@@ -111,7 +118,7 @@ const ERROR_LABEL: Record<string, string> = {
     <ul v-if="failures.length" class="mt-2 max-h-28 overflow-y-auto border-t border-[var(--rv-border)] pt-2 text-xs">
       <li v-for="row in failures" :key="row.id" class="flex items-center gap-2 py-0.5">
         <span class="font-black" :style="{ color: 'var(--rv-danger)' }">{{ row.title || row.id }}</span>
-        <span class="font-semibold text-[var(--rv-muted)]">{{ ERROR_LABEL[row.error || ''] || row.error }}</span>
+        <span class="font-semibold text-[var(--rv-muted)]">{{ failureLabel(row) }}</span>
       </li>
     </ul>
   </div>

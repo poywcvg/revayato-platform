@@ -340,6 +340,9 @@ def movie_provider_discover(request, movie_id):
         trigger=ProviderImportJob.Trigger.MANUAL,
         mode=serializer.validated_data['mode'],
     )
+    if getattr(job, 'reused', False):
+        # A worker is already crawling this title; queuing again would race it.
+        return Response(ProviderImportJobSerializer(job).data, status=status.HTTP_202_ACCEPTED)
     append_log(job, 'info', 'Catalog movie discover queued by staff.')
     try:
         _queue_job(job)
@@ -373,6 +376,9 @@ def series_provider_discover(request, series_id):
         trigger=ProviderImportJob.Trigger.MANUAL,
         mode=serializer.validated_data['mode'],
     )
+    if getattr(job, 'reused', False):
+        # A worker is already crawling this title; queuing again would race it.
+        return Response(ProviderImportJobSerializer(job).data, status=status.HTTP_202_ACCEPTED)
     append_log(job, 'info', 'Catalog series discover queued by staff.')
     try:
         _queue_job(job)

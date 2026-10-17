@@ -1196,7 +1196,7 @@ async function saveImporterSettings() {
       >
         <div
           v-if="selected"
-          class="fixed inset-0 z-[60] grid place-items-end bg-black/60 backdrop-blur-sm sm:place-items-center"
+          class="fixed inset-0 z-[60] grid place-items-end bg-black/60 sm:place-items-center"
           role="dialog"
           aria-modal="true"
           @click.self="closePreview"

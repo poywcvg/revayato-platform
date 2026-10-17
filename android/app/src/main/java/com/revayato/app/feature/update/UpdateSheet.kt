@@ -49,7 +49,7 @@ import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.revayato.app.core.theme.BgElevated
-import com.revayato.app.core.theme.BrandMint
+import com.revayato.app.core.theme.Brand
 import com.revayato.app.core.theme.ErrorRed
 import com.revayato.app.core.theme.OnBrand
 import com.revayato.app.core.theme.OutlineSoft
@@ -213,7 +213,7 @@ private fun UpdateSheet(
                                     .padding(top = 7.dp)
                                     .size(5.dp)
                                     .clip(CircleShape)
-                                    .background(BrandMint),
+                                    .background(Brand),
                             )
                             Spacer(Modifier.size(10.dp))
                             Text(
@@ -257,6 +257,15 @@ private fun UpdateSheet(
                 }
             }
 
+            if (readyFile != null && error == null) {
+                Spacer(Modifier.size(14.dp))
+                Text(
+                    "اگر پنجرهٔ «Google Play Protect» باز شد، «Scan app» را بزن؛ چند ثانیه بعد نصب ادامه پیدا می‌کند.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = TextSecondary,
+                )
+            }
+
             if (error != null) {
                 Spacer(Modifier.size(14.dp))
                 Text(error, style = MaterialTheme.typography.bodySmall, color = ErrorRed)
@@ -293,7 +302,7 @@ private fun UpdateSheet(
                     .fillMaxWidth()
                     .height(50.dp),
                 shape = RoundedCornerShape(14.dp),
-                colors = ButtonDefaults.buttonColors(containerColor = BrandMint, contentColor = OnBrand),
+                colors = ButtonDefaults.buttonColors(containerColor = Brand, contentColor = OnBrand),
             ) {
                 when {
                     downloading -> {

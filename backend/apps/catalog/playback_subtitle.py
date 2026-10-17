@@ -174,12 +174,97 @@ def mark_playback_subtitle_gaps_exhausted(
         meta['exhausted_source_path'] = str(meta.get('source_path') or '')
         meta['exhausted_count'] = int(meta.get('exhausted_count') or 0) + 1
         meta['exhausted_reason'] = str(reason or '')[:32]
+        # A real verdict resets the outage budget for the next (cooldown) round.
+        meta.pop('deferred_count', None)
         gap.meta = meta
         gap.status = PlaybackSubtitleGap.Status.UNAVAILABLE
         gap.last_result = EXHAUSTED_RESULT
         gap.save(update_fields=['meta', 'status', 'last_result', 'updated_at'])
         marked += 1
     return marked
+
+
+PROVIDER_UNAVAILABLE = 'provider_unavailable'
+
+
+def defer_playback_subtitle_gaps(
+    *,
+    content_type: str,
+    object_id: int,
+    episode_ids: list[int] | None = None,
+    providers: set[str] | frozenset[str] | tuple = (),
+) -> int:
+    """An empty pass while a provider could not answer: retry, never "exhausted".
+
+    The gap stays QUEUED with ``last_result='provider_unavailable'`` so the beat
+    drain re-runs it once the provider is back. Deferrals are bounded per gap
+    (``PLAYBACK_SUBTITLE_MAX_DEFERRALS``): a provider that never recovers ends in
+    the ordinary exhausted verdict instead of an endless loop.
+    """
+    from django.conf import settings
+    from apps.catalog.models import PlaybackSubtitleGap
+
+    rows = PlaybackSubtitleGap.objects.filter(
+        content_type=str(content_type or ''),
+        object_id=int(object_id),
+    ).exclude(status=PlaybackSubtitleGap.Status.RESOLVED)
+    if episode_ids is not None:
+        rows = rows.filter(episode_id__in=[int(value) for value in episode_ids])
+    cap = max(1, int(getattr(settings, 'PLAYBACK_SUBTITLE_MAX_DEFERRALS', 8)))
+    now = timezone.now()
+    deferred = 0
+    for gap in rows:
+        meta = dict(gap.meta or {})
+        count = int(meta.get('deferred_count') or 0) + 1
+        if count > cap:
+            mark_playback_subtitle_gaps_exhausted(
+                content_type=gap.content_type,
+                object_id=gap.object_id,
+                episode_ids=[int(gap.episode_id or 0)],
+                reason='providers_down',
+            )
+            continue
+        meta['deferred_count'] = count
+        meta['deferred_at'] = now.isoformat()
+        meta['deferred_providers'] = sorted(str(name) for name in providers)[:6]
+        gap.meta = meta
+        gap.status = PlaybackSubtitleGap.Status.QUEUED
+        gap.last_result = PROVIDER_UNAVAILABLE
+        gap.save(update_fields=['meta', 'status', 'last_result', 'updated_at'])
+        deferred += 1
+    return deferred
+
+
+def settle_empty_playback_gaps(
+    *,
+    content_type: str,
+    object_id: int,
+    episode_ids: list[int] | None = None,
+    outages: set[str] | frozenset[str] | tuple = (),
+) -> dict[str, int]:
+    """The one place a worker pass that found nothing records its verdict.
+
+    ``exhausted`` is a claim that the subtitle does not exist; it is only true
+    when every provider actually answered. Any outage during the pass defers.
+    """
+    if outages:
+        return {
+            'deferred': defer_playback_subtitle_gaps(
+                content_type=content_type,
+                object_id=object_id,
+                episode_ids=episode_ids,
+                providers=outages,
+            ),
+            'exhausted': 0,
+        }
+    return {
+        'deferred': 0,
+        'exhausted': mark_playback_subtitle_gaps_exhausted(
+            content_type=content_type,
+            object_id=object_id,
+            episode_ids=episode_ids,
+        ),
+    }
 
 
 def gap_is_exhausted(gap) -> bool:
@@ -304,6 +389,21 @@ def _sync_budget(timeout_seconds: int) -> int:
 
     cap = max(1, int(getattr(settings, 'PLAYBACK_SYNC_ATTACH_SECONDS', 4)))
     return min(cap, max(1, int(timeout_seconds or cap)))
+
+
+def _sync_embedded_budget() -> int:
+    """Wall-clock cap for the file-first embedded attempt in the sync lane.
+
+    ``0`` disables the file-first attempt (providers only, the old
+    behaviour). Kept small: the worker owns the thorough multi-minute demux,
+    this is only the quick win when the playing file carries Persian cues.
+    """
+    from django.conf import settings
+
+    try:
+        return max(0, int(getattr(settings, 'PLAYBACK_SYNC_EMBEDDED_SECONDS', 4)))
+    except (TypeError, ValueError):
+        return 4
 
 
 def _attach_providers_sync_movie(movie, *, timeout_seconds: int, preferred_source_url: str = '') -> bool:
@@ -490,7 +590,18 @@ def _attach_open_episode_subtitlestar(series, episode, *, timeout_seconds: int, 
     return True
 
 
-def ensure_playback_subtitles(
+def ensure_playback_subtitles(**kwargs) -> dict[str, Any]:
+    """Viewer-facing entry: provider calls here spend the *live* quota lane.
+
+    See :func:`_ensure_playback_subtitles` for the behaviour.
+    """
+    from apps.catalog.subtitle_provider_health import LIVE, subtitle_lane
+
+    with subtitle_lane(LIVE):
+        return _ensure_playback_subtitles(**kwargs)
+
+
+def _ensure_playback_subtitles(
     *,
     content_type: str,
     slug: str,
@@ -520,6 +631,7 @@ def ensure_playback_subtitles(
         attach_extracted_subtitle,
         attach_series_softsub_tracks,
         download_links_imply_softsub,
+        _attach_embedded_sync_movie,
         _links_for_episode,
         looks_like_hardsub_link,
         url_implies_softsub,
@@ -759,20 +871,36 @@ def ensure_playback_subtitles(
 
         attached = False
         if sync:
-            # Always offer provider sidecars in the sync lane: queued embedded
-            # ffmpeg extraction takes minutes on the worker, while the open
-            # player should get cues within seconds.
+            # File first: demux Persian SoftSub from the exact container being
+            # watched inside a hard few-second cap. Its cues are natively in
+            # sync and usually land faster than a provider round-trip; when the
+            # file has nothing usable this returns in seconds and providers run
+            # next, so the player never waits longer than before plus the cap.
             sync_budget = _sync_budget(timeout_seconds)
-            try:
-                attached = bool(_attach_providers_sync_movie(
-                    movie,
-                    timeout_seconds=sync_budget,
-                    preferred_source_url=preferred_source_url,
-                ))
-            except Exception as exc:
-                logger.info('playback subtitle sync failed movie=%s: %s', movie.pk, exc)
-                attached = False
-            movie.refresh_from_db(fields=['subtitle_tracks', 'has_subtitle'])
+            embedded_cap = _sync_embedded_budget()
+            if allow_ffmpeg and embedded_cap > 0:
+                try:
+                    attached = bool(_attach_embedded_sync_movie(
+                        movie,
+                        links,
+                        timeout_seconds=embedded_cap,
+                        preferred_source_url=preferred_source_url,
+                    ))
+                except Exception as exc:
+                    logger.info('playback subtitle sync embedded failed movie=%s: %s', movie.pk, exc)
+                    attached = False
+                movie.refresh_from_db(fields=['subtitle_tracks', 'has_subtitle'])
+            if not attached:
+                try:
+                    attached = bool(_attach_providers_sync_movie(
+                        movie,
+                        timeout_seconds=sync_budget,
+                        preferred_source_url=preferred_source_url,
+                    ))
+                except Exception as exc:
+                    logger.info('playback subtitle sync failed movie=%s: %s', movie.pk, exc)
+                    attached = False
+                movie.refresh_from_db(fields=['subtitle_tracks', 'has_subtitle'])
 
         if _has_tracks(movie.subtitle_tracks):
             _mark_gap(gap, status=PlaybackSubtitleGap.Status.RESOLVED, last_result='ready')
@@ -1001,12 +1129,26 @@ def ensure_playback_subtitles(
 
     attached_eps = 0
     if sync:
-        # Always try provider sidecars, even when an embedded extraction is
-        # queued — the open episode should not wait minutes for the worker.
+        # File first, same as movies: the playing episode's own container is
+        # attempted inside a hard few-second cap before any sidecar provider.
         sync_budget = _sync_budget(timeout_seconds)
+        embedded_cap = _sync_embedded_budget()
+        if episode is not None and allow_ffmpeg and embedded_cap > 0:
+            try:
+                from apps.catalog.subtitle_extract import _attach_embedded_sync_episode
+                if _attach_embedded_sync_episode(
+                    series,
+                    episode,
+                    episode_links,
+                    timeout_seconds=embedded_cap,
+                    preferred_source_url=preferred_source_url,
+                ):
+                    attached_eps = 1
+            except Exception as exc:
+                logger.info('playback subtitle sync embedded failed series=%s: %s', series.pk, exc)
         try:
             if episode is not None:
-                if _attach_open_episode_subtitlestar(
+                if not attached_eps and _attach_open_episode_subtitlestar(
                     series, episode, timeout_seconds=sync_budget, preferred_source_url=preferred_source_url,
                 ):
                     attached_eps = 1

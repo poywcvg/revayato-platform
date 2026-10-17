@@ -331,6 +331,20 @@ useSeoMeta({ title: 'پروفایل من', description: 'مدیریت پروفا
     >
       <LazyPersonalizationSettings :hydrate-on-visible="visibilityHydration" />
 
+      <section class="content-section" aria-label="ظاهر سایت">
+        <SectionHeader title="ظاهر سایت" icon="palette" />
+        <div class="pf-card pf-appearance">
+          <div class="pf-appearance__head">
+            <span class="min-w-0 flex-1">
+              <strong>حالت روشن و تاریک</strong>
+              <small>روی همهٔ صفحه‌های همین مرورگر اعمال می‌شود.</small>
+            </span>
+            <ThemeToggle />
+          </div>
+          <ThemeModePicker />
+        </div>
+      </section>
+
       <section class="content-section" aria-label="حساب کاربری">
         <SectionHeader title="حساب کاربری" icon="user" />
 
@@ -377,6 +391,23 @@ useSeoMeta({ title: 'پروفایل من', description: 'مدیریت پروفا
   border-radius: 1.15rem;
   background: var(--theme-bg-surface);
 }
+
+/* ---- appearance ---- */
+
+.pf-appearance {
+  display: grid;
+  gap: .75rem;
+  padding: 1rem;
+}
+
+.pf-appearance__head {
+  display: flex;
+  align-items: center;
+  gap: .75rem;
+}
+
+.pf-appearance__head strong { display: block; font-size: .9rem; }
+.pf-appearance__head small { color: var(--theme-text-muted); font-size: .75rem; }
 
 /* ---- identity ---- */
 
@@ -516,8 +547,7 @@ useSeoMeta({ title: 'پروفایل من', description: 'مدیریت پروفا
   top: var(--sticky-offset);
   z-index: 20;
   border-bottom: 1px solid color-mix(in srgb, var(--theme-border) 65%, transparent);
-  background: color-mix(in srgb, var(--theme-bg-main) 90%, transparent);
-  backdrop-filter: blur(14px);
+  background: var(--theme-bg-main);
 }
 
 .pf-tabs__inner {

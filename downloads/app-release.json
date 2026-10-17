@@ -1,15 +1,14 @@
 {
   "_comment": "Truth for the Android in-app updater (GET /api/app/version/). Mounted read-only into the backend container as /srv/downloads. Bump version_code + version_name + apk together, drop the new APK in this directory, and the update reaches every installed app on its next launch — no image rebuild, no container restart. The endpoint refuses to advertise a version whose APK is not actually here.",
   "package": "com.revayato.app",
-  "version_code": 18,
-  "version_name": "1.0.17",
-  "apk": "revayato-1.0.17.apk",
+  "version_code": 27,
+  "version_name": "1.0.26",
+  "apk": "revayato-1.0.26.apk",
   "min_supported_version_code": 0,
   "min_sdk": 24,
-  "released_at": "2026-09-24",
+  "released_at": "2026-10-09",
   "notes": [
-    "۲۵۰ فیلم و ۲۵۰ سریال برتر IMDb در صفحهٔ اصلی و دسته‌بندی‌ها.",
-    "منوی کناری ساده‌تر و خلوت‌تر.",
-    "پنجره‌های پخش آنلاین و دانلود مرتب‌تر، با نمایش حجم هر فایل."
+    "اسلایدر اصلی با انتخاب تحریریه؛ شامل فیلم و سریال.",
+    "بهبودهای سرعت در به‌روزرسانی محتوا."
   ]
 }

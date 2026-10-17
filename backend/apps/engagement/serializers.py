@@ -3,7 +3,7 @@
 from rest_framework import serializers
 
 from . import selectors
-from .models import Like, Rating, SupportMessage, SupportTicket, UserActivityEvent, WatchlistItem
+from .models import CommunityMessage, Like, Rating, SupportMessage, SupportTicket, UserActivityEvent, WatchlistItem
 
 
 def _bump_view_count(action, content_type, object_id):
@@ -358,6 +358,36 @@ class SupportReplySerializer(serializers.Serializer):
 
     def validate_body(self, value):
         return value.strip()
+
+
+class CommunityMessageSerializer(serializers.ModelSerializer):
+    username = serializers.CharField(source='user.username', read_only=True)
+    display_name = serializers.SerializerMethodField()
+
+    class Meta:
+        model = CommunityMessage
+        fields = ['id', 'username', 'display_name', 'body', 'created_at']
+        read_only_fields = fields
+
+    def get_display_name(self, obj):
+        try:
+            profile = getattr(obj.user, 'profile', None)
+            name = getattr(profile, 'display_name', '') if profile else ''
+            if name:
+                return str(name)
+        except Exception:
+            pass
+        return getattr(obj.user, 'username', 'کاربر')
+
+
+class CommunityMessageCreateSerializer(serializers.Serializer):
+    body = serializers.CharField(min_length=1, max_length=500)
+
+    def validate_body(self, value):
+        text = str(value or '').strip()
+        if len(text) < 1:
+            raise serializers.ValidationError('متن پیام خالی است.')
+        return text
 
 
 class AdminSupportTicketUpdateSerializer(serializers.Serializer):

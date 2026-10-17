@@ -21,7 +21,7 @@ const categoryLinks = [
   { label: '۲۵۰ فیلم برتر IMDb', to: '/top250' },
 ]
 
-const supportLinks = [
+const supportLinks: { label: string, to: string, external?: boolean }[] = [
   { label: 'درخواست فیلم یا سریال', to: '/contact?subject=content_request' },
   { label: 'درباره ما', to: '/about' },
   { label: 'تماس با ما', to: '/contact' },

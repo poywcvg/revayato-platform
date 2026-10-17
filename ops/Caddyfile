@@ -1,13 +1,6 @@
 {
 	email {$ACME_EMAIL}
 	admin off
-
-	# On-demand TLS is opt-in per site (only *.filmix0.site below uses it).
-	# Charkhyar's Django answers 200 only for tenant subdomains that exist, so
-	# nobody can make Caddy mint certificates for arbitrary names.
-	on_demand_tls {
-		ask http://charkhyar-web/internal/tls-ask/
-	}
 }
 
 # Prefer apex: www -> https://{$SITE_DOMAIN}
@@ -15,16 +8,20 @@ www.{$SITE_DOMAIN} {
 	redir https://{$SITE_DOMAIN}{uri} permanent
 }
 
-# Nilla is an independent Docker Compose project. Only its internal nginx
-# joins this edge network; its database, Redis, backend and frontend are not
-# published on host ports.
-www.nilla.shop {
-	redir https://nilla.shop{uri} permanent
+# Looti (lootti.ir) — independent Docker Compose project in /root/looti.
+# Only looti-web joins this edge network; its postgres is internal.
+# Apex canonical: www -> apex redirect (same pattern as revayato.com).
+www.lootti.ir {
+	redir https://lootti.ir{uri} permanent
 }
 
-nilla.shop {
+http://lootti.ir, http://www.lootti.ir {
+	redir https://lootti.ir{uri} permanent
+}
+
+lootti.ir {
 	encode zstd gzip
-	reverse_proxy nilla-web:80
+	reverse_proxy looti-web:8000
 	header {
 		-Server
 		Strict-Transport-Security "max-age=31536000; includeSubDomains"
@@ -32,40 +29,6 @@ nilla.shop {
 		X-Frame-Options "DENY"
 		Referrer-Policy "strict-origin-when-cross-origin"
 	}
-}
-
-# Charkhyar (/root/saas-car) is an independent Docker Compose project, like
-# Nilla: only its internal nginx joins this edge network (alias charkhyar-web).
-# Multi-tenant: every business gets <subdomain>.filmix0.site.
-(charkhyar) {
-	encode zstd gzip
-	# The TLS "ask" endpoint is for Caddy only, never the public.
-	@charkhyar_internal path /internal/*
-	respond @charkhyar_internal 404
-	reverse_proxy charkhyar-web:80
-	header {
-		-Server
-		Strict-Transport-Security "max-age=31536000"
-		X-Content-Type-Options "nosniff"
-		Referrer-Policy "strict-origin-when-cross-origin"
-	}
-}
-
-www.filmix0.site {
-	redir https://filmix0.site{uri} permanent
-}
-
-filmix0.site {
-	import charkhyar
-}
-
-# Tenant subdomains: one certificate per existing business, issued on first
-# visit (HTTP-01 through Cloudflare), gated by the ask endpoint above.
-*.filmix0.site {
-	tls {
-		on_demand
-	}
-	import charkhyar
 }
 
 # ---- Shared handler set, imported by both the public HTTPS site and the
@@ -200,6 +163,16 @@ filmix0.site {
 		reverse_proxy frontend:3000
 	}
 
+	# Versioned/static app shell files: immutable at the edge, never SSR.
+	# (robots.txt / sitemap.xml are deliberately excluded — Nitro owns their TTL.)
+	@static_assets {
+		path /favicon.svg /favicon.ico /favicon.png /favicon-32.png /apple-touch-icon.png /icon-192.png /icon-512.png /site.webmanifest
+	}
+	handle @static_assets {
+		header Cache-Control "public, max-age=31536000, immutable"
+		reverse_proxy frontend:3000
+	}
+
 	# Public HTML: short CDN TTL. Replace any upstream Cache-Control so CF sees one policy.
 	@html {
 		path /
@@ -210,13 +183,19 @@ filmix0.site {
 
 	handle @html {
 		# Nitro already emits the SWR policy this route needs
-		# ("s-maxage=180, stale-while-revalidate" via routeRules). Do not stack a
+		# ("s-maxage=300, stale-while-revalidate" via routeRules). Do not stack a
 		# second Cache-Control here — duplicated headers made cf-cache-status
 		# DYNAMIC and pushed every public page back through SSR. Add a browser
 		# max-age=0 so clients always revalidate against Edge/SWR instead of
 		# pinning stale HTML.
-		header Cache-Control "public, max-age=0, s-maxage=180, stale-while-revalidate=600"
-		header Vary "Accept-Encoding"
+		# NOTE: the set MUST be deferred (post-upstream). A non-deferred set runs
+		# before reverse_proxy and the upstream value is appended next to it —
+		# seen live as two Cache-Control lines and cf-cache-status DYNAMIC.
+		header {
+			Cache-Control "public, max-age=0, s-maxage=300, stale-while-revalidate=600"
+			Vary "Accept-Encoding"
+			defer
+		}
 		reverse_proxy frontend:3000
 	}
 

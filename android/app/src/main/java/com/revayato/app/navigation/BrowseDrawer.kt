@@ -37,13 +37,15 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.revayato.app.core.theme.BgSurface
-import com.revayato.app.core.theme.BrandGreen
-import com.revayato.app.core.theme.BrandMint
+import com.revayato.app.core.theme.BrandDeep
+import com.revayato.app.core.theme.Brand
 import com.revayato.app.core.theme.OnBrand
 import com.revayato.app.core.theme.OutlineSoft
 import com.revayato.app.core.theme.TextMuted
 import com.revayato.app.core.theme.TextPrimary
 import com.revayato.app.core.theme.TextSecondary
+import com.revayato.app.ui.components.ThemeModePicker
+import com.revayato.app.ui.components.ThemeToggle
 
 /**
  * The slide-in drawer — deliberately short. Everything the bottom bar already
@@ -80,11 +82,34 @@ fun BrowseDrawerContent(
 
             Spacer(Modifier.height(8.dp))
             DrawerDivider()
+            Row(
+                modifier = Modifier.fillMaxWidth().padding(start = 20.dp, end = 20.dp, top = 16.dp, bottom = 10.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(
+                    "ظاهر برنامه",
+                    style = MaterialTheme.typography.titleSmall,
+                    fontWeight = FontWeight.Bold,
+                    color = TextPrimary,
+                    modifier = Modifier.weight(1f),
+                )
+                ThemeToggle(height = 26.dp)
+            }
+            ThemeModePicker(Modifier.fillMaxWidth().padding(horizontal = 20.dp))
+            Text(
+                "«خودکار» مثل تنظیم گوشی روشن یا تاریک می‌شود.",
+                style = MaterialTheme.typography.bodySmall,
+                color = TextMuted,
+                modifier = Modifier.padding(horizontal = 20.dp, vertical = 8.dp),
+            )
+
+            Spacer(Modifier.height(8.dp))
+            DrawerDivider()
             Spacer(Modifier.height(8.dp))
             if (isLoggedIn) {
                 DrawerItem(Icons.AutoMirrored.Rounded.Logout, "خروج از حساب", onLogout, tint = TextMuted)
             } else {
-                DrawerItem(Icons.AutoMirrored.Rounded.Login, "ورود / ثبت‌نام", onLogin, tint = BrandMint)
+                DrawerItem(Icons.AutoMirrored.Rounded.Login, "ورود / ثبت‌نام", onLogin, tint = Brand)
             }
         }
     }
@@ -101,7 +126,7 @@ private fun DrawerHeader(isLoggedIn: Boolean, onLogin: () -> Unit) {
                 modifier = Modifier
                     .size(48.dp)
                     .clip(RoundedCornerShape(14.dp))
-                    .background(Brush.linearGradient(listOf(BrandMint, BrandGreen))),
+                    .background(Brush.linearGradient(listOf(Brand, BrandDeep))),
                 contentAlignment = Alignment.Center,
             ) {
                 Icon(Icons.Rounded.Movie, contentDescription = null, tint = OnBrand)
@@ -115,7 +140,7 @@ private fun DrawerHeader(isLoggedIn: Boolean, onLogin: () -> Unit) {
             Box(
                 modifier = Modifier
                     .clip(CircleShape)
-                    .background(BrandMint)
+                    .background(Brand)
                     .clickable(onClick = onLogin)
                     .padding(horizontal = 18.dp, vertical = 8.dp),
             ) {

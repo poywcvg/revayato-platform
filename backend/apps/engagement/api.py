@@ -3,8 +3,13 @@ from rest_framework.decorators import api_view, permission_classes
 from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
 
+from django.utils import timezone
+from datetime import timedelta
+
 from . import selectors, services
+from .models import CommunityMessage
 from .serializers import (
+    CommunityMessageCreateSerializer, CommunityMessageSerializer,
     LikeToggleInputSerializer, RateContentInputSerializer, RatingSerializer,
     PrivacySafeEventInputSerializer, SupportReplySerializer, SupportTicketCreateSerializer,
     SupportTicketListSerializer, SupportTicketSerializer, UserActivityEventSerializer,
@@ -152,6 +157,49 @@ def like_toggle(request):
         object_id=data['object_id'],
     )
     return Response({'liked': liked})
+
+
+@api_view(['GET', 'POST'])
+def community_messages(request):
+    """Site-wide lounge: anyone can read, only signed-in users can post.
+
+    Lightweight by design: flat list, 30 newest, no threads. Rate-limited to
+    one message per 5 seconds per user to keep it calm without moderation UI.
+    Reads are cached for a few seconds: every open lounge polls, and without
+    this each poll paid a full ORM + serialize round-trip on a busy host.
+    """
+    from django.core.cache import cache
+
+    list_cache_key = 'community:messages:v1'
+    list_cache_ttl = 15
+    if request.method == 'GET':
+        cached = cache.get(list_cache_key)
+        if cached is not None:
+            return Response({'messages': cached})
+        messages = (
+            CommunityMessage.objects
+            .filter(is_hidden=False)
+            .select_related('user')
+            .order_by('-created_at')[:30]
+        )
+        # Chronological for rendering.
+        data = CommunityMessageSerializer(reversed(list(messages)), many=True).data
+        cache.set(list_cache_key, data, timeout=list_cache_ttl)
+        return Response({'messages': data})
+
+    if not request.user.is_authenticated:
+        return Response({'detail': 'برای گفتگو وارد حساب شو.'}, status=status.HTTP_401_UNAUTHORIZED)
+    serializer = CommunityMessageCreateSerializer(data=request.data)
+    serializer.is_valid(raise_exception=True)
+    cutoff = timezone.now() - timedelta(seconds=5)
+    if CommunityMessage.objects.filter(user=request.user, created_at__gte=cutoff).exists():
+        return Response({'detail': 'کمی صبر کن بعد دوباره بفرست.'}, status=status.HTTP_429_TOO_MANY_REQUESTS)
+    message = CommunityMessage.objects.create(
+        user=request.user,
+        body=serializer.validated_data['body'],
+    )
+    cache.delete(list_cache_key)
+    return Response(CommunityMessageSerializer(message).data, status=status.HTTP_201_CREATED)
 
 
 @api_view(['GET', 'POST'])

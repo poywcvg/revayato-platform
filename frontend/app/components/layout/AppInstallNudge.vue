@@ -9,7 +9,7 @@ const visible = ref(false)
 const { trackAppInstall } = useAnalyticsEvent()
 
 // Mirrors the numbers surfaced on /app so the nudge never drifts from the real build.
-const APP_VERSION = '1.0.15'
+const APP_VERSION = '1.0.22'
 const APP_SIZE = '۳ مگابایت'
 
 function dismissed() {
@@ -51,14 +51,14 @@ onMounted(() => {
   <Transition name="app-nudge">
     <aside
       v-if="visible"
-      class="app-nudge fixed inset-x-3 bottom-[calc(var(--mobile-bottom-nav-height)+env(safe-area-inset-bottom)+.75rem)] z-[70] mx-auto max-w-md overflow-hidden rounded-3xl p-[1px] shadow-2xl lg:bottom-5"
+      class="app-nudge fixed inset-x-3 bottom-[calc(var(--mobile-bottom-nav-height)+env(safe-area-inset-bottom)+.75rem)] z-[70] mx-auto max-w-md overflow-hidden rounded-3xl p-[1px] lg:bottom-5"
       role="dialog"
       aria-label="دعوت به نصب اپلیکیشن اندروید روایتو"
     >
-      <div class="relative rounded-[calc(1.5rem-1px)] bg-[#181419]/95 p-3.5 backdrop-blur-xl">
+      <div class="relative rounded-[calc(1.5rem-1px)] bg-[color-mix(in_srgb,var(--theme-bg-elevated)_95%,transparent)] p-3.5">
         <button
           type="button"
-          class="absolute end-2.5 top-2.5 grid size-8 place-items-center rounded-xl text-muted transition hover:bg-white/10 hover:text-ink"
+          class="absolute end-2.5 top-2.5 grid size-8 place-items-center rounded-xl text-muted transition hover:bg-ink/8 hover:text-ink"
           aria-label="بستن دعوت نصب"
           @click="dismiss"
         >
@@ -68,7 +68,7 @@ onMounted(() => {
         <div class="flex items-center gap-3 pe-8">
           <span class="app-nudge__icon relative grid size-14 shrink-0 place-items-center rounded-2xl bg-[#211b12] ring-1 ring-primary-300/25">
             <img src="/icon-192.png?v=2" alt="روایتو" width="56" height="56" class="size-14 rounded-2xl object-cover" >
-            <span class="app-nudge__spark absolute -end-1 -top-1 grid size-5 place-items-center rounded-full bg-primary-400 text-[#211b12] ring-2 ring-[#181419]">
+            <span class="app-nudge__spark absolute -end-1 -top-1 grid size-5 place-items-center rounded-full bg-[var(--theme-accent-primary)] text-[var(--theme-on-accent)] ring-2 ring-[var(--theme-bg-elevated)]">
               <Sparkles class="size-3" />
             </span>
           </span>
@@ -80,15 +80,15 @@ onMounted(() => {
 
         <div class="mt-2.5 flex flex-wrap items-center gap-1.5 ps-[68px]">
           <span class="inline-flex items-center gap-1 rounded-full bg-primary-400/12 px-2 py-0.5 text-[11px] font-black text-primary-200">رایگان</span>
-          <span class="rounded-full bg-white/6 px-2 py-0.5 text-[11px] font-bold text-muted">نسخه {{ APP_VERSION }}</span>
-          <span class="rounded-full bg-white/6 px-2 py-0.5 text-[11px] font-bold text-muted">{{ APP_SIZE }}</span>
-          <span class="rounded-full bg-white/6 px-2 py-0.5 text-[11px] font-bold text-muted">اندروید ۷+</span>
+          <span class="rounded-full bg-ink/6 px-2 py-0.5 text-[11px] font-bold text-muted">نسخه {{ APP_VERSION }}</span>
+          <span class="rounded-full bg-ink/6 px-2 py-0.5 text-[11px] font-bold text-muted">{{ APP_SIZE }}</span>
+          <span class="rounded-full bg-ink/6 px-2 py-0.5 text-[11px] font-bold text-muted">اندروید ۷+</span>
         </div>
 
         <div class="mt-3 flex items-center gap-2 ps-[68px]">
           <NuxtLink
             to="/app"
-            class="app-nudge__cta inline-flex min-h-9 flex-1 items-center justify-center gap-1.5 rounded-xl bg-gradient-to-l from-primary-500 to-primary-300 px-3 text-xs font-black text-[#211b12] transition hover:brightness-105"
+            class="app-nudge__cta inline-flex min-h-9 flex-1 items-center justify-center gap-1.5 rounded-xl bg-[var(--theme-accent-primary)] px-3 text-xs font-black text-[var(--theme-on-accent)] transition hover:brightness-105"
             @click="openInstallPage"
           >
             <Download class="size-3.5" />
@@ -103,7 +103,7 @@ onMounted(() => {
 
 <style scoped>
 .app-nudge {
-  background: linear-gradient(135deg, rgb(52 211 153 / 45%), rgb(255 255 255 / 6%) 55%, rgb(52 211 153 / 30%));
+  background: linear-gradient(135deg, rgb(52 211 153 / 45%), color-mix(in srgb, var(--theme-text-primary) 6%, transparent) 55%, rgb(52 211 153 / 30%));
 }
 .app-nudge-enter-active,
 .app-nudge-leave-active { transition: opacity .24s ease, transform .24s cubic-bezier(.22, 1, .36, 1); }

@@ -21,7 +21,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
-import com.revayato.app.core.theme.BrandMint
+import com.revayato.app.core.theme.Brand
 
 @Composable
 fun LoadingState(modifier: Modifier = Modifier) {
@@ -29,7 +29,7 @@ fun LoadingState(modifier: Modifier = Modifier) {
         modifier = modifier.fillMaxSize(),
         contentAlignment = Alignment.Center,
     ) {
-        RevayatoSpinner(size = 48.dp, color = BrandMint)
+        RevayatoSpinner(size = 48.dp, color = Brand)
     }
 }
 
@@ -110,7 +110,7 @@ private fun MessageState(
                 Button(
                     onClick = onAction,
                     colors = ButtonDefaults.buttonColors(
-                        containerColor = BrandMint,
+                        containerColor = Brand,
                         contentColor = MaterialTheme.colorScheme.onPrimary,
                     ),
                 ) {

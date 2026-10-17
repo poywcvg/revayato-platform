@@ -166,6 +166,7 @@ function year(item: CollectionItem) {
 }
 @media (min-width: 640px) { .cdetail__grid { grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 1rem; } }
 @media (min-width: 1024px) { .cdetail__grid { grid-template-columns: repeat(6, minmax(0, 1fr)); } }
+@media (min-width: 1536px) { .cdetail__grid { grid-template-columns: repeat(var(--rail-columns), minmax(0, 1fr)); } }
 
 .cdetail__cell { min-width: 0; }
 .cdetail__poster {
@@ -188,7 +189,6 @@ function year(item: CollectionItem) {
   color: var(--theme-accent-yellow, #ffc24b);
   font-size: 0.75rem;
   font-weight: 900;
-  backdrop-filter: blur(4px);
 }
 .cdetail__remove {
   position: absolute;

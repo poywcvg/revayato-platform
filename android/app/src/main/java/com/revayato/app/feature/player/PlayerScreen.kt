@@ -7,33 +7,41 @@ import android.media.AudioManager
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.gestures.detectVerticalDragGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
-import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.asPaddingValues
+import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
@@ -67,8 +75,6 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
-import androidx.compose.material3.Slider
-import androidx.compose.material3.SliderDefaults
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
@@ -82,14 +88,20 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.CornerRadius
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.input.pointer.PointerEventPass
+import androidx.compose.ui.input.pointer.PointerEventType
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
@@ -102,15 +114,15 @@ import androidx.media3.ui.AspectRatioFrameLayout
 import androidx.media3.ui.PlayerView
 import com.revayato.app.core.theme.AccentYellow
 import com.revayato.app.core.theme.BgElevated
-import com.revayato.app.core.theme.BrandMint
+import com.revayato.app.core.theme.Brand
 import com.revayato.app.core.theme.NeutralSurface
 import com.revayato.app.core.theme.OnPlayAccent
 import com.revayato.app.core.theme.PlayAccent
 import com.revayato.app.core.theme.PlayAccentSoft
 import com.revayato.app.core.theme.TextSecondary
 import com.revayato.app.ui.components.NetworkImage
-import kotlinx.coroutines.delay
 import kotlin.math.roundToInt
+import kotlinx.coroutines.delay
 
 private enum class GestureKind { VOLUME, BRIGHTNESS }
 
@@ -223,9 +235,15 @@ fun PlayerScreen(
     // re-applied to the SubtitleView whenever it changes.
     var subtitleAppearance by remember { mutableStateOf(loadSubtitleAppearance(context)) }
 
+    // Any touch restarts the hide countdown, and nothing hides while a finger is
+    // still down (mid-scrub, mid-press) — the controls used to vanish in the middle
+    // of using them, 3.5s after they first appeared.
+    var interactionTick by remember { mutableIntStateOf(0) }
+    var touching by remember { mutableStateOf(false) }
+
     // Auto-hide controls after inactivity while playing.
-    LaunchedEffect(controlsVisible, state.isPlaying) {
-        if (controlsVisible && state.isPlaying) {
+    LaunchedEffect(controlsVisible, state.isPlaying, interactionTick, touching) {
+        if (controlsVisible && state.isPlaying && !touching) {
             delay(3500)
             controlsVisible = false
         }
@@ -237,42 +255,21 @@ fun PlayerScreen(
         modifier = Modifier
             .fillMaxSize()
             .background(Color.Black)
-            // Tap toggles controls; double-tap seeks ±10s. Disabled while locked so
-            // stray touches can't disturb playback (only the unlock button responds).
-            .pointerInput(locked) {
-                if (locked) {
-                    detectTapGestures(onTap = { controlsVisible = !controlsVisible })
-                    return@pointerInput
+            // Watch every touch on its way down (Initial pass, never consumed) just
+            // to keep the controls awake; the gestures themselves live on their own
+            // layer below the controls.
+            .pointerInput(Unit) {
+                awaitPointerEventScope {
+                    while (true) {
+                        val event = awaitPointerEvent(PointerEventPass.Initial)
+                        // Only finger down/up — moves would recompose the whole
+                        // screen every frame of a drag for no gain.
+                        if (event.type == PointerEventType.Press || event.type == PointerEventType.Release) {
+                            touching = event.changes.any { it.pressed }
+                            interactionTick++
+                        }
+                    }
                 }
-                detectTapGestures(
-                    onTap = { controlsVisible = !controlsVisible },
-                    onDoubleTap = { offset ->
-                        val forward = offset.x >= size.width / 2f
-                        viewModel.seekBy(if (forward) 10_000 else -10_000)
-                        // Accumulate when tapping the same side again in quick succession.
-                        val prev = seek
-                        val seconds = if (prev != null && prev.forward == forward) prev.seconds + 10 else 10
-                        seek = SeekFeedback(forward, seconds, (prev?.tick ?: 0) + 1)
-                        // Keep the ripple clean — don't pop the full controls open.
-                        controlsVisible = false
-                    },
-                )
-            }
-            // Vertical drag: left half = brightness, right half = volume.
-            .pointerInput(locked) {
-                if (locked) return@pointerInput
-                var leftSide = false
-                detectVerticalDragGestures(
-                    onDragStart = { offset -> leftSide = offset.x < size.width / 2f },
-                    onVerticalDrag = { change, dragAmount ->
-                        change.consume()
-                        val h = size.height.coerceAtLeast(1)
-                        // Drag up (negative dragAmount) increases the value.
-                        val deltaFraction = -dragAmount / h
-                        if (leftSide) applyBrightness(brightness + deltaFraction)
-                        else applyVolume(volumeFraction + deltaFraction)
-                    },
-                )
             },
     ) {
         AndroidView(
@@ -296,9 +293,54 @@ fun PlayerScreen(
             },
         )
 
+        // Screen gestures sit on their own layer *under* the controls, not on the
+        // root Box: a sibling on top wins the hit test, so a button press can never
+        // be stolen by the brightness/volume drag or delayed by double-tap detection.
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                // Tap toggles controls; double-tap seeks ±10s. Disabled while locked so
+                // stray touches can't disturb playback (only the unlock button responds).
+                .pointerInput(locked) {
+                    if (locked) {
+                        detectTapGestures(onTap = { controlsVisible = !controlsVisible })
+                        return@pointerInput
+                    }
+                    detectTapGestures(
+                        onTap = { controlsVisible = !controlsVisible },
+                        onDoubleTap = { offset ->
+                            val forward = offset.x >= size.width / 2f
+                            viewModel.seekBy(if (forward) 10_000 else -10_000)
+                            // Accumulate when tapping the same side again in quick succession.
+                            val prev = seek
+                            val seconds = if (prev != null && prev.forward == forward) prev.seconds + 10 else 10
+                            seek = SeekFeedback(forward, seconds, (prev?.tick ?: 0) + 1)
+                            // Keep the ripple clean — don't pop the full controls open.
+                            controlsVisible = false
+                        },
+                    )
+                }
+                // Vertical drag: left half = brightness, right half = volume.
+                .pointerInput(locked) {
+                    if (locked) return@pointerInput
+                    var leftSide = false
+                    detectVerticalDragGestures(
+                        onDragStart = { offset -> leftSide = offset.x < size.width / 2f },
+                        onVerticalDrag = { change, dragAmount ->
+                            change.consume()
+                            val h = size.height.coerceAtLeast(1)
+                            // Drag up (negative dragAmount) increases the value.
+                            val deltaFraction = -dragAmount / h
+                            if (leftSide) applyBrightness(brightness + deltaFraction)
+                            else applyVolume(volumeFraction + deltaFraction)
+                        },
+                    )
+                },
+        )
+
         if (state.isBuffering && state.error == null) {
             CircularProgressIndicator(
-                color = BrandMint,
+                color = Brand,
                 modifier = Modifier.align(Alignment.Center).size(52.dp),
             )
         }
@@ -339,7 +381,7 @@ fun PlayerScreen(
                 fraction = volumeFraction,
                 onFraction = { applyVolume(it) },
                 icon = Icons.Rounded.VolumeUp,
-                fill = BrandMint,
+                fill = Brand,
                 modifier = Modifier.padding(end = 10.dp).fillMaxHeight(0.52f),
             )
         }
@@ -523,7 +565,7 @@ private fun SubtitleStatusPill(loading: Boolean, notice: String?, modifier: Modi
         horizontalArrangement = Arrangement.spacedBy(8.dp),
     ) {
         if (loading) {
-            CircularProgressIndicator(color = BrandMint, strokeWidth = 2.dp, modifier = Modifier.size(16.dp))
+            CircularProgressIndicator(color = Brand, strokeWidth = 2.dp, modifier = Modifier.size(16.dp))
         }
         Text(text, color = Color.White, style = MaterialTheme.typography.labelLarge)
         IconButton(
@@ -559,7 +601,7 @@ private fun ErrorOverlay(
         Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
             Button(
                 onClick = onRetry,
-                colors = ButtonDefaults.buttonColors(containerColor = BrandMint, contentColor = Color.Black),
+                colors = ButtonDefaults.buttonColors(containerColor = Brand, contentColor = Color.Black),
             ) {
                 Icon(Icons.Rounded.Refresh, contentDescription = null, modifier = Modifier.size(18.dp))
                 Spacer(Modifier.size(8.dp))
@@ -672,7 +714,7 @@ private fun PlayerControls(
                         icon = Icons.Rounded.ClosedCaption,
                         text = "${state.subtitles.size} زیرنویس",
                         onClick = onSubtitles,
-                        tint = if (state.activeSubtitleIndex >= 0) BrandMint else Color.White,
+                        tint = if (state.activeSubtitleIndex >= 0) Brand else Color.White,
                     )
                     TopChip(
                         icon = Icons.Rounded.GraphicEq,
@@ -690,7 +732,7 @@ private fun PlayerControls(
                 modifier = Modifier.align(Alignment.Center),
             ) {
                 Icon(
-                    imageVector = if (state.isPlaying) Icons.Rounded.Pause else Icons.Rounded.PlayArrow,
+                    imageVector = if (state.playWhenReady && !state.ended) Icons.Rounded.Pause else Icons.Rounded.PlayArrow,
                     contentDescription = "پخش/توقف",
                     tint = Color.White,
                     modifier = Modifier.size(50.dp),
@@ -720,7 +762,7 @@ private fun PlayerControls(
                             icon = Icons.Rounded.AspectRatio,
                             label = "نسبت تصویر",
                             onClick = onCycleResize,
-                            tint = if (resizeModeIndex == 0) Color.White else BrandMint,
+                            tint = if (resizeModeIndex == 0) Color.White else Brand,
                         )
                         Box(
                             modifier = Modifier
@@ -733,13 +775,13 @@ private fun PlayerControls(
                                 Icon(
                                     Icons.Rounded.FastForward,
                                     contentDescription = "سرعت پخش",
-                                    tint = if (state.playbackSpeed == 1f) Color.White else BrandMint,
+                                    tint = if (state.playbackSpeed == 1f) Color.White else Brand,
                                     modifier = Modifier.size(24.dp),
                                 )
                                 if (state.playbackSpeed != 1f) {
                                     Text(
                                         "${formatSpeed(state.playbackSpeed)}×",
-                                        color = BrandMint,
+                                        color = Brand,
                                         style = MaterialTheme.typography.labelMedium,
                                         fontWeight = FontWeight.Bold,
                                     )
@@ -755,24 +797,125 @@ private fun PlayerControls(
                     )
                 }
 
-                // Seek bar forced left-to-right so the timeline fills the natural way
-                // (elapsed on the left, total on the right).
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text(formatTime(state.positionMs), color = Color.White, style = MaterialTheme.typography.labelMedium)
-                    Slider(
-                        value = if (state.durationMs > 0) state.positionMs.toFloat() / state.durationMs else 0f,
-                        onValueChange = { onSeek((it * state.durationMs).toLong()) },
-                        modifier = Modifier.weight(1f).padding(horizontal = 10.dp),
-                        colors = SliderDefaults.colors(
-                            thumbColor = BrandMint,
-                            activeTrackColor = BrandMint,
-                            inactiveTrackColor = Color(0x55FFFFFF),
-                        ),
-                    )
-                    Text(formatTime(state.durationMs), color = Color.White, style = MaterialTheme.typography.labelMedium)
+                // Timeline, left-to-right like every player (elapsed left, total right).
+                SeekTimeline(
+                    positionMs = state.positionMs,
+                    durationMs = state.durationMs,
+                    bufferedMs = state.bufferedMs,
+                    onSeek = onSeek,
+                )
+            }
+        }
+    }
+}
+
+/**
+ * The player timeline: a thin track (played · buffered · rest) with a small
+ * thumb, elapsed time on the left and total on the right.
+ *
+ * The finger drives a local scrub position and the player seeks **once**, on
+ * release. (The old Slider seeked on every drag frame: the stream re-buffered at
+ * each step and the thumb snapped back to the stale position under the finger.)
+ * A tap anywhere on the track jumps there. While scrubbing the track thickens,
+ * the thumb grows, and a time bubble rides above it, so the target is readable
+ * without lifting the finger. The touch area is far taller than the drawn line.
+ */
+@Composable
+private fun SeekTimeline(
+    positionMs: Long,
+    durationMs: Long,
+    bufferedMs: Long,
+    onSeek: (Long) -> Unit,
+) {
+    val seekable = durationMs > 0
+    var scrub by remember { mutableStateOf<Float?>(null) }
+    val played = scrub ?: if (seekable) (positionMs.toFloat() / durationMs).coerceIn(0f, 1f) else 0f
+    val buffered = if (seekable) (bufferedMs.toFloat() / durationMs).coerceIn(0f, 1f) else 0f
+    val active = scrub != null
+    val trackHeight by animateDpAsState(if (active) 6.dp else 4.dp, tween(120), label = "track")
+    val thumbRadius by animateDpAsState(if (active) 9.dp else 6.dp, tween(120), label = "thumb")
+    val shownMs = if (seekable) (played * durationMs).toLong() else positionMs
+    val timeStyle = MaterialTheme.typography.labelMedium.copy(
+        fontFeatureSettings = "tnum",
+        fontWeight = FontWeight.Bold,
+    )
+
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Text(
+            formatTime(shownMs),
+            color = if (active) Brand else Color.White,
+            style = timeStyle,
+            modifier = Modifier.widthIn(min = 44.dp),
+        )
+        BoxWithConstraints(
+            modifier = Modifier
+                .weight(1f)
+                .padding(horizontal = 10.dp)
+                .height(36.dp)
+                .pointerInput(seekable, durationMs) {
+                    if (!seekable) return@pointerInput
+                    awaitEachGesture {
+                        val down = awaitFirstDown()
+                        down.consume()
+                        val width = size.width.toFloat().coerceAtLeast(1f)
+                        scrub = (down.position.x / width).coerceIn(0f, 1f)
+                        var released = false
+                        while (true) {
+                            val event = awaitPointerEvent()
+                            val change = event.changes.firstOrNull { it.id == down.id } ?: break
+                            if (!change.pressed) {
+                                change.consume()
+                                released = true
+                                break
+                            }
+                            scrub = (change.position.x / width).coerceIn(0f, 1f)
+                            change.consume()
+                        }
+                        val target = scrub
+                        scrub = null
+                        // A cancelled gesture (e.g. a system swipe) doesn't seek.
+                        if (released && target != null) onSeek((target * durationMs).toLong())
+                    }
+                },
+            contentAlignment = Alignment.CenterStart,
+        ) {
+            val trackWidth = maxWidth
+            val playedColor = Brand
+            Canvas(Modifier.fillMaxWidth().height(thumbRadius * 2)) {
+                val h = trackHeight.toPx()
+                val y = size.height / 2f
+                val r = CornerRadius(h / 2f, h / 2f)
+                val top = Offset(0f, y - h / 2f)
+                drawRoundRect(Color(0x40FFFFFF), top, Size(size.width, h), r)
+                drawRoundRect(Color(0x66FFFFFF), top, Size(size.width * buffered, h), r)
+                drawRoundRect(playedColor, top, Size(size.width * played, h), r)
+                drawCircle(Color.White, thumbRadius.toPx(), Offset(size.width * played, y))
+            }
+            if (active) {
+                // Time bubble above the thumb, kept inside the track's width.
+                val bubbleWidth = 64.dp
+                val x = (trackWidth * played - bubbleWidth / 2)
+                    .coerceIn(0.dp, (trackWidth - bubbleWidth).coerceAtLeast(0.dp))
+                Box(
+                    modifier = Modifier
+                        .offset(x = x, y = (-30).dp)
+                        .width(bubbleWidth)
+                        .clip(RoundedCornerShape(8.dp))
+                        .background(Color(0xE6000000))
+                        .padding(vertical = 4.dp),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Text(formatTime(shownMs), color = Color.White, style = timeStyle)
                 }
             }
         }
+        Text(
+            formatTime(durationMs),
+            color = Color.White.copy(alpha = 0.8f),
+            style = timeStyle,
+            textAlign = TextAlign.End,
+            modifier = Modifier.widthIn(min = 44.dp),
+        )
     }
 }
 
@@ -1008,7 +1151,7 @@ private fun SettingsSheet(
                     text = formatOffset(state.subtitleOffsetMs),
                     style = MaterialTheme.typography.titleMedium,
                     fontWeight = FontWeight.Bold,
-                    color = if (state.subtitleOffsetMs == 0L) MaterialTheme.colorScheme.onSurface else BrandMint,
+                    color = if (state.subtitleOffsetMs == 0L) MaterialTheme.colorScheme.onSurface else Brand,
                     modifier = Modifier.weight(1f),
                 )
                 SyncStepButton("+۰٫۵ ثانیه") { onSubtitleSync(500L) }
@@ -1097,7 +1240,7 @@ private fun SubtitleSheet(
     Column(modifier = Modifier.fillMaxWidth().padding(16.dp)) {
         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
             Text("زیرنویس", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
-            if (loading) CircularProgressIndicator(color = BrandMint, strokeWidth = 2.dp, modifier = Modifier.size(16.dp))
+            if (loading) CircularProgressIndicator(color = Brand, strokeWidth = 2.dp, modifier = Modifier.size(16.dp))
         }
         Spacer(Modifier.size(8.dp))
         SubtitleOption("خاموش", activeIndex == -1) { onSelect(-1) }
@@ -1106,7 +1249,7 @@ private fun SubtitleSheet(
         }
         if (subtitles.isEmpty() && loading) {
             LinearProgressIndicator(
-                color = BrandMint,
+                color = Brand,
                 trackColor = Color(0x33FFFFFF),
                 modifier = Modifier.fillMaxWidth().padding(top = 12.dp),
             )
@@ -1145,7 +1288,7 @@ private fun SubtitleOption(label: String, active: Boolean, onClick: () -> Unit) 
     Text(
         text = label,
         style = MaterialTheme.typography.bodyLarge,
-        color = if (active) BrandMint else MaterialTheme.colorScheme.onSurface,
+        color = if (active) Brand else MaterialTheme.colorScheme.onSurface,
         fontWeight = if (active) FontWeight.Bold else FontWeight.Normal,
         modifier = Modifier
             .fillMaxWidth()

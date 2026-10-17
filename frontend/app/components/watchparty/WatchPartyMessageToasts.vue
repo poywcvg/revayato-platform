@@ -61,7 +61,7 @@ onBeforeUnmount(() => {
       <article
         v-for="item in visibleMessages"
         :key="item.id"
-        class="party-message-toast group relative overflow-hidden rounded-2xl border border-white/12 bg-[#0b0d0e]/92 text-white shadow-[0_18px_55px_rgba(0,0,0,.55)] backdrop-blur-2xl"
+        class="party-message-toast group relative overflow-hidden rounded-2xl border border-white/12 bg-[#0b0d0e]/92 text-white"
         role="status"
       >
         <button

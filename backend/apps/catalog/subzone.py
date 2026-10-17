@@ -38,6 +38,8 @@ from apps.catalog.subtitle_star import (
     resolve_subtitlestar_search_title,
 )
 
+from apps.catalog.subtitle_provider_health import note_provider_outage
+
 logger = logging.getLogger(__name__)
 
 _IMDB_RE = re.compile(r'(?<![a-z0-9])(tt\d{6,10})(?!\d)', re.I)
@@ -224,6 +226,7 @@ def _fetch(url: str, *, max_bytes: int, timeout_seconds: int, urgent: bool = Fal
     if not _robots_allows(url):
         raise SubzoneError('Subzone robots.txt disallows this path.')
     if _circuit_open() and not _circuit_half_open():
+        note_provider_outage('subzone')
         raise SubzoneBlocked('Subzone circuit breaker is open.')
 
     _throttle(urgent=urgent)
@@ -260,9 +263,14 @@ def _fetch(url: str, *, max_bytes: int, timeout_seconds: int, urgent: bool = Fal
         if exc.code in {403, 429, 503}:
             cooldown = max(60, int(getattr(settings, 'SUBZONE_BLOCKED_COOLDOWN_SECONDS', 15 * 60)))
             cache.set('catalog:subzone:circuit-open', True, timeout=cooldown)
+            note_provider_outage('subzone')
             raise SubzoneBlocked(f'Subzone blocked request with HTTP {exc.code}') from exc
+        if exc.code >= 500:
+            # A 404 is an answer ("no such page"); a 5xx is the site being down.
+            note_provider_outage('subzone')
         raise SubzoneError(f'Subzone HTTP {exc.code}') from exc
-    except URLError as exc:
+    except (URLError, TimeoutError, OSError) as exc:
+        note_provider_outage('subzone')
         raise SubzoneError(f'Subzone network error: {exc}') from exc
 
 
@@ -583,6 +591,8 @@ def find_movie_subtitle(
         logger.exception('Unexpected Subzone lookup failure for %s', identity)
         return None
 
+    if lookup_incomplete or _timed_out():
+        note_provider_outage('subzone')
     if not snappy and not lookup_incomplete and not _timed_out():
         negative_ttl = max(300, int(getattr(settings, 'SUBZONE_NEGATIVE_CACHE_SECONDS', 12 * 60 * 60)))
         cache.set(miss_key, True, timeout=negative_ttl)
@@ -745,6 +755,8 @@ def find_series_episode_subtitles(
         logger.exception('Unexpected Subzone series lookup failure for %s', identity)
         return results
 
+    if not results and (lookup_incomplete or _timed_out()):
+        note_provider_outage('subzone')
     if not results and not snappy and not lookup_incomplete and not _timed_out():
         negative_ttl = max(300, int(getattr(settings, 'SUBZONE_NEGATIVE_CACHE_SECONDS', 12 * 60 * 60)))
         cache.set(miss_key, True, timeout=negative_ttl)

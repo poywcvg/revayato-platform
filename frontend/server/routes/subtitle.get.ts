@@ -59,7 +59,7 @@ export default defineEventHandler(async (event) => {
 
   const contentType = upstream.headers.get('content-type') || 'text/vtt; charset=utf-8'
   setHeader(event, 'content-type', contentType.includes('text') ? contentType : 'text/vtt; charset=utf-8')
-  setHeader(event, 'cache-control', 'public, max-age=3600, stale-while-revalidate=86400')
+  setHeader(event, 'cache-control', 'public, max-age=3600, s-maxage=86400, stale-while-revalidate=86400')
   setHeader(event, 'access-control-allow-origin', '*')
   return text
 })

@@ -12,6 +12,10 @@
     </main>
     <AppFooter />
     <ScrollToTop />
+    <ClientOnly>
+      <AppInstallFab />
+      <CommunityChatDock />
+    </ClientOnly>
     <TelegramWelcomeModal />
   </div>
 </template>

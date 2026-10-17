@@ -32,6 +32,8 @@ const props = withDefaults(defineProps<{
   autofocus?: boolean
   compactPlaceholder?: boolean
   inputId?: string
+  /** Round «جستجو» button at the end of the field (desktop header). */
+  submitButton?: boolean
 }>(), {
   active: false,
   autofocus: false,
@@ -433,7 +435,7 @@ watch(() => props.autofocus, async (value) => {
     <form
       class="header-search"
       :class="{
-        'header-search--alive': isAlive,
+ 'header-search--alive': isAlive,
         'header-search--active': active,
         'header-search--open': showPanel,
         'header-search--busy': showPanel && searching,
@@ -481,7 +483,16 @@ watch(() => props.autofocus, async (value) => {
       >
         <CinematicIcon name="x" class="size-3.5" />
       </button>
-      <kbd v-else class="header-search__kbd" aria-hidden="true">/</kbd>
+      <kbd v-else-if="!submitButton" class="header-search__kbd" aria-hidden="true">/</kbd>
+      <button
+        v-if="submitButton"
+        type="submit"
+        class="header-search__submit"
+        aria-label="جستجو"
+        title="جستجو"
+      >
+        <CinematicIcon name="search" class="size-[1.1rem]" :stroke-width="2.2" />
+      </button>
       <span class="header-search__busy" aria-hidden="true" />
     </form>
 
@@ -763,6 +774,38 @@ watch(() => props.autofocus, async (value) => {
 
 .header-search__clear:active { transform: scale(.9); }
 
+.header-search__submit {
+  display: grid;
+  flex: none;
+  width: calc(var(--hs-h) - .5rem);
+  height: calc(var(--hs-h) - .5rem);
+  place-items: center;
+  margin-inline-end: -.2rem;
+  border: 0;
+  border-radius: 999px;
+  background: var(--hs-accent);
+  color: var(--theme-on-accent, #07110d);
+  cursor: pointer;
+  transition: background-color 160ms ease, transform 200ms cubic-bezier(.34, 1.56, .64, 1);
+}
+
+.header-search__submit:hover {
+  background: var(--theme-accent-primary-hover, #c8efdc);
+}
+
+.header-search__submit:active {
+  transform: scale(.92);
+}
+
+.header-search__submit:focus-visible {
+  outline: 2px solid var(--hs-accent);
+  outline-offset: 2px;
+}
+
+.header-search:has(.header-search__submit) .header-search__icon {
+  display: none;
+}
+
 .header-search__kbd {
   display: none;
   flex: none;
@@ -822,10 +865,7 @@ watch(() => props.autofocus, async (value) => {
   border-radius: 1.35rem;
   background: color-mix(in srgb, var(--theme-bg-elevated, #141414) 96%, transparent);
   box-shadow:
-    0 1.5rem 3rem rgb(0 0 0 / 38%),
-    inset 0 1px 0 rgb(255 255 255 / 5%);
-  -webkit-backdrop-filter: blur(18px) saturate(140%);
-  backdrop-filter: blur(18px) saturate(140%);
+    none;
   scrollbar-width: thin;
 }
 

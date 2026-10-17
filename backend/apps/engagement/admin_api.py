@@ -96,6 +96,10 @@ def admin_support_inbox(request):
     status_filter = request.GET.get('status') or None
     category = request.GET.get('category') or None
     unread_only = request.GET.get('unread') in {'1', 'true', 'True'}
+    # Hide finished conversations by default so the panel only shows work to do.
+    # Resolved/closed rows are still reachable via the status filter and can be
+    # permanently removed with the purge endpoint below.
+    hide_resolved = request.GET.get('hide_resolved') in {'1', 'true', 'True'}
     q = (request.GET.get('q') or '').strip()
 
     queryset = selectors.get_admin_support_tickets(
@@ -103,6 +107,7 @@ def admin_support_inbox(request):
         category=category,
         unread_only=unread_only,
         q=q,
+        hide_resolved=hide_resolved and not status_filter,
     )
     paginator = AdminInboxPagination()
     page = paginator.paginate_queryset(queryset, request)
@@ -118,7 +123,7 @@ def admin_support_inbox(request):
     return response
 
 
-@api_view(['GET', 'PATCH', 'POST'])
+@api_view(['GET', 'PATCH', 'POST', 'DELETE'])
 @permission_classes([IsAuthenticated, IsStaffUser])
 @throttle_classes([StaffAdminThrottle])
 def admin_support_ticket_detail(request, tracking_code):
@@ -126,6 +131,14 @@ def admin_support_ticket_detail(request, tracking_code):
         SupportTicket.objects.select_related('user').prefetch_related('messages__author'),
         tracking_code=tracking_code,
     )
+
+    if request.method == 'DELETE':
+        # Permanent removal (e.g. a resolved conversation cluttering the panel).
+        # Messages cascade; a linked ContentIssueReport keeps its row with the
+        # ticket link nulled (SET_NULL) so remediation history is preserved.
+        code = ticket.tracking_code
+        ticket.delete()
+        return Response({'ok': True, 'deleted': code})
 
     if request.method == 'GET':
         services.mark_ticket_read_by_staff(ticket)
@@ -178,3 +191,54 @@ def admin_support_ticket_detail(request, tracking_code):
     payload['staff_note'] = ticket.staff_note
     payload['user_email'] = ticket.user.email
     return Response(payload)
+
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated, IsStaffUser])
+@throttle_classes([StaffAdminThrottle])
+def admin_support_tickets_purge(request):
+    """Permanently delete finished conversations (resolved/closed) from the panel.
+
+    Body (all optional): ``{ status, category, older_than_days, limit }``.
+    Without ``status`` both ``resolved`` and ``closed`` are removed. ``limit``
+    caps a single click (default 200, max 1000) so one press cannot wipe the
+    whole history unseen. Returns ``{ ok, deleted }``.
+    """
+    from datetime import timedelta
+
+    from django.utils import timezone
+
+    data = request.data if isinstance(request.data, dict) else {}
+    status_filter = (data.get('status') or '').strip()
+    category = (data.get('category') or '').strip() or None
+    try:
+        older_than_days = int(data.get('older_than_days') or 0)
+    except (TypeError, ValueError):
+        older_than_days = 0
+    try:
+        limit = int(data.get('limit') or 200)
+    except (TypeError, ValueError):
+        limit = 200
+    limit = max(1, min(limit, 1000))
+
+    valid_statuses = {choice for choice, _label in SupportTicket.Status.choices}
+    if status_filter:
+        if status_filter not in valid_statuses:
+            return Response(
+                {'detail': 'وضعیت نامعتبر است.', 'code': 'invalid_status'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        statuses = [status_filter]
+    else:
+        statuses = [SupportTicket.Status.RESOLVED, SupportTicket.Status.CLOSED]
+
+    qs = SupportTicket.objects.filter(status__in=statuses)
+    if category:
+        qs = qs.filter(category=category)
+    if older_than_days > 0:
+        cutoff = timezone.now() - timedelta(days=older_than_days)
+        qs = qs.filter(updated_at__lt=cutoff)
+    ids = list(qs.order_by('updated_at').values_list('pk', flat=True)[:limit])
+    deleted, _details = SupportTicket.objects.filter(pk__in=ids).delete()
+    # ``deleted`` counts cascaded messages too; report back ticket rows only.
+    return Response({'ok': True, 'deleted': len(ids)})

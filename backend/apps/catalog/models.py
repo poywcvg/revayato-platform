@@ -42,6 +42,19 @@ class MediaStatus(models.TextChoices):
     FAILED = 'failed', _('Media failed')
 
 
+class SliderPlatform(models.TextChoices):
+    """Which clients show this title in the home slider when featured.
+
+    ``ALL`` (default) keeps the current behaviour — one admin choice feeds
+    both the website and the application. ``WEB``/``APP`` let the admin target
+    a single client without duplicating the title.
+    """
+
+    ALL = 'all', _('All platforms')
+    WEB = 'web', _('Website')
+    APP = 'app', _('Application')
+
+
 class PlaybackMode(models.TextChoices):
     """How the online player should be told to open this title's ``video_url``.
 
@@ -540,6 +553,15 @@ class Movie(models.Model):
     is_published = models.BooleanField(_('Published'), default=False, db_index=True)
     is_featured = models.BooleanField(_('Featured'), default=False, db_index=True)
     is_recommended = models.BooleanField(_('Recommended'), default=False, db_index=True)
+    featured_order = models.PositiveIntegerField(
+        _('Slider order'), default=0, db_index=True,
+        help_text=_('Lower shows first in the home slider; titles with the same order fall back to recency.'),
+    )
+    slider_platform = models.CharField(
+        _('Slider platform'), max_length=8, choices=SliderPlatform.choices,
+        default=SliderPlatform.ALL, db_index=True,
+        help_text=_('Which clients show this title in the home slider.'),
+    )
 
     view_count = models.PositiveBigIntegerField(_('View Count'), default=0)
     like_count = models.PositiveBigIntegerField(_('Like Count'), default=0)
@@ -852,6 +874,15 @@ class Series(models.Model):
     )
     is_published = models.BooleanField(_('Published'), default=False, db_index=True)
     is_featured = models.BooleanField(_('Featured'), default=False, db_index=True)
+    featured_order = models.PositiveIntegerField(
+        _('Slider order'), default=0, db_index=True,
+        help_text=_('Lower shows first in the home slider; titles with the same order fall back to recency.'),
+    )
+    slider_platform = models.CharField(
+        _('Slider platform'), max_length=8, choices=SliderPlatform.choices,
+        default=SliderPlatform.ALL, db_index=True,
+        help_text=_('Which clients show this title in the home slider.'),
+    )
 
     view_count = models.PositiveBigIntegerField(_('View Count'), default=0)
     like_count = models.PositiveBigIntegerField(_('Like Count'), default=0)
@@ -1841,3 +1872,78 @@ class CatalogSlugAlias(models.Model):
 
     def __str__(self):
         return f'{self.kind}:{self.old_slug} → #{self.object_id}'
+
+
+class AiringEntry(models.Model):
+    """One dated release on the weekly schedule (جدول پخش): an episode or a movie.
+
+    Episode rows only exist once a provider carries a file, so the catalog alone
+    cannot say what airs *next* week. These rows come from TMDB's own episode air
+    dates (and a movie's digital release date), are refreshed on a cadence, and
+    drive the airing hunter: from the day a release is due, the crawlers are
+    asked for it on a widening backoff until it is on the site.
+    See ``apps.catalog.airing``.
+    """
+
+    class Kind(models.TextChoices):
+        EPISODE = 'episode', _('Episode')
+        MOVIE = 'movie', _('Movie')
+
+    class Status(models.TextChoices):
+        UPCOMING = 'upcoming', _('Upcoming')
+        WAITING = 'waiting', _('Aired, waiting for files')
+        AVAILABLE = 'available', _('Available on the site')
+        MISSED = 'missed', _('No provider carried it in time')
+        DROPPED = 'dropped', _('Removed from the source schedule')
+
+    kind = models.CharField(max_length=16, choices=Kind.choices, db_index=True)
+    series = models.ForeignKey(Series, on_delete=models.CASCADE, null=True, blank=True, related_name='airing_entries')
+    movie = models.ForeignKey(Movie, on_delete=models.CASCADE, null=True, blank=True, related_name='airing_entries')
+    season_number = models.PositiveIntegerField(null=True, blank=True)
+    episode_number = models.PositiveIntegerField(null=True, blank=True)
+    air_date = models.DateField(db_index=True)
+    #: ``premiere`` / ``finale`` / ``mid_season`` / ``standard`` for episodes,
+    #: ``digital`` for a movie's digital release.
+    release_type = models.CharField(max_length=16, blank=True)
+    title = models.CharField(max_length=255, blank=True)
+    still_url = models.URLField(max_length=500, blank=True)
+    network = models.CharField(max_length=80, blank=True)
+    runtime_minutes = models.PositiveIntegerField(null=True, blank=True)
+
+    status = models.CharField(max_length=16, choices=Status.choices, default=Status.UPCOMING, db_index=True)
+    available_at = models.DateTimeField(null=True, blank=True)
+    next_hunt_at = models.DateTimeField(null=True, blank=True, db_index=True)
+    last_hunt_at = models.DateTimeField(null=True, blank=True)
+    hunt_attempts = models.PositiveIntegerField(default=0)
+    last_result = models.CharField(max_length=200, blank=True)
+
+    synced_at = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        verbose_name = _('Airing entry')
+        verbose_name_plural = _('Airing entries')
+        ordering = ['air_date', 'id']
+        constraints = [
+            models.UniqueConstraint(
+                fields=['series', 'season_number', 'episode_number'],
+                condition=models.Q(kind='episode'),
+                name='uniq_airing_episode',
+            ),
+            models.UniqueConstraint(
+                fields=['movie'], condition=models.Q(kind='movie'), name='uniq_airing_movie',
+            ),
+        ]
+        indexes = [
+            models.Index(fields=['status', 'next_hunt_at'], name='airing_hunt_idx'),
+        ]
+
+    def __str__(self):
+        if self.kind == self.Kind.MOVIE:
+            return f'movie #{self.movie_id} · {self.air_date}'
+        return f'series #{self.series_id} S{self.season_number}E{self.episode_number} · {self.air_date}'
+
+    @property
+    def target(self):
+        return self.movie if self.kind == self.Kind.MOVIE else self.series

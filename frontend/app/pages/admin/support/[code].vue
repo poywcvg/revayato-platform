@@ -13,8 +13,9 @@ definePageMeta({ layout: 'admin', middleware: 'staff' })
 const route = useRoute()
 const code = computed(() => String(route.params.code || ''))
 
-const { ticketDetail, replyTicket, patchTicket, refreshOverview } = useAdminInteraction()
+const { ticketDetail, replyTicket, patchTicket, deleteTicket, refreshOverview } = useAdminInteraction()
 const notify = useNotifications()
+const router = useRouter()
 
 const { data: ticket, pending, error, refresh } = await useAsyncData(
   () => `admin-support-${code.value}`,
@@ -94,6 +95,24 @@ async function saveNote() {
     notify.notifyError(err, 'ذخیرهٔ یادداشت ممکن نشد.')
   } finally {
     noteBusy.value = false
+  }
+}
+
+// Permanent removal of this conversation from the panel.
+const deleting = ref(false)
+async function removeTicket() {
+  if (deleting.value || !ticket.value) return
+  if (!window.confirm(`گفتگوی #${ticket.value.tracking_code} برای همیشه حذف شود؟ این کار قابل بازگشت نیست.`)) return
+  deleting.value = true
+  try {
+    await deleteTicket(code.value)
+    notify.success('حذف شد', 'گفتگو از پنل حذف شد.')
+    await refreshOverview()
+    await router.replace('/admin/support')
+  } catch (err) {
+    notify.notifyError(err, 'حذف گفتگو ممکن نشد.')
+  } finally {
+    deleting.value = false
   }
 }
 </script>
@@ -227,6 +246,21 @@ async function saveNote() {
           />
           <button type="button" class="rv-btn rv-btn--ghost rv-focus mt-2 w-full !min-h-9" :disabled="noteBusy || !noteDirty" @click="saveNote">
             <Save class="size-4" /> ذخیرهٔ یادداشت
+          </button>
+        </div>
+
+        <!-- Danger zone -->
+        <div class="rv-card rv-card--glass p-4">
+          <p class="mb-2 text-xs font-black text-[var(--rv-muted)]">حذف از پنل</p>
+          <p class="mb-3 text-[11px] font-semibold leading-5 text-[var(--rv-faint)]">گفتگو و همهٔ پیام‌هایش برای همیشه حذف می‌شوند.</p>
+          <button
+            type="button"
+            class="rv-btn rv-focus w-full !min-h-9"
+            :style="{ color: 'var(--rv-danger)' }"
+            :disabled="deleting"
+            @click="removeTicket"
+          >
+            {{ deleting ? 'در حال حذف…' : 'حذف این گفتگو' }}
           </button>
         </div>
       </aside>

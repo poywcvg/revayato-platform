@@ -157,7 +157,6 @@ onBeforeUnmount(() => {
   justify-content: center;
   padding-top: max(.75rem, env(safe-area-inset-top));
   background: rgb(2 6 5 / 84%);
-  backdrop-filter: blur(7px);
 }
 
 .media-access-modal__panel {
@@ -189,7 +188,7 @@ onBeforeUnmount(() => {
   background:
     radial-gradient(circle at 80% -20%, rgb(var(--media-accent-rgb, 176 228 204) / 20%), transparent 42%),
     #07100d;
-  box-shadow: 0 -24px 70px rgb(0 0 0 / 55%);
+  box-shadow: none;
   outline: none;
 }
 

@@ -86,6 +86,21 @@ export function detailSeoTitle(item: Movie) {
   return base
 }
 
+/** e.g. «دانلود فیلم تلقین Inception 2010» — the H2 over the download section. */
+export function downloadHeading(item: Movie) {
+  return ['دانلود', kindWord(item), item.title, englishName(item), item.year ? String(item.year) : '']
+    .filter(Boolean)
+    .join(' ')
+}
+
+export type LinkVersion = 'dub' | 'sub' | 'original'
+
+export function versionWord(version: LinkVersion) {
+  if (version === 'dub') return 'دوبله فارسی'
+  if (version === 'sub') return 'زیرنویس فارسی'
+  return 'زبان اصلی'
+}
+
 export function directorNames(item: Movie, limit = 2) {
   const fromCrew = (item.crew || [])
     .filter(person => person.job === 'کارگردان' || person.job?.toLowerCase().includes('director'))
@@ -168,8 +183,22 @@ function personNode(siteUrl: unknown, person: { name: string; slug?: string }) {
   }
 }
 
-function realImage(url: string | undefined, has: boolean | undefined) {
-  return url && has !== false && /^https?:\/\//.test(url) ? url : ''
+/**
+ * An absolute URL for a stored image, or ``''`` for none/placeholder. Posters are
+ * served as site-relative ``/media/...`` paths; og:image, twitter:image and
+ * schema.org need the full URL, and a relative one was silently dropped — so no
+ * detail page had a share/Google Images picture.
+ */
+export function seoImage(siteUrl: unknown, url: string | null | undefined) {
+  const value = String(url || '').trim()
+  if (!value || /placeholder/i.test(value)) return ''
+  if (/^https?:\/\//i.test(value)) return value
+  if (value.startsWith('//')) return `https:${value}`
+  return value.startsWith('/') ? absoluteUrl(siteUrl, value) : ''
+}
+
+function realImage(siteUrl: unknown, url: string | undefined, has: boolean | undefined) {
+  return has === false ? '' : seoImage(siteUrl, url)
 }
 
 /** JSON for a <script> body: `<` escaped so a plot containing "</script>" can't break out. */
@@ -208,8 +237,8 @@ export function detailJsonLd(item: Movie, siteUrl: unknown) {
   const isSeries = item.type === 'series'
   const english = englishName(item)
   const images = [
-    realImage(item.poster_url, item.has_artwork),
-    realImage(item.backdrop_url, item.has_backdrop),
+    realImage(siteUrl, item.poster_url, item.has_artwork),
+    realImage(siteUrl, item.backdrop_url, item.has_backdrop),
   ].filter(Boolean)
   const site = (item.ratings || []).find(entry => entry.source === 'site' && entry.value > 0)
   const sameAs = [
@@ -246,6 +275,17 @@ export function detailJsonLd(item: Movie, siteUrl: unknown) {
     ...(sameAs.length ? { sameAs } : {}),
     ...(isSeries && seasons.size ? { numberOfSeasons: seasons.size } : {}),
     ...(isSeries && item.episodes?.length ? { numberOfEpisodes: item.episodes.length } : {}),
+    // One TVSeason per season, pointing at its anchor in the download section —
+    // what «سریال X فصل ۲» searches resolve to.
+    ...(isSeries && seasons.size ? {
+      containsSeason: [...seasons].filter((n): n is number => typeof n === 'number').sort((a, b) => a - b).map(number => ({
+        '@type': 'TVSeason',
+        name: `فصل ${number}`,
+        seasonNumber: number,
+        numberOfEpisodes: (item.episodes || []).filter(episode => episode.season_number === number).length,
+        url: `${url}#season-${number}`,
+      })),
+    } : {}),
     // Only this site's own user ratings — republishing IMDb/TMDB scores as our
     // aggregateRating violates Google's review-snippet policy.
     ...(site && site.voteCount ? {
@@ -281,7 +321,8 @@ export function useDetailSeo(item: Ref<Movie | null | undefined>) {
   const image = computed(() => {
     const value = item.value
     if (!value) return ''
-    return realImage(value.backdrop_url, value.has_backdrop) || realImage(value.poster_url, value.has_artwork)
+    return realImage(config.public.siteUrl, value.backdrop_url, value.has_backdrop)
+      || realImage(config.public.siteUrl, value.poster_url, value.has_artwork)
   })
 
   useSeoMeta({
@@ -292,6 +333,7 @@ export function useDetailSeo(item: Ref<Movie | null | undefined>) {
     ogType: () => (item.value?.type === 'series' ? 'video.tv_show' : 'video.movie'),
     ogImage: () => image.value || undefined,
     ogImageAlt: () => (item.value ? `پوستر ${kindWord(item.value)} ${item.value.title}` : undefined),
+    twitterImage: () => image.value || undefined,
     twitterCard: 'summary_large_image',
     twitterTitle: title,
     twitterDescription: description,

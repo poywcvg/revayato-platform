@@ -12,6 +12,7 @@ from apps.catalog.provider_import.providers.dornatv_parser import (
 )
 from apps.catalog.models import Movie, Series
 from apps.catalog.provider_import.dornatv_sync import (
+    _crawl_matching_page,
     _validate_dornatv_identity,
     ensure_dornatv_provider,
 )
@@ -373,6 +374,57 @@ class DornatvIdentityTests(SimpleTestCase):
                 'year': 2016,
                 'imdb_id': 'tt1734135',
             })
+
+
+class DornatvAutoResolveTests(SimpleTestCase):
+    """Search ranking is loose: "Breaking Bad" lists "Breaking In" first."""
+
+    PAGES = {
+        '/breaking-in/': {'title_en': 'Breaking In', 'year': 2025, 'imdb_id': 'tt31392119'},
+        '/breaking-bad/': {'title_en': 'Breaking Bad', 'year': 2008, 'imdb_id': ''},
+    }
+
+    def _connector(self, order):
+        from types import SimpleNamespace
+        from unittest import mock
+
+        hits = [
+            SimpleNamespace(provider_item_id=path, original_title=self.PAGES[path]['title_en'])
+            for path in order
+        ]
+        crawled = []
+
+        def crawl(path, content_type):
+            crawled.append(path)
+            return dict(self.PAGES[path], page_path=path)
+
+        return mock.Mock(search_series=mock.Mock(return_value=hits), crawl_download_links=crawl), crawled
+
+    def _series(self):
+        return Series(
+            title='بریکینگ بد', original_title='Breaking Bad', start_year=2008,
+            imdb_id='tt0903747', tmdb_id=1396, slug='breaking-bad',
+        )
+
+    def test_exact_title_hit_is_opened_first(self):
+        connector, crawled = self._connector(['/breaking-in/', '/breaking-bad/'])
+        page = _crawl_matching_page(connector, self._series(), '', content_type='series')
+        self.assertEqual(page['page_path'], '/breaking-bad/')
+        self.assertEqual(crawled, ['/breaking-bad/'])
+
+    def test_a_wrong_top_hit_no_longer_hides_the_right_page(self):
+        connector, crawled = self._connector(['/breaking-in/', '/breaking-bad/'])
+        series = self._series()
+        series.original_title = 'Breaking Bad (US)'  # no exact title hit to rank first
+        series.title = 'Breaking Bad'
+        page = _crawl_matching_page(connector, series, '', content_type='series')
+        self.assertEqual(page['page_path'], '/breaking-bad/')
+        self.assertEqual(crawled, ['/breaking-in/', '/breaking-bad/'])
+
+    def test_no_matching_hit_is_still_a_mismatch(self):
+        connector, _ = self._connector(['/breaking-in/'])
+        with self.assertRaisesMessage(ProviderImportError, 'identity mismatch'):
+            _crawl_matching_page(connector, self._series(), '', content_type='series')
 
 
 @override_settings(DORNATV_BASE_URL='https://dornatv.com', DORNATV_VERIFY_SSL=True)

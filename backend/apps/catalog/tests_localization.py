@@ -6,6 +6,7 @@ from apps.catalog.localization import (
     contains_disallowed_catalog_script,
     contains_persian,
     ensure_persian_metadata,
+    pick_titled_poster,
     prefer_original_artwork,
     translate_to_persian,
 )
@@ -104,19 +105,44 @@ class LocalizationTests(SimpleTestCase):
         self.assertEqual(details['original_title'], 'A Separation')
         self.assertTrue(contains_persian(details['_native_original_title']))
 
-    def test_prefer_original_poster_over_localized(self):
+    def test_titled_english_poster_beats_textless_art(self):
         details = {
             'poster_path': '/fa-local.jpg',
+            'backdrop_path': '/en-wide.jpg',
             'images': {
                 'posters': [
                     {'file_path': '/fa-local.jpg', 'iso_639_1': 'fa', 'vote_average': 9, 'vote_count': 10},
-                    {'file_path': '/original.jpg', 'iso_639_1': None, 'vote_average': 8, 'vote_count': 20},
+                    {'file_path': '/textless.jpg', 'iso_639_1': None, 'vote_average': 8, 'vote_count': 20},
                     {'file_path': '/en.jpg', 'iso_639_1': 'en', 'vote_average': 7, 'vote_count': 5},
+                ],
+                'backdrops': [
+                    {'file_path': '/en-wide.jpg', 'iso_639_1': 'en', 'vote_average': 9},
+                    {'file_path': '/clean-wide.jpg', 'iso_639_1': None, 'vote_average': 5},
                 ],
             },
         }
         prefer_original_artwork(details)
-        self.assertEqual(details['poster_path'], '/original.jpg')
+        self.assertEqual(details['poster_path'], '/en.jpg')
+        self.assertEqual(details['_poster_source'], 'titled')
+        # Backdrops stay textless: they sit behind the hero text.
+        self.assertEqual(details['backdrop_path'], '/clean-wide.jpg')
+
+    def test_titled_poster_falls_back_to_own_language_then_textless(self):
+        posters = [
+            {'file_path': '/textless.jpg', 'iso_639_1': None, 'vote_average': 9},
+            {'file_path': '/ko.jpg', 'iso_639_1': 'ko', 'vote_average': 6},
+            {'file_path': '/ja.jpg', 'iso_639_1': 'ja', 'vote_average': 8},
+        ]
+        self.assertEqual(pick_titled_poster(posters, '/old.jpg', 'ko'), '/ko.jpg')
+        self.assertEqual(pick_titled_poster(posters[:1], '/old.jpg', 'ko'), '/textless.jpg')
+        self.assertEqual(pick_titled_poster([], '/old.jpg', 'ko'), '/old.jpg')
+
+    def test_iranian_title_keeps_its_persian_poster(self):
+        posters = [
+            {'file_path': '/en.jpg', 'iso_639_1': 'en', 'vote_average': 9},
+            {'file_path': '/fa.jpg', 'iso_639_1': 'fa', 'vote_average': 5},
+        ]
+        self.assertEqual(pick_titled_poster(posters, None, 'fa'), '/fa.jpg')
 
     @override_settings(TMDB_TIMEOUT_SECONDS=8)
     def test_machine_translates_title_and_overview(self):
@@ -165,3 +191,46 @@ class TMDBRatingEnrichmentTests(SimpleTestCase):
         details = {'vote_average': 8.0}
         enrich_imdb_rating(details, enabled=False)
         self.assertNotIn('imdb_rating', details)
+
+
+class HeroBackdropTests(SimpleTestCase):
+    def test_original_still_is_scaled_to_hero_width(self):
+        from io import BytesIO
+        from unittest.mock import patch
+
+        from django.core.files.base import ContentFile
+        from PIL import Image
+
+        from apps.catalog import ingestion
+
+        buffer = BytesIO()
+        Image.new('RGB', (3840, 2160), 'navy').save(buffer, format='JPEG')
+        calls = []
+
+        def fake_download(path, *, size='w500', basename='image'):
+            calls.append(size)
+            return ContentFile(buffer.getvalue(), name=f'{basename}.jpg')
+
+        with patch.object(ingestion, '_download_tmdb_image', side_effect=fake_download):
+            content = ingestion.download_hero_backdrop('/wide.jpg', basename='tmdb-1-movie-backdrop')
+
+        self.assertEqual(calls, ['original'])
+        self.assertEqual(content.name, 'tmdb-1-movie-backdrop.webp')
+        with Image.open(BytesIO(content.read())) as image:
+            self.assertEqual(image.size, (1920, 1080))
+            self.assertEqual(image.format, 'WEBP')
+
+    def test_falls_back_to_w1280_when_original_fails(self):
+        from unittest.mock import patch
+
+        from apps.catalog import ingestion
+
+        calls = []
+
+        def fake_download(path, *, size='w500', basename='image'):
+            calls.append(size)
+            return None
+
+        with patch.object(ingestion, '_download_tmdb_image', side_effect=fake_download):
+            self.assertIsNone(ingestion.download_hero_backdrop('/wide.jpg'))
+        self.assertEqual(calls, ['original', 'w1280'])

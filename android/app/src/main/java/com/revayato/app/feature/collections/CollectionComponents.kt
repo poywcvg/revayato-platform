@@ -34,15 +34,17 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import com.revayato.app.core.theme.NeutralSurface
+import com.revayato.app.core.theme.TextSecondary
 import com.revayato.app.data.model.UserCollectionDto
 import com.revayato.app.ui.components.NetworkImage
 
 
 /** Parse a `#RRGGBB` accent into a Compose [Color], falling back to brand violet. */
 fun parseAccent(hex: String?): Color = runCatching {
-    val clean = hex?.removePrefix("#")?.takeIf { it.length == 6 } ?: return@runCatching Color(0xFF7C5CFF)
+    val clean = hex?.removePrefix("#")?.takeIf { it.length == 6 } ?: return@runCatching Color(0xFFE8A04E)
     Color(("FF$clean").toLong(16))
-}.getOrDefault(Color(0xFF7C5CFF))
+}.getOrDefault(Color(0xFFE8A04E))
 
 /**
  * A collection's cover: up to four poster tiles arranged as a collage over the
@@ -111,7 +113,10 @@ private fun CoverTile(url: String?, modifier: Modifier) {
 
 /** Small pill showing a collection's visibility with a matching icon. */
 @Composable
-fun VisibilityBadge(visibility: String, modifier: Modifier = Modifier) {
+fun VisibilityBadge(visibility: String, modifier: Modifier = Modifier, onImage: Boolean = true) {
+    // Over artwork the pill stays white-on-glass; on a plain surface it follows the theme.
+    val fill = if (onImage) Color.White.copy(alpha = 0.10f) else NeutralSurface
+    val ink = if (onImage) Color.White.copy(alpha = 0.9f) else TextSecondary
     val (icon, label) = when (visibility) {
         "public" -> Icons.Rounded.Public to "عمومی"
         "unlisted" -> Icons.Rounded.Link to "با لینک"
@@ -120,16 +125,16 @@ fun VisibilityBadge(visibility: String, modifier: Modifier = Modifier) {
     Row(
         modifier = modifier
             .clip(RoundedCornerShape(999.dp))
-            .background(Color.White.copy(alpha = 0.10f))
+            .background(fill)
             .padding(horizontal = 8.dp, vertical = 3.dp),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(4.dp),
     ) {
-        Icon(icon, contentDescription = null, tint = Color.White.copy(alpha = 0.9f), modifier = Modifier.size(12.dp))
+        Icon(icon, contentDescription = null, tint = ink, modifier = Modifier.size(12.dp))
         Text(
             label,
             style = MaterialTheme.typography.labelSmall,
-            color = Color.White.copy(alpha = 0.9f),
+            color = ink,
         )
     }
 }
@@ -228,7 +233,7 @@ fun CollectionWideRow(
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
         }
-        VisibilityBadge(visibility = collection.visibility)
+        VisibilityBadge(visibility = collection.visibility, onImage = false)
         Spacer(Modifier.width(2.dp))
     }
 }

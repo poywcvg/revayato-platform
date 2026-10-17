@@ -176,8 +176,9 @@ def diagnose(obj) -> dict:
                 codecs.add(fam)
 
     unplayable = bool(unsafe) and safe == 0
-    if unplayable and _series_has_episode_hls(obj):
-        # Episode-level HLS makes the series browser-playable regardless of links.
+    if unplayable and _series_has_playable_episode(obj):
+        # A playable episode (direct or gateway HLS rewrap) makes the series
+        # browser-playable regardless of its download links.
         return {'unplayable': False, 'safe': 1, 'unsafe': unsafe, 'reason': ''}
     reason = ''
     if unplayable:
@@ -231,6 +232,57 @@ def episode_browser_safe(episode) -> bool:
     to an episode must be judged on the episode's own source.
     """
     return _video_url_browser_safe(episode)
+
+
+def episode_gateway_playable(episode) -> bool:
+    """DB-only: can the player open this episode today (direct or via gateway)?
+
+    ``playback_mode`` is written by :mod:`apps.catalog.playback_gate` after it
+    probes the source: ``direct`` plays as-is, ``gateway`` plays through the
+    server HLS rewrap. Both are genuinely watchable, while ``unverified``/``none``
+    are not. A geo-locked MKV (``iran_only``) is excluded: the gateway sits
+    outside Iran and the in-page remuxer has no CORS, so it cannot be rescued.
+    """
+    mode = str(getattr(episode, 'playback_mode', '') or '').lower()
+    if mode not in ('direct', 'gateway'):
+        return False
+    url = str(getattr(episode, 'video_url', '') or '').strip()
+    if not url:
+        return False
+    if mode == 'gateway':
+        try:
+            from config.public_urls import is_geo_locked_url
+
+            if is_geo_locked_url(url):
+                return False
+        except Exception:  # noqa: BLE001 — a helper failure must not block support
+            pass
+    return True
+
+
+def episode_resolved(episode) -> bool:
+    """Crawl-free truth for one episode: direct-safe or gateway-rescuable."""
+    return episode_browser_safe(episode) or episode_gateway_playable(episode)
+
+
+def _series_has_playable_episode(obj) -> bool:
+    """True when any published episode already plays (direct or via gateway).
+
+    Unlike :func:`_series_has_episode_hls` (any ``video_url``, used by
+    :func:`has_any_source` to ask "does it exist?"), this asks "does it play?"
+    so a series whose episodes are all unverified geo-locked MKVs is correctly
+    flagged unplayable and queued for the playback crawler.
+    """
+    from apps.catalog.models import Series
+
+    if not isinstance(obj, Series):
+        return False
+    from apps.catalog.models import Episode
+
+    return Episode.objects.filter(
+        season__series_id=obj.pk, is_published=True,
+        playback_mode__in=('direct', 'gateway'),
+    ).exclude(video_url='').exclude(video_url__isnull=True).exists()
 
 
 def _content_type_of(obj) -> str:

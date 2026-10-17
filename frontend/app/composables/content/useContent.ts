@@ -229,6 +229,30 @@ export function useCatalog() {
     return task
   }
 
+  /**
+   * The detail endpoint is served stale-while-revalidate for a few minutes, so a
+   * refetch right after the player attached a freshly found subtitle can answer
+   * without it. Never let that older payload take a track away from the viewer.
+   */
+  function keepKnownSubtitleTracks(fresh: Movie, known: Movie): Movie {
+    const knownTitleTracks = known.playback?.subtitle_tracks || []
+    const freshTitleTracks = fresh.playback?.subtitle_tracks || []
+    const titleTracks = freshTitleTracks.length ? freshTitleTracks : knownTitleTracks
+    const knownEpisodes = new Map((known.episodes || []).map(episode => [episode.id, episode]))
+    return {
+      ...fresh,
+      subtitle_tracks: fresh.subtitle_tracks?.length ? fresh.subtitle_tracks : (known.subtitle_tracks || fresh.subtitle_tracks),
+      playback: titleTracks.length
+        ? { ...(fresh.playback || known.playback || {}), subtitle_tracks: titleTracks }
+        : fresh.playback,
+      episodes: fresh.episodes?.map((episode) => {
+        if (episode.subtitle_tracks?.length) return episode
+        const previous = knownEpisodes.get(episode.id)?.subtitle_tracks
+        return previous?.length ? { ...episode, subtitle_tracks: previous } : episode
+      }),
+    }
+  }
+
   async function loadItemFromApi(slug: string, type: ContentType, options: { softsubPoll?: boolean } = {}) {
     detailRequests.value += 1
     error.value = null
@@ -244,10 +268,11 @@ export function useCatalog() {
       // Match on the slug the API answered with: an old (Persian) address resolves to
       // the row's current English slug, and the page then redirects to it.
       const existingIndex = catalogState.value.findIndex(candidate => candidate.slug === adapted.slug && candidate.type === type)
-      if (existingIndex === -1) catalogState.value = [...catalogState.value, adapted]
-      else catalogState.value = catalogState.value.map((candidate, index) => index === existingIndex ? adapted : candidate)
+      const stored = existingIndex === -1 ? adapted : keepKnownSubtitleTracks(adapted, catalogState.value[existingIndex]!)
+      if (existingIndex === -1) catalogState.value = [...catalogState.value, stored]
+      else catalogState.value = catalogState.value.map((candidate, index) => index === existingIndex ? stored : candidate)
       source.value = 'api'
-      return adapted
+      return stored
     } catch (cause) {
       error.value = cause instanceof Error ? cause.message : 'Catalog detail API is unavailable'
       return null
@@ -472,43 +497,41 @@ export function useRelatedMovies(item: MaybeRefOrGetter<Movie | null>, limit = 6
   const { catalog } = useCatalog()
   const { api } = useApi()
   const config = useRuntimeConfig()
-  const related = ref<Movie[]>([])
   const mediaBase = String(config.public.mediaCdnBaseUrl)
 
-  // Render immediately with the local heuristic so the tab/rail never flashes.
-  watch(
-    () => toValue(item),
-    (current) => {
-      related.value = current ? heuristicRelated(current, catalog.value, limit) : []
+  // The server-computed similarity (director/cast/genre-aware), fetched during
+  // SSR too: the rail is the page's only link to other titles, and a crawler
+  // never saw it when it was client-only (the local catalog is empty on the
+  // server). Bounded so a slow similarity query cannot hold the render; the
+  // local heuristic stands in on error, timeout or an empty answer.
+  const key = computed(() => {
+    const current = toValue(item)
+    return current ? `similar:${current.type}:${current.slug}:${limit}` : 'similar:none'
+  })
+  const { data } = useAsyncData(
+    key,
+    async () => {
+      const current = toValue(item)
+      if (!current?.slug) return []
+      try {
+        const payload = await api<ApiListResponse<ApiCatalogItem> | ApiCatalogItem[]>(
+          `/${current.type === 'movie' ? 'movies' : 'series'}/${encodeURIComponent(current.slug)}/similar/`,
+          { query: { limit }, timeout: import.meta.server ? 2500 : 10000, retry: 0 },
+        )
+        return unwrapApiList(payload)
+          .map(entry => adaptApiCatalogListItem(entry, current.type, mediaBase))
+          .filter(entry => entry.id !== current.id)
+          .slice(0, limit)
+      } catch {
+        return []
+      }
     },
-    { immediate: true },
+    { default: () => [] as Movie[] },
   )
 
-  // Then upgrade to the server-computed similarity (director/cast-aware) once
-  // it returns. Fall back to the heuristic value on error or empty payload.
-  // Client-only (like loadReviews): SSR renders the heuristic rail and never
-  // waits on an extra API round-trip.
-  if (import.meta.client) {
-    watch(
-      () => toValue(item),
-      async (current) => {
-        if (!current) return
-        try {
-          const data = await api<ApiListResponse<ApiCatalogItem> | ApiCatalogItem[]>(
-            `/${current.type === 'movie' ? 'movies' : 'series'}/${encodeURIComponent(current.slug)}/similar/`,
-            { query: { limit } },
-          )
-          const items = unwrapApiList(data)
-            .map(entry => adaptApiCatalogListItem(entry, current.type, mediaBase))
-            .filter(entry => entry.id !== current.id)
-          if (items.length) related.value = items.slice(0, limit)
-        } catch {
-          // Keep the heuristic rail; the similar endpoint is an enhancement.
-        }
-      },
-      { immediate: true },
-    )
-  }
-
-  return computed(() => related.value)
+  return computed(() => {
+    const current = toValue(item)
+    if (!current) return []
+    return data.value?.length ? data.value : heuristicRelated(current, catalog.value, limit)
+  })
 }

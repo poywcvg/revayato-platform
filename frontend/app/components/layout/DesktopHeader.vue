@@ -12,27 +12,30 @@ interface HeaderNavItem {
   label: string
   to: string
   match: (path: string) => boolean
+  /** Shown from 1280px up; below that it lives in the categories menu. */
+  wide?: boolean
 }
 
 const navItems: HeaderNavItem[] = [
   { label: 'خانه', to: '/', match: path => path === '/' },
   { label: 'فیلم‌ها', to: '/movies', match: path => path.startsWith('/movies') },
   { label: 'سریال‌ها', to: '/series', match: path => path.startsWith('/series') },
+  { label: 'تازه‌ها', to: '/new', match: path => path.startsWith('/new'), wide: true },
   { label: '۲۵۰ برتر', to: '/top250', match: path => path.startsWith('/top250') },
-  { label: 'تماشای گروهی', to: '/watch-party', match: path => path.startsWith('/watch-party') },
+  { label: 'جدول پخش', to: '/schedule', match: path => path.startsWith('/schedule'), wide: true },
+  { label: 'تماشای گروهی', to: '/watch-party', match: path => path.startsWith('/watch-party'), wide: true },
 ]
 
-const pillItems = navItems.map(({ label, to }) => ({ label, href: to }))
-const activeNavHref = computed(() => navItems.find(item => item.match(route.path))?.to)
+const username = computed(() => authStore.user?.username || '')
+const avatar = computed(() => authStore.user?.profile?.avatar || '')
+const initial = computed(() => (username.value.trim()[0] || 'ر').toUpperCase())
+const onProfile = computed(() => route.path.startsWith('/profile'))
 
-// Home floats the bar transparently over the hero until the viewer scrolls a
-// little; every other route wears a solid glass bar from the first pixel.
-const isOverlay = computed(() => route.path === '/')
-const isHomeAtTop = computed(() => isOverlay.value && y.value < 24)
-// Past a few pixels the bar detaches into a floating, rounded capsule.
+// Once the page moves, the bar switches to the raised surface tone so it
+// reads as sitting over the content (a tone step, never a shadow).
 const isScrolled = computed(() => y.value > 8)
 
-// Thin reading-progress line under the bar. rAF-throttled so measuring
+// Thin reading-progress line on the bar's floor. rAF-throttled so measuring
 // scrollHeight (a reflow) never happens more than once per frame.
 const scrollProgress = ref(0)
 let ticking = false
@@ -56,154 +59,138 @@ watch(() => route.fullPath, () => nextTick(measureProgress))
 </script>
 
 <template>
-  <header
-    class="rvh"
-    :class="{
-      'rvh--overlay': isOverlay,
-      'rvh--top': isHomeAtTop,
-      'rvh--scrolled': isScrolled,
-    }"
-  >
+  <header class="rvh" :class="{ 'rvh--scrolled': isScrolled }">
     <a href="#main-content" class="rvh__skip">پرش به محتوای اصلی</a>
 
-    <div class="rvh__inner">
-      <div class="rvh__bar">
+    <!-- One bar across the full width: brand + navigation · search · account. -->
+    <div class="rvh__row">
+      <div class="rvh__start">
         <AppLogo class="rvh__logo" />
 
-        <PillNav
-          class="rvh__nav"
-          :items="pillItems"
-          :active-href="activeNavHref"
-          :mobile-menu="false"
-          :initial-load-animation="false"
-          base-color="var(--rvh-accent)"
-          pill-color="transparent"
-          pill-text-color="var(--theme-text-secondary, #c4c4c4)"
-          hovered-pill-text-color="var(--theme-on-accent, #07110d)"
-        />
-
-        <HeaderCategories class="rvh__cats" />
-
-        <HeaderSearch class="rvh__search" :active="route.path === '/search'" />
-
-        <div class="rvh__actions" aria-label="ابزارهای حساب">
-          <NotificationCenter />
-
+        <nav class="rvh__nav" aria-label="منوی اصلی">
           <NuxtLink
-            to="/watchlist"
-            class="rvh__action"
-            :class="route.path === '/watchlist' && 'rvh__action--active'"
-            aria-label="لیست من"
-            title="لیست من"
-            :aria-current="route.path === '/watchlist' ? 'page' : undefined"
+            v-for="item in navItems"
+            :key="item.to"
+            :to="item.to"
+            class="rvh__link"
+            :class="[item.match(route.path) && 'rvh__link--active', item.wide && 'rvh__link--wide']"
+            :aria-current="item.match(route.path) ? 'page' : undefined"
           >
-            <CinematicIcon name="bookmark" class="size-5" :filled="route.path === '/watchlist'" />
-            <span v-if="watchlistIds.length" class="rvh__badge tabular-nums">{{ watchlistIds.length }}</span>
+            {{ item.label }}
           </NuxtLink>
 
-          <NuxtLink
-            :to="profilePath"
-            class="rvh__action rvh__action--profile"
-            :class="route.path.startsWith('/profile') && 'rvh__action--active'"
-            :aria-label="authStore.isAuthenticated ? 'پروفایل' : 'ورود به حساب'"
-            :title="authStore.isAuthenticated ? 'پروفایل' : 'ورود و ثبت‌نام'"
-            :aria-current="route.path.startsWith('/profile') ? 'page' : undefined"
-          >
-            <CinematicIcon :name="authStore.isAuthenticated ? 'user' : 'login'" class="size-5" :stroke-width="route.path.startsWith('/profile') ? 2.2 : 1.8" />
-            <span v-if="!authStore.isAuthenticated" class="rvh__action-label">ورود</span>
-          </NuxtLink>
-        </div>
+          <HeaderCategories class="rvh__cats" />
+        </nav>
       </div>
 
-      <span class="rvh__progress" aria-hidden="true" :style="{ '--rvh-progress': scrollProgress }" />
+      <HeaderSearch class="rvh__search" :active="route.path === '/search'" submit-button />
+
+      <div class="rvh__end" aria-label="ابزارهای حساب">
+        <NuxtLink
+          to="/app"
+          class="rvh__icon rvh__icon--app"
+          :class="route.path.startsWith('/app') && 'rvh__icon--active'"
+          aria-label="اپلیکیشن اندروید"
+          title="اپلیکیشن اندروید"
+        >
+          <CinematicIcon name="smartphone" class="size-[1.15rem]" />
+        </NuxtLink>
+
+        <ThemeToggle size="sm" class="rvh__theme" />
+
+        <NotificationCenter class="rvh__bell" />
+
+        <NuxtLink
+          to="/watchlist"
+          class="rvh__icon"
+          :class="route.path === '/watchlist' && 'rvh__icon--active'"
+          aria-label="لیست من"
+          title="لیست من"
+          :aria-current="route.path === '/watchlist' ? 'page' : undefined"
+        >
+          <CinematicIcon name="bookmark" class="size-[1.15rem]" :filled="route.path === '/watchlist'" />
+          <span v-if="watchlistIds.length" class="rvh__badge tabular-nums">{{ watchlistIds.length }}</span>
+        </NuxtLink>
+
+        <span class="rvh__divider" aria-hidden="true" />
+
+        <NuxtLink
+          v-if="authStore.isAuthenticated"
+          :to="profilePath"
+          class="rvh__me"
+          :class="onProfile && 'rvh__me--active'"
+          :aria-current="onProfile ? 'page' : undefined"
+          :title="username || 'پروفایل من'"
+        >
+          <span class="rvh__avatar">
+            <img v-if="avatar" :src="avatar" alt="" width="34" height="34" loading="lazy" decoding="async">
+            <span v-else aria-hidden="true">{{ initial }}</span>
+          </span>
+          <span class="rvh__me-name">{{ username || 'پروفایل من' }}</span>
+          <span class="sr-only">پروفایل من</span>
+        </NuxtLink>
+
+        <NuxtLink v-else :to="profilePath" class="rvh__login">
+          <CinematicIcon name="login" class="size-[1.05rem]" :stroke-width="2" />
+          <span>ورود / ثبت‌نام</span>
+        </NuxtLink>
+      </div>
     </div>
+
+    <span class="rvh__progress" aria-hidden="true" :style="{ '--rvh-progress': scrollProgress }" />
   </header>
 </template>
 
 <style scoped>
 /* =====================================================================
-   Revayato desktop header (lg / 1024px and up).
-   One palette, taken from PillNav: a soft glass rail, mint (the brand
-   accent) for hover / active / focus, pine for the progress tail. Every
-   control is a pill of the same height (--rvh-control), so the row reads
-   as one calm line: logo · nav · categories ····· search · account.
-   The search widens when used; the bar condenses into a floating capsule
-   on scroll and floats transparently over the home hero.
+   Revayato desktop header (lg / 1024px and up) — a single flat bar that
+   spans the whole viewport, aligned to the same gutter as the page.
+   Start: logo + text navigation (the current page gets an accent rule on
+   the bar's floor). Middle: search, which takes the free room. End: app,
+   theme, notifications, watchlist, then the account. No shadows, no blur:
+   surfaces are separated by a hairline and a tone step on scroll.
    ===================================================================== */
 .rvh {
   --rvh-accent: var(--theme-accent-primary, #b0e4cc);
-  --rvh-control: 2.6rem;
+  --rvh-on-accent: var(--theme-on-accent, #07110d);
   --rvh-ink: var(--theme-text-primary, #fff);
   --rvh-ink-soft: var(--theme-text-secondary, #c4c4c4);
-  --rvh-rail: color-mix(in srgb, var(--rvh-ink) 5%, transparent);
-  --rvh-rail-line: color-mix(in srgb, var(--rvh-ink) 9%, transparent);
-  --rvh-tint: color-mix(in srgb, var(--rvh-accent) 14%, transparent);
+  --rvh-muted: var(--theme-text-muted, #979797);
+  --rvh-h: var(--header-height, 4.5rem);
+  --rvh-control: 2.5rem;
+  --rvh-line: color-mix(in srgb, var(--rvh-ink) 9%, transparent);
+  --rvh-tint: color-mix(in srgb, var(--rvh-ink) 6%, transparent);
+  --rvh-bg: var(--theme-bg-main, #1d1c21);
   /* Feed the notification bell's focus ring the right surface colour. */
-  --header-ring: var(--theme-bg-soft, #161518);
+  --header-ring: var(--rvh-bg);
   position: sticky;
   top: 0;
   z-index: 50;
+  height: var(--rvh-h);
+  border-bottom: 1px solid var(--rvh-line);
+  background: var(--rvh-bg);
   color: var(--rvh-ink);
+  transition: background-color 200ms ease;
 }
 
-.rvh__inner {
-  position: relative;
-  margin-inline: auto;
-  max-width: var(--layout-max);
-  padding-inline: clamp(.75rem, 2.4vw, 2rem);
-}
+.rvh--scrolled { --rvh-bg: var(--theme-bg-soft, #161518); }
 
-/* ---- The bar ---- */
-.rvh__bar {
-  position: relative;
+.rvh__row {
   display: flex;
+  height: 100%;
   align-items: center;
-  gap: clamp(.5rem, 1vw, .9rem);
-  height: 4.5rem;
-  padding-inline: clamp(.5rem, 1.1vw, .9rem);
-  border: 1px solid transparent;
-  border-radius: 0;
-  transition:
-    height 300ms cubic-bezier(.22, 1, .36, 1),
-    background-color 300ms ease,
-    border-color 300ms ease,
-    border-radius 300ms cubic-bezier(.22, 1, .36, 1),
-    box-shadow 300ms ease,
-    margin-top 300ms cubic-bezier(.22, 1, .36, 1);
-  animation: rvh-drop .5s cubic-bezier(.22, 1, .36, 1) both;
+  gap: clamp(1rem, 2vw, 2.5rem);
+  padding-inline: var(--layout-gutter);
 }
 
-@keyframes rvh-drop {
-  from { opacity: 0; transform: translateY(-.55rem); }
-  to { opacity: 1; transform: none; }
-}
-
-/* Non-home routes: a quiet glass band from the first pixel. */
-.rvh:not(.rvh--overlay) .rvh__bar {
-  background: color-mix(in srgb, var(--theme-bg-soft, #161518) 78%, transparent);
-  border-bottom-color: var(--rvh-rail-line);
-  -webkit-backdrop-filter: blur(12px) saturate(1.25);
-  backdrop-filter: blur(12px) saturate(1.25);
-}
-
-/* Home at the very top: nothing behind it but the hero. */
-.rvh--top .rvh__bar {
-  background: transparent;
-  border-color: transparent;
-}
-
-/* Scrolled (any route): lift into a floating pill-shaped capsule. */
-.rvh--scrolled .rvh__bar {
-  height: 3.6rem;
-  margin-top: .6rem;
-  border-color: var(--rvh-rail-line);
-  border-radius: 1.8rem;
-  background: color-mix(in srgb, var(--theme-bg-soft, #161518) 86%, transparent);
-  box-shadow:
-    0 .9rem 2.2rem rgb(0 0 0 / 30%),
-    inset 0 1px 0 rgb(255 255 255 / 5%);
-  -webkit-backdrop-filter: blur(14px) saturate(1.3);
-  backdrop-filter: blur(14px) saturate(1.3);
+/* ---- Brand + navigation ---- */
+.rvh__start {
+  display: flex;
+  height: 100%;
+  min-width: 0;
+  flex: none;
+  align-items: center;
+  gap: clamp(1rem, 2vw, 2.25rem);
 }
 
 .rvh__logo {
@@ -211,228 +198,304 @@ watch(() => route.fullPath, () => nextTick(measureProgress))
   color: var(--rvh-ink);
 }
 
-/* ---- Primary navigation (PillNav): glass rail, mint hover, mint dot ---- */
 .rvh__nav {
-  flex: none;
-  min-width: 0;
-  width: auto;
-  --nav-h: var(--rvh-control);
-  --pill-gap: 2px;
-  --pill-pad-x: clamp(.65rem, .95vw, 1.05rem);
-  --pill-font-size: .875rem;
-  --track-bg: var(--rvh-rail);
-  --track-border: var(--rvh-rail-line);
-  --pill-active-bg: var(--rvh-tint);
-  --pill-active-text: var(--rvh-accent);
-  --dot-bg: var(--rvh-accent);
-  --dot-size: 4px;
-  --dot-offset: 5px;
+  display: flex;
+  height: 100%;
+  align-items: stretch;
+  gap: clamp(.15rem, .5vw, .6rem);
 }
 
-/* ---- Categories trigger: same pill as everything else ---- */
-.rvh__cats { flex: none; }
+.rvh__link {
+  position: relative;
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  padding-inline: .7rem;
+  color: var(--rvh-ink-soft);
+  font-size: .92rem;
+  font-weight: 600;
+  white-space: nowrap;
+  transition: color 160ms ease;
+}
+
+/* The active rule sits on the bar's floor, over the hairline. */
+.rvh__link::after {
+  content: "";
+  position: absolute;
+  inset-inline: .7rem;
+  bottom: -1px;
+  height: 3px;
+  border-radius: 3px 3px 0 0;
+  background: var(--rvh-accent);
+  transform: scaleX(0);
+  transition: transform 220ms cubic-bezier(.22, 1, .36, 1);
+}
+
+.rvh__link:hover { color: var(--rvh-ink); }
+
+.rvh__link--active {
+  color: var(--rvh-ink);
+  font-weight: 700;
+}
+
+.rvh__link--active::after { transform: scaleX(1); }
+
+.rvh__link:focus-visible {
+  outline: 2px solid var(--rvh-accent);
+  outline-offset: -.9rem;
+  border-radius: .6rem;
+}
+
+/* Categories trigger: dressed like a nav link. */
+.rvh__cats {
+  display: flex;
+  flex: none;
+  align-items: center;
+}
 
 .rvh__cats :deep(.header-categories__trigger) {
   height: var(--rvh-control);
-  padding-inline: .8rem;
-  border-radius: 999px;
-  background: var(--rvh-rail);
-  box-shadow: inset 0 0 0 1px var(--rvh-rail-line);
+  padding-inline: .7rem;
+  border-radius: .7rem;
+  background: transparent;
+  box-shadow: none;
   color: var(--rvh-ink-soft);
-  transition: background-color 180ms ease, color 180ms ease, box-shadow 180ms ease;
+  font-size: .92rem;
+  font-weight: 600;
+  transition: background-color 160ms ease, color 160ms ease;
 }
 
 .rvh__cats :deep(.header-categories__trigger:hover),
 .rvh__cats :deep(.header-categories__trigger[aria-expanded="true"]) {
   background: var(--rvh-tint);
-  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--rvh-accent) 30%, transparent);
-  color: var(--rvh-accent);
+  color: var(--rvh-ink);
 }
 
-/* ---- Search: compact at rest, widens while in use ---- */
+/* ---- Search takes the free room between the two clusters ---- */
 .rvh__search {
-  --hs-h: var(--rvh-control);
+  --hs-h: calc(var(--rvh-control) + .2rem);
   flex: 1 1 auto;
   min-width: 11rem;
-  max-width: 19rem;
-  margin-inline-start: auto;
-  transition: max-width 420ms cubic-bezier(.22, 1, .36, 1);
+  max-width: 40rem;
+  margin-inline: auto;
 }
 
-.rvh__search:focus-within,
-.rvh__search:has(.header-search--alive) {
-  max-width: 34rem;
-}
-
-/* ---- Account cluster: one rail holding round icon buttons ---- */
-.rvh__actions {
+/* ---- Account cluster ---- */
+.rvh__end {
   display: flex;
   flex: none;
   align-items: center;
-  gap: 2px;
-  height: var(--rvh-control);
-  padding: 3px;
-  border-radius: 999px;
-  background: var(--rvh-rail);
-  box-shadow: inset 0 0 0 1px var(--rvh-rail-line);
+  gap: .35rem;
 }
 
-.rvh__action,
-.rvh__actions :deep(.site-header__icon-btn) {
+.rvh__theme { margin-inline: .15rem .3rem; }
+
+.rvh__icon,
+.rvh__end :deep(.site-header__icon-btn) {
   position: relative;
   display: grid;
-  width: calc(var(--rvh-control) - 6px);
-  height: calc(var(--rvh-control) - 6px);
+  width: var(--rvh-control);
+  height: var(--rvh-control);
   flex: none;
   place-items: center;
   border: 0;
   border-radius: 999px;
   background: transparent;
   color: var(--rvh-ink-soft);
-  transition: background-color 180ms ease, color 180ms ease, transform 220ms cubic-bezier(.34, 1.56, .64, 1);
+  transition: background-color 160ms ease, color 160ms ease;
 }
 
-.rvh__action:hover,
-.rvh__action:focus-visible,
-.rvh__actions :deep(.site-header__icon-btn:hover),
-.rvh__actions :deep(.site-header__icon-btn:focus-visible),
-.rvh__actions :deep(.site-header__icon-btn--active) {
+.rvh__end :deep(.site-header__icon-btn svg) {
+  width: 1.15rem;
+  height: 1.15rem;
+}
+
+.rvh__icon:hover,
+.rvh__end :deep(.site-header__icon-btn:hover) {
   background: var(--rvh-tint);
+  color: var(--rvh-ink);
+}
+
+.rvh__icon--active,
+.rvh__end :deep(.site-header__icon-btn--active) {
+  background: color-mix(in srgb, var(--rvh-accent) 16%, transparent);
   color: var(--rvh-accent);
 }
 
-.rvh__action:active,
-.rvh__actions :deep(.site-header__icon-btn:active) {
-  transform: scale(.92);
-}
-
-.rvh__action--active {
-  background: var(--rvh-tint);
-  color: var(--rvh-accent);
-}
-
-.rvh__action:focus-visible,
-.rvh__actions :deep(.site-header__icon-btn:focus-visible) {
+.rvh__icon:focus-visible,
+.rvh__end :deep(.site-header__icon-btn:focus-visible),
+.rvh__me:focus-visible,
+.rvh__login:focus-visible {
   outline: 2px solid var(--rvh-accent);
-  outline-offset: 1px;
-}
-
-/* Guests: the profile slot becomes the one solid mint call to action. */
-.rvh__action--profile:has(.rvh__action-label) {
-  width: auto;
-  gap: .35rem;
-  padding-inline: .8rem .95rem;
-  background: var(--rvh-accent);
-  color: var(--theme-on-accent, #07110d);
-}
-
-.rvh__action--profile:has(.rvh__action-label):hover,
-.rvh__action--profile:has(.rvh__action-label):focus-visible {
-  background: var(--theme-accent-primary-hover, #c8efdc);
-  color: var(--theme-on-accent, #07110d);
-}
-
-.rvh__action-label {
-  font-size: .8rem;
-  font-weight: 800;
+  outline-offset: 2px;
 }
 
 .rvh__badge {
   position: absolute;
-  inset-block-start: 0;
-  inset-inline-start: 0;
+  inset-block-start: .1rem;
+  inset-inline-start: .1rem;
   display: grid;
-  min-width: 1rem;
-  min-height: 1rem;
+  min-width: 1.05rem;
+  min-height: 1.05rem;
   place-items: center;
-  padding-inline: .2rem;
+  padding-inline: .22rem;
   border-radius: 999px;
   background: var(--rvh-accent);
-  color: var(--theme-on-accent, #07110d);
-  font-size: 0.75rem;
-  font-weight: 900;
+  color: var(--rvh-on-accent);
+  font-size: .68rem;
+  font-weight: 800;
   line-height: 1;
-  box-shadow: 0 0 0 2px var(--theme-bg-soft, #161518);
+  box-shadow: 0 0 0 2px var(--rvh-bg);
 }
 
-/* ---- Reading progress along the capsule's floor ---- */
+.rvh__divider {
+  width: 1px;
+  height: 1.6rem;
+  margin-inline: .45rem;
+  background: var(--rvh-line);
+}
+
+/* Signed in: avatar (photo or initial) + username. */
+.rvh__me {
+  display: inline-flex;
+  height: var(--rvh-control);
+  align-items: center;
+  gap: .55rem;
+  padding-inline: .25rem .8rem;
+  border: 1px solid var(--rvh-line);
+  border-radius: 999px;
+  color: var(--rvh-ink);
+  font-size: .85rem;
+  font-weight: 700;
+  transition: background-color 160ms ease, border-color 160ms ease;
+}
+
+.rvh__me:hover { background: var(--rvh-tint); }
+
+.rvh__me--active { border-color: color-mix(in srgb, var(--rvh-accent) 70%, transparent); }
+
+.rvh__avatar {
+  display: grid;
+  width: calc(var(--rvh-control) - .5rem);
+  height: calc(var(--rvh-control) - .5rem);
+  flex: none;
+  place-items: center;
+  overflow: hidden;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--rvh-accent) 20%, transparent);
+  color: var(--rvh-accent);
+  font-size: .9rem;
+  font-weight: 800;
+}
+
+.rvh__avatar img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.rvh__me-name {
+  max-width: 8rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Signed out: the one solid accent control in the bar. */
+.rvh__login {
+  display: inline-flex;
+  height: var(--rvh-control);
+  align-items: center;
+  gap: .45rem;
+  padding-inline: 1rem 1.1rem;
+  border-radius: 999px;
+  background: var(--rvh-accent);
+  color: var(--rvh-on-accent);
+  font-size: .85rem;
+  font-weight: 700;
+  white-space: nowrap;
+  transition: background-color 160ms ease;
+}
+
+.rvh__login:hover { background: var(--theme-accent-primary-hover, #c8efdc); }
+
+/* The bell's panel opens just under the bar. */
+.rvh__end :deep(#notification-panel) {
+  top: calc(100% + .75rem);
+}
+
+/* Reading progress along the bar's floor. */
 .rvh__progress {
   position: absolute;
-  inset-inline: calc(clamp(.75rem, 2.4vw, 2rem) + 1.4rem);
-  bottom: 0;
+  inset-inline: 0;
+  bottom: -1px;
   height: 2px;
   transform-origin: right center; /* RTL: fill from the leading edge */
   transform: scaleX(var(--rvh-progress, 0));
-  border-radius: 999px;
-  background: linear-gradient(to left, var(--rvh-accent), var(--theme-accent-crimson, #408a71));
+  background: var(--rvh-accent);
   opacity: 0;
+  pointer-events: none;
   transition: opacity 160ms ease;
-  will-change: transform;
 }
 
-.rvh--scrolled .rvh__progress { opacity: .85; }
+.rvh--scrolled .rvh__progress { opacity: .7; }
 
-/* ---- Skip link ---- */
+/* Skip link. */
 .rvh__skip {
   position: absolute;
   inset-inline-start: 1rem;
-  top: .5rem;
+  top: .6rem;
   z-index: 10;
-  transform: translateY(-5rem);
+  transform: translateY(-6rem);
   border-radius: 999px;
   background: var(--rvh-accent);
-  padding: .5rem 1rem;
-  color: var(--theme-on-accent, #07110d);
+  padding: .45rem 1rem;
+  color: var(--rvh-on-accent);
   font-size: .8rem;
-  font-weight: 800;
-  transition: transform 120ms cubic-bezier(.2, .8, .2, 1);
+  font-weight: 700;
 }
 
-.rvh__skip:focus { transform: translateY(0); }
+.rvh__skip:focus { transform: none; }
 
-/* ---- Narrow desktops (1024–1279px): tighter pills, smaller search ---- */
-@media (min-width: 1024px) and (max-width: 1279px) {
-  .rvh { --rvh-control: 2.45rem; }
+/* Narrow desktops (1024–1279px): secondary links move into the
+   categories menu, the app shortcut and username hide. */
+@media (max-width: 1279px) {
+  .rvh { --rvh-control: 2.35rem; }
 
-  .rvh__nav {
-    --pill-pad-x: .55rem;
-    --pill-font-size: .82rem;
+  .rvh__link--wide,
+  .rvh__icon--app,
+  .rvh__me-name { display: none; }
+
+  .rvh__me { padding-inline: .25rem; }
+
+  .rvh__link,
+  .rvh__cats :deep(.header-categories__trigger) {
+    padding-inline: .55rem;
+    font-size: .88rem;
   }
 
-  .rvh__search { min-width: 9rem; max-width: 15rem; }
+  .rvh__link::after { inset-inline: .55rem; }
 
-  .rvh__search:focus-within,
-  .rvh__search:has(.header-search--alive) { max-width: 24rem; }
+  .rvh__search { min-width: 9rem; }
 }
 
-/* Roomy layouts. */
-@media (min-width: 1536px) {
-  .rvh__nav { --pill-font-size: .92rem; }
+/* Mid desktops: keep every link, but the username only from 1600px. */
+@media (min-width: 1280px) and (max-width: 1599px) {
+  .rvh__me-name { display: none; }
 
-  .rvh__search { max-width: 22rem; }
-
-  .rvh__search:focus-within,
-  .rvh__search:has(.header-search--alive) { max-width: 40rem; }
+  .rvh__me { padding-inline: .25rem; }
 }
 
-:global(html[data-theme="light"]) .rvh {
-  --rvh-rail: color-mix(in srgb, var(--theme-text-primary) 4%, transparent);
-  --rvh-rail-line: color-mix(in srgb, var(--theme-text-primary) 10%, transparent);
-}
-
-:global(html[data-theme="light"]) .rvh--scrolled .rvh__bar {
-  box-shadow: 0 .8rem 2rem rgb(23 50 38 / 12%);
+@media (min-width: 1920px) {
+  .rvh__search { max-width: 48rem; }
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .rvh__bar,
-  .rvh__search,
-  .rvh__action,
-  .rvh__progress,
-  .rvh__actions :deep(.site-header__icon-btn) {
+  .rvh,
+  .rvh__link,
+  .rvh__link::after,
+  .rvh__progress {
     transition: none;
   }
-
-  .rvh__bar { animation: none; }
 }
 </style>

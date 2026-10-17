@@ -72,7 +72,7 @@ function submit() {
     <Transition enter-active-class="transition duration-200" enter-from-class="opacity-0" leave-active-class="transition duration-150" leave-to-class="opacity-0">
       <div
         v-if="open"
-        class="fixed inset-0 z-[110] flex cursor-pointer items-end justify-center bg-[var(--theme-overlay-backdrop)] pt-4 backdrop-blur-sm sm:grid sm:place-items-center sm:p-4"
+        class="fixed inset-0 z-[110] flex cursor-pointer items-end justify-center bg-[var(--theme-overlay-backdrop)] pt-4 sm:grid sm:place-items-center sm:p-4"
         role="presentation"
         @click.self="emit('close')"
       >
@@ -81,7 +81,7 @@ function submit() {
           role="dialog"
           aria-modal="true"
           aria-labelledby="coll-editor-title"
-          class="max-h-[calc(100dvh-1rem)] w-[min(100%,calc(100dvw-1rem))] max-w-lg cursor-default overflow-y-auto rounded-t-3xl bg-surface pb-[env(safe-area-inset-bottom)] text-ink shadow-2xl shadow-black/40 ring-1 ring-line sm:rounded-3xl sm:pb-0"
+          class="max-h-[calc(100dvh-1rem)] w-[min(100%,calc(100dvw-1rem))] max-w-lg cursor-default overflow-y-auto rounded-t-3xl bg-surface pb-[env(safe-area-inset-bottom)] text-ink ring-1 ring-line sm:rounded-3xl sm:pb-0"
         >
           <header class="flex items-start justify-between gap-3 border-b border-line p-5 sm:p-6">
             <div>

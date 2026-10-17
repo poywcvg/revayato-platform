@@ -153,6 +153,8 @@ export interface ContentReportResult {
   reportCount: number
   auto: boolean
   created: boolean
+  trackingCode: string
+  ticketStatus: string
 }
 
 export function useContentReport() {
@@ -171,6 +173,8 @@ export function useContentReport() {
         report_count?: number
         auto?: boolean
         created?: boolean
+        tracking_code?: string
+        ticket_status?: string
       }>('/catalog/report-issue/', {
         method: 'POST',
         body: {
@@ -193,6 +197,8 @@ export function useContentReport() {
         reportCount: res?.report_count ?? 1,
         auto: Boolean(res?.auto),
         created: Boolean(res?.created),
+        trackingCode: String(res?.tracking_code || ''),
+        ticketStatus: String(res?.ticket_status || ''),
       }
     } catch {
       // Best-effort: a failed report should never break playback for the viewer.

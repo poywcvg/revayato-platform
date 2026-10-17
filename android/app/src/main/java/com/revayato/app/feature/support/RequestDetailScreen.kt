@@ -44,7 +44,7 @@ import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.revayato.app.core.theme.BgElevated
-import com.revayato.app.core.theme.BrandMint
+import com.revayato.app.core.theme.Brand
 import com.revayato.app.core.theme.ErrorRed
 import com.revayato.app.core.theme.OnBrand
 import com.revayato.app.core.theme.OutlineSoft
@@ -171,10 +171,10 @@ private fun ConversationHeader(ticket: SupportTicketDetailDto) {
     ) {
         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
             Box(
-                Modifier.size(40.dp).background(BrandMint.copy(alpha = 0.14f), RoundedCornerShape(11.dp)),
+                Modifier.size(40.dp).background(Brand.copy(alpha = 0.14f), RoundedCornerShape(11.dp)),
                 contentAlignment = Alignment.Center,
             ) {
-                Icon(categoryIcon(ticket.category), contentDescription = null, tint = BrandMint, modifier = Modifier.size(21.dp))
+                Icon(categoryIcon(ticket.category), contentDescription = null, tint = Brand, modifier = Modifier.size(21.dp))
             }
             Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
                 Text(
@@ -206,8 +206,8 @@ private fun ConversationHeader(ticket: SupportTicketDetailDto) {
 @Composable
 private fun MessageBubble(isStaff: Boolean, body: String, stamp: String, author: String) {
     if (body.isBlank()) return
-    val bubbleColor = if (isStaff) BrandMint.copy(alpha = 0.12f) else SurfaceSelected.copy(alpha = 0.5f)
-    val borderColor = if (isStaff) BrandMint.copy(alpha = 0.32f) else OutlineSoft
+    val bubbleColor = if (isStaff) Brand.copy(alpha = 0.12f) else SurfaceSelected.copy(alpha = 0.5f)
+    val borderColor = if (isStaff) Brand.copy(alpha = 0.32f) else OutlineSoft
     Row(
         modifier = Modifier.fillMaxWidth(),
         horizontalArrangement = if (isStaff) Arrangement.Start else Arrangement.End,
@@ -222,13 +222,13 @@ private fun MessageBubble(isStaff: Boolean, body: String, stamp: String, author:
         ) {
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(5.dp)) {
                 if (isStaff) {
-                    Icon(Icons.Rounded.Verified, contentDescription = null, tint = BrandMint, modifier = Modifier.size(14.dp))
+                    Icon(Icons.Rounded.Verified, contentDescription = null, tint = Brand, modifier = Modifier.size(14.dp))
                 }
                 Text(
                     text = if (isStaff) "تیم روایتو" else author.ifBlank { "شما" },
                     style = MaterialTheme.typography.labelMedium,
                     fontWeight = FontWeight.Bold,
-                    color = if (isStaff) BrandMint else TextSecondary,
+                    color = if (isStaff) Brand else TextSecondary,
                 )
             }
             Text(body, style = MaterialTheme.typography.bodyMedium, color = TextPrimary)
@@ -271,9 +271,9 @@ private fun ReplyComposer(
                 keyboardOptions = KeyboardOptions.Default,
                 shape = RoundedCornerShape(16.dp),
                 colors = OutlinedTextFieldDefaults.colors(
-                    focusedBorderColor = BrandMint,
+                    focusedBorderColor = Brand,
                     unfocusedBorderColor = OutlineSoft,
-                    cursorColor = BrandMint,
+                    cursorColor = Brand,
                     focusedTextColor = TextPrimary,
                     unfocusedTextColor = TextPrimary,
                     focusedContainerColor = Color.Transparent,
@@ -284,7 +284,7 @@ private fun ReplyComposer(
             Box(
                 Modifier
                     .size(50.dp)
-                    .background(if (canSend) BrandMint else SurfaceSelected, RoundedCornerShape(15.dp)),
+                    .background(if (canSend) Brand else SurfaceSelected, RoundedCornerShape(15.dp)),
                 contentAlignment = Alignment.Center,
             ) {
                 if (sending) {

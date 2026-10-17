@@ -18,6 +18,7 @@ export function classifyPlayerToast(message: string): PlayerToastMeta {
 
   if (
     text.includes('زیرنویس فارسی فعال')
+    || text.includes('زیرنویس فارسی اضافه')
     || text.includes('زیرنویس آماده')
     || text.includes('کیفیت بهتر')
     || text.includes('شروع سریع')

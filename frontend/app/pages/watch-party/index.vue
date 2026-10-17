@@ -493,7 +493,6 @@ useSeoMeta({
 
     <section id="party-join" class="page-section scroll-mt-20 pt-4" aria-labelledby="party-join-title">
       <div class="relative overflow-hidden rounded-2xl bg-gradient-to-l from-info/10 via-surface to-surface p-4 ring-1 ring-info/20 sm:p-5">
-        <div class="pointer-events-none absolute -left-12 -top-16 size-40 rounded-full bg-info/10 blur-3xl" aria-hidden="true" />
         <div class="flex flex-wrap items-end justify-between gap-3">
           <div>
             <p class="inline-flex items-center gap-1.5 text-xs font-black text-info">
@@ -639,7 +638,7 @@ useSeoMeta({
             type="button"
             class="min-h-11 rounded-lg px-3 text-xs font-black transition"
             :class="contentFilter === option.value
-              ? 'bg-primary-500 text-night-950 shadow-sm'
+              ? 'bg-primary-500 text-night-950'
               : 'text-secondary hover:bg-surface hover:text-ink'"
             :aria-pressed="contentFilter === option.value"
             @click="contentFilter = option.value"
@@ -786,7 +785,7 @@ useSeoMeta({
         <section
           ref="seriesDialog"
           tabindex="-1"
-          class="max-h-[calc(100dvh_-_1rem_-_env(safe-area-inset-top)_-_env(safe-area-inset-bottom))] w-[min(100%,calc(100dvw-1rem))] overflow-hidden rounded-t-3xl bg-surface text-ink shadow-2xl outline-none sm:max-h-[min(80dvh,36rem)] sm:max-w-lg sm:rounded-3xl"
+          class="max-h-[calc(100dvh_-_1rem_-_env(safe-area-inset-top)_-_env(safe-area-inset-bottom))] w-[min(100%,calc(100dvw-1rem))] overflow-hidden rounded-t-3xl bg-surface text-ink outline-none sm:max-h-[min(80dvh,36rem)] sm:max-w-lg sm:rounded-3xl"
           role="dialog"
           aria-modal="true"
           :aria-label="`انتخاب قسمت ${selectedSeries.title}`"
@@ -865,12 +864,12 @@ useSeoMeta({
 .party-hub-btn--create {
   color: var(--color-night-950, #07140f);
   background: var(--color-primary-500, #b0e4cc);
-  box-shadow: 0 8px 20px rgb(176 228 204 / 14%);
+  box-shadow: none;
 }
 
 .party-hub-btn--create:hover:not(:disabled) {
   background: var(--color-primary-400, #c8efdc);
-  box-shadow: 0 12px 26px rgb(176 228 204 / 28%);
+  box-shadow: none;
 }
 
 .party-hub-btn--join {
@@ -883,7 +882,7 @@ useSeoMeta({
   color: #e0f2fe;
   background: rgb(14 165 233 / 24%);
   border-color: rgb(56 189 248 / 48%);
-  box-shadow: 0 10px 24px rgb(14 165 233 / 18%);
+  box-shadow: none;
 }
 
 .party-hub-btn--join-solid {
@@ -894,7 +893,7 @@ useSeoMeta({
 
 .party-hub-btn--join-solid:hover:not(:disabled) {
   background: #7dd3fc;
-  box-shadow: 0 10px 24px rgb(56 189 248 / 26%);
+  box-shadow: none;
 }
 
 @media (max-width: 379px) {

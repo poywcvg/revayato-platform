@@ -37,12 +37,12 @@ function selectGenre(slug: string) {
     />
   </div>
   <div v-else class="flex items-start gap-2">
-    <div class="hide-scrollbar flex flex-1 gap-2 overflow-x-auto pb-1" role="group" aria-label="فیلتر ژانر">
+    <ScrollStrip class="min-w-0 flex-1" track-class="flex gap-2 pb-1" role="group" label="فیلتر ژانر">
       <button type="button" class="min-h-11 shrink-0 rounded-xl px-4 py-2.5 text-sm font-bold transition" :class="!modelValue ? 'cinema-glow bg-primary-500 text-night-950' : 'bg-elevated text-secondary ring-1 ring-line hover:text-primary-300 hover:ring-primary-500/40'" @click="selectGenre('')">{{ allLabel }}</button>
       <button v-for="genre in limitedGenres" :key="genre.id" type="button" class="inline-flex min-h-11 shrink-0 items-center gap-2 rounded-xl px-4 py-2.5 text-sm font-bold transition" :class="modelValue === genre.slug ? 'cinema-glow bg-primary-500 text-night-950' : 'bg-elevated text-secondary ring-1 ring-line hover:text-primary-300 hover:ring-primary-500/40'" @click="selectGenre(genre.slug)">
         <CinematicIcon :name="genre.icon" class="size-4" />{{ genre.title }}
       </button>
-    </div>
+    </ScrollStrip>
     <div v-if="genres.length > visibleCount" class="shrink-0">
       <button
         type="button"

@@ -116,12 +116,12 @@ const bindings = computed(() => {
 .ui-btn-a--primary {
   background: var(--btn-fill);
   color: var(--btn-ink);
-  box-shadow: 0 6px 18px -8px color-mix(in srgb, var(--btn-fill) 70%, transparent);
+  box-shadow: none;
 }
 .ui-btn-a--primary:hover {
   background: var(--btn-fill-strong);
   transform: translateY(-1px);
-  box-shadow: 0 12px 26px -10px color-mix(in srgb, var(--btn-fill) 78%, transparent);
+  box-shadow: none;
 }
 
 /* Ghost — quiet ring that warms to the brand tint. */
@@ -142,9 +142,9 @@ const bindings = computed(() => {
   --btn-fill: var(--theme-accent-crimson, var(--theme-error));
   background: var(--btn-fill);
   color: #fff;
-  box-shadow: 0 6px 18px -8px color-mix(in srgb, var(--btn-fill) 70%, transparent);
+  box-shadow: none;
 }
-.ui-btn-a--danger:hover { transform: translateY(-1px); box-shadow: 0 12px 26px -10px color-mix(in srgb, var(--btn-fill) 78%, transparent); }
+.ui-btn-a--danger:hover { transform: translateY(-1px); box-shadow: none; }
 
 /* Telegram — the brand's channel blue. */
 .ui-btn-a--telegram {

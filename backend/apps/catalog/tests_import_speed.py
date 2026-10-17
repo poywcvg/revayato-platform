@@ -21,7 +21,7 @@ from django.conf import settings
 from django.core.cache import cache
 from django.core.management import call_command
 from django.db import connection
-from django.test import TestCase
+from django.test import SimpleTestCase, TestCase
 
 from apps.catalog import refresh_rotation
 from apps.catalog.models import Movie, MovieSyncAudit, Series
@@ -184,3 +184,90 @@ class DeletedTmdbIdTests(TestCase):
             call_command('complete_catalog_metadata', '--movies-only', '--sleep', '0',
                          '--include-sourced-drafts', stdout=StringIO(), stderr=StringIO())
         client.movie_details.assert_called_once_with(draft.tmdb_id)
+
+
+class TMDBResponseCacheTests(SimpleTestCase):
+    """Repeated TMDB searches/mappings/details must not re-hit the network.
+
+    The import/refresh/metadata lanes ask for the same ids every round; a hit
+    skips the whole request chain. Paginated lists stay live, failures are
+    never cached, and callers get isolated copies (details payloads are
+    mutated downstream by the localization pass).
+    """
+
+    def _client(self, calls, bodies):
+        from apps.catalog.tmdb import TMDBClient
+
+        class _Body:
+            def __init__(self, payload):
+                self._payload = payload
+
+            def read(self):
+                return self._payload
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                return False
+
+        class _Opener:
+            def open(self, request, timeout=None):
+                calls['n'] += 1
+                url = request.get_full_url()
+                for marker, body in bodies:
+                    if marker in url:
+                        return _Body(body)
+                return _Body(b'{"page":1,"results":[],"total_pages":1,"total_results":0}')
+
+        client = TMDBClient(
+            token='test-token',
+            api_base='https://tmdb.test/3',
+            language='fa-IR',
+            fallback_language='en-US',
+            region='IR',
+        )
+        client._opener = lambda: _Opener()
+        return client
+
+    def test_search_find_and_details_are_cached_lists_stay_live(self):
+        from django.core.cache import cache
+        from django.test import override_settings
+
+        calls = {'n': 0}
+        bodies = [
+            ('search/movie', b'{"page":1,"results":[{"id":7}],"total_pages":1,"total_results":1}'),
+            ('find/tt0000007', b'{"movie_results":[{"id":7}],"tv_results":[]}'),
+            ('movie/7?', b'{"id":7,"title":"Cached Film"}'),
+        ]
+        with override_settings(
+            TMDB_SEARCH_CACHE_SECONDS=60,
+            TMDB_FIND_CACHE_SECONDS=60,
+            TMDB_DETAILS_CACHE_SECONDS=60,
+        ):
+            cache.clear()
+            try:
+                client = self._client(calls, bodies)
+                first = client.search_movies('Cache Me')
+                self.assertEqual(first['results'][0]['id'], 7)
+                self.assertEqual(calls['n'], 1)
+                second = client.search_movies('Cache Me')
+                self.assertEqual(calls['n'], 1)
+                self.assertEqual(second, first)
+                self.assertIsNot(second, first)
+                # Mutating a returned payload must not poison the cache.
+                first['results'].append({'id': 999})
+                third = client.search_movies('Cache Me')
+                self.assertEqual(len(third['results']), 1)
+                # IMDb mapping and exact details are cached too…
+                client.find_by_imdb_id('tt0000007')
+                client.find_by_imdb_id('tt0000007')
+                client._request('movie/7', {'language': 'fa-IR'})
+                client._request('movie/7', {'language': 'fa-IR'})
+                self.assertEqual(calls['n'], 3)
+                # …while paginated lists always reach the network.
+                client._request('movie/popular', {'page': 1})
+                client._request('movie/popular', {'page': 1})
+                self.assertEqual(calls['n'], 5)
+            finally:
+                cache.clear()

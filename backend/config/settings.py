@@ -260,8 +260,8 @@ MYF2M_AUTO_CRAWL_ON_PUBLISH = env_bool('MYF2M_AUTO_CRAWL_ON_PUBLISH', True)
 # Film2Media discovery is listing-driven (``/movies/``, ``/series/``), so a tick
 # is bounded by pages walked as well as by titles kept.
 MYF2M_IMPORT_ENABLED = env_bool('MYF2M_IMPORT_ENABLED', True)
-MYF2M_IMPORT_MOVIES_PER_TICK = max(1, min(40, int(os.environ.get('MYF2M_IMPORT_MOVIES_PER_TICK', '8'))))
-MYF2M_IMPORT_SERIES_PER_TICK = max(1, min(20, int(os.environ.get('MYF2M_IMPORT_SERIES_PER_TICK', '4'))))
+MYF2M_IMPORT_MOVIES_PER_TICK = max(1, min(40, int(os.environ.get('MYF2M_IMPORT_MOVIES_PER_TICK', '12'))))
+MYF2M_IMPORT_SERIES_PER_TICK = max(1, min(20, int(os.environ.get('MYF2M_IMPORT_SERIES_PER_TICK', '6'))))
 MYF2M_IMPORT_MAX_PAGES_PER_TICK = max(1, min(60, int(os.environ.get('MYF2M_IMPORT_MAX_PAGES_PER_TICK', '12'))))
 # ``0`` keeps the clock-based default (next calendar year) so the walk does not
 # need a code change every January.
@@ -280,9 +280,9 @@ DORNATV_USER_AGENT = os.environ.get(
     'DORNATV_USER_AGENT', 'RevayatoCatalogCrawler/1.0 (+https://revayato.ir)',
 ).strip() or 'RevayatoCatalogCrawler/1.0'
 DORNATV_MAX_RESULTS_PER_LOOKUP = max(1, min(50, int(os.environ.get('DORNATV_MAX_RESULTS_PER_LOOKUP', '20'))))
-DORNATV_REST_PER_PAGE = max(1, min(100, int(os.environ.get('DORNATV_REST_PER_PAGE', '50'))))
-DORNATV_IMPORT_MOVIES_PER_TICK = max(1, min(40, int(os.environ.get('DORNATV_IMPORT_MOVIES_PER_TICK', '12'))))
-DORNATV_IMPORT_SERIES_PER_TICK = max(1, min(20, int(os.environ.get('DORNATV_IMPORT_SERIES_PER_TICK', '6'))))
+DORNATV_REST_PER_PAGE = max(1, min(100, int(os.environ.get('DORNATV_REST_PER_PAGE', '100'))))
+DORNATV_IMPORT_MOVIES_PER_TICK = max(1, min(40, int(os.environ.get('DORNATV_IMPORT_MOVIES_PER_TICK', '16'))))
+DORNATV_IMPORT_SERIES_PER_TICK = max(1, min(20, int(os.environ.get('DORNATV_IMPORT_SERIES_PER_TICK', '8'))))
 DORNATV_IMPORT_ENABLED = env_bool('DORNATV_IMPORT_ENABLED', True)
 # Wall-clock budget for one discovery tick, per provider. Both tasks carry
 # ``soft_time_limit=12*60``; before this existed the dornatv walk simply ran until
@@ -313,6 +313,15 @@ DORNATV_MODIFIED_PAGES_PER_TICK = max(1, min(20, int(os.environ.get('DORNATV_MOD
 # have gone stale (see DORNATV_REFRESH_LINK_MAX_AGE_SECONDS).
 DORNATV_REFRESH_PER_TICK = max(0, min(40, int(os.environ.get('DORNATV_REFRESH_PER_TICK', '4'))))
 DORNATV_REFRESH_LINK_MAX_AGE_SECONDS = max(300, int(os.environ.get('DORNATV_REFRESH_LINK_MAX_AGE_SECONDS', str(6 * 60 * 60))))
+# A refresh that fails (page removed, identity changed) leaves the row stalest;
+# it sits out this long so it cannot hold every refresh slot of every tick.
+DORNATV_REFRESH_FAIL_COOLDOWN_SECONDS = max(600, int(os.environ.get('DORNATV_REFRESH_FAIL_COOLDOWN_SECONDS', str(24 * 60 * 60))))
+DORNATV_REFRESH_SCAN_WINDOW = max(50, int(os.environ.get('DORNATV_REFRESH_SCAN_WINDOW', '1000')))
+# Checkpointed detail pages kept, most recent last (see dornatv_import._DonePaths).
+DORNATV_IMPORT_DONE_PATHS_CAP = max(1000, int(os.environ.get('DORNATV_IMPORT_DONE_PATHS_CAP', '50000')))
+# Pages of titles the catalog already has from another provider whose links are
+# merged in per tick (each costs one detail-page fetch plus the dead-link screen).
+DORNATV_IMPORT_MERGE_PER_TICK = max(0, int(os.environ.get('DORNATV_IMPORT_MERGE_PER_TICK', '8')))
 
 
 # Kargadan Movie (kargadanmovie.com). Discovery is the public wp-sitemap; download
@@ -332,14 +341,21 @@ KARGADAN_USER_AGENT = os.environ.get(
 KARGADAN_SESSION_COOKIE = os.environ.get('KARGADAN_SESSION_COOKIE', '').strip()
 KARGADAN_SESSION_RECHECK_MINUTES = max(5, int(os.environ.get('KARGADAN_SESSION_RECHECK_MINUTES', '30')))
 KARGADAN_IMPORT_ENABLED = env_bool('KARGADAN_IMPORT_ENABLED', True)
-KARGADAN_IMPORT_MOVIES_PER_TICK = max(0, min(40, int(os.environ.get('KARGADAN_IMPORT_MOVIES_PER_TICK', '8'))))
-KARGADAN_IMPORT_SERIES_PER_TICK = max(0, min(20, int(os.environ.get('KARGADAN_IMPORT_SERIES_PER_TICK', '4'))))
-KARGADAN_IMPORT_REFRESH_PER_TICK = max(0, min(60, int(os.environ.get('KARGADAN_IMPORT_REFRESH_PER_TICK', '12'))))
+KARGADAN_IMPORT_MOVIES_PER_TICK = max(0, min(40, int(os.environ.get('KARGADAN_IMPORT_MOVIES_PER_TICK', '10'))))
+KARGADAN_IMPORT_SERIES_PER_TICK = max(0, min(20, int(os.environ.get('KARGADAN_IMPORT_SERIES_PER_TICK', '5'))))
+KARGADAN_IMPORT_REFRESH_PER_TICK = max(0, min(60, int(os.environ.get('KARGADAN_IMPORT_REFRESH_PER_TICK', '16'))))
 KARGADAN_IMPORT_RETRY_HOURS = max(1, int(os.environ.get('KARGADAN_IMPORT_RETRY_HOURS', '24')))
 KARGADAN_IMPORT_BUDGET_SECONDS = max(0, int(os.environ.get('KARGADAN_IMPORT_BUDGET_SECONDS', '540')))
 KARGADAN_IMPORT_CHECKPOINT = os.environ.get(
     'KARGADAN_IMPORT_CHECKPOINT', '/app/media/kargadan_import_checkpoint.json',
 ).strip() or '/app/media/kargadan_import_checkpoint.json'
+
+# Probe concurrency for the import/crawl lanes (media_probe.probe_many and
+# media_verification.screen_links). I/O-bound CDN ranged GETs from background
+# workers only — never the public request path — so raising this shortens a
+# title's verification time without touching site latency or DB pools.
+CATALOG_PROBE_WORKERS = max(1, min(8, int(os.environ.get('CATALOG_PROBE_WORKERS', '6'))))
+CATALOG_SCREEN_PROBE_WORKERS = max(1, min(6, int(os.environ.get('CATALOG_SCREEN_PROBE_WORKERS', '4'))))
 
 # SubtitleStar — public Persian sidecar subtitle fallback for movie playback.
 # Matching is IMDb-strict and requests are throttled/cached to avoid hammering
@@ -348,6 +364,10 @@ KARGADAN_IMPORT_CHECKPOINT = os.environ.get(
 SUBTITLESTAR_ENABLED = env_bool('SUBTITLESTAR_ENABLED', True)
 # Online SoftSub: embedded Soft CDN ffmpeg → SubtitleStar → Subzone.ir.
 SOFTSUB_ALLOW_FFMPEG = env_bool('SOFTSUB_ALLOW_FFMPEG', False)
+# Open-player sync lane: seconds spent attempting an embedded demux of the
+# playing file itself before sidecar providers. 0 disables file-first.
+PLAYBACK_SYNC_EMBEDDED_SECONDS = max(
+    0, int(os.environ.get('PLAYBACK_SYNC_EMBEDDED_SECONDS', '4')))
 SUBTITLESTAR_BASE_URL = os.environ.get('SUBTITLESTAR_BASE_URL', 'https://subtitlestar.com').strip().rstrip('/')
 SUBTITLESTAR_TIMEOUT_SECONDS = int(os.environ.get('SUBTITLESTAR_TIMEOUT_SECONDS', '20'))
 SUBTITLESTAR_REQUEST_INTERVAL_SECONDS = float(os.environ.get('SUBTITLESTAR_REQUEST_INTERVAL_SECONDS', '4'))
@@ -413,7 +433,21 @@ SUBZONE_USER_AGENT = os.environ.get(
 SUBDL_API_KEY = os.environ.get('SUBDL_API_KEY', '').strip()
 SUBDL_ENABLED = env_bool('SUBDL_ENABLED', True)
 SUBDL_TIMEOUT_SECONDS = int(os.environ.get('SUBDL_TIMEOUT_SECONDS', '12'))
+
+# IndexNow: tells Bing/Yandex about new title pages within minutes instead of
+# the next sitemap crawl. The key is public by design (served at
+# /indexnow-key.txt); it only proves the URLs belong to this host.
+INDEXNOW_ENABLED = env_bool('INDEXNOW_ENABLED', True)
+INDEXNOW_KEY = os.environ.get('INDEXNOW_KEY', '173d5706686eafd33f00b2414e781440').strip()
+INDEXNOW_RESUBMIT_SECONDS = int(os.environ.get('INDEXNOW_RESUBMIT_SECONDS', str(30 * 24 * 60 * 60)))
 SUBDL_REQUEST_INTERVAL_SECONDS = float(os.environ.get('SUBDL_REQUEST_INTERVAL_SECONDS', '0.5'))
+# The SubDL key's quota is shared by every lane. Bulk backfill gets a paced,
+# hourly-capped share and pauses for an hour on a 429; an open player (live lane)
+# is never budgeted and is back after a few minutes.
+SUBDL_BULK_INTERVAL_SECONDS = float(os.environ.get('SUBDL_BULK_INTERVAL_SECONDS', '3'))
+SUBDL_BULK_HOURLY_BUDGET = int(os.environ.get('SUBDL_BULK_HOURLY_BUDGET', '90'))
+SUBDL_BULK_BACKOFF_SECONDS = int(os.environ.get('SUBDL_BULK_BACKOFF_SECONDS', str(60 * 60)))
+SUBDL_LIVE_BACKOFF_SECONDS = int(os.environ.get('SUBDL_LIVE_BACKOFF_SECONDS', '180'))
 SUBDL_NEGATIVE_CACHE_SECONDS = int(os.environ.get('SUBDL_NEGATIVE_CACHE_SECONDS', str(6 * 60 * 60)))
 SUBDL_MAX_ZIP_BYTES = int(os.environ.get('SUBDL_MAX_ZIP_BYTES', str(8 * 1024 * 1024)))
 SUBZONE_VERIFY_SSL = env_bool('SUBZONE_VERIFY_SSL', True)
@@ -493,6 +527,17 @@ STREAM_GATEWAY_REAPER = env_bool('STREAM_GATEWAY_REAPER', False)
 STREAM_REAPER_SECONDS = max(
     15, int(os.environ.get('STREAM_REAPER_SECONDS', '60')),
 )
+# CDNs that serve files only to Iranian IPs and send no CORS headers (myf2m's
+# abrtech.top → mehracdn.com). Anything outside Iran — this server, the
+# gateway, a viewer on a VPN — gets a «turn your VPN off» page instead of the
+# file, and the browser remuxer cannot read them at all. Links on these hosts
+# are flagged ``iran_only`` so the player plays them natively, never sends them
+# to the gateway, and offers an external player / download instead.
+GEO_LOCKED_CDN_HOSTS = [
+    part.strip().lower().lstrip('.')
+    for part in os.environ.get('GEO_LOCKED_CDN_HOSTS', 'abrtech.top,mehracdn.com').replace(';', ',').split(',')
+    if part.strip()
+]
 
 # Season/episode metadata completion from TMDB. Episodes are created from
 # provider download links, so without this pass they keep the stub «قسمت N»
@@ -614,11 +659,16 @@ REST_FRAMEWORK = {
         # backend container, so they need a dedicated bucket instead of sharing
         # the very small anonymous authentication/API bucket.
         'catalog': os.environ.get('CATALOG_THROTTLE_RATE', '600/minute'),
+        # Staff admin desk/list/edit calls and TMDB lookups, each in its own
+        # bucket (never the site-wide 'user' one). See admin_api.StaffAdminThrottle.
+        'staff_admin': os.environ.get('STAFF_ADMIN_THROTTLE_RATE', '600/minute'),
+        'staff_tmdb': os.environ.get('STAFF_TMDB_THROTTLE_RATE', '60/minute'),
         'playback_subtitle_ensure': os.environ.get('PLAYBACK_SUBTITLE_ENSURE_THROTTLE_RATE', '30/minute'),
         'playback_subtitle_status': os.environ.get('PLAYBACK_SUBTITLE_STATUS_THROTTLE_RATE', '60/minute'),
         'subtitle_sync_report': os.environ.get('SUBTITLE_SYNC_REPORT_THROTTLE_RATE', '20/minute'),
         'content_issue_report': os.environ.get('CONTENT_ISSUE_REPORT_THROTTLE_RATE', '20/minute'),
         'content_issue_status': os.environ.get('CONTENT_ISSUE_STATUS_THROTTLE_RATE', '60/minute'),
+        'playback_failure': os.environ.get('PLAYBACK_FAILURE_THROTTLE_RATE', '30/minute'),
         'watch_party_create': '10/hour',
         'watch_party_join': '60/hour',
         # Playback gateway: opening a session spawns ffmpeg, so it is rare and
@@ -778,9 +828,23 @@ CATALOG_SYNC_LOOKAHEAD_DAYS = int(os.environ.get('CATALOG_SYNC_LOOKAHEAD_DAYS', 
 CATALOG_SYNC_MAX_PAGES = int(os.environ.get('CATALOG_SYNC_MAX_PAGES', '2'))
 CATALOG_SYNC_ENABLED = env_bool('CATALOG_SYNC_ENABLED', False)
 CATALOG_AUTO_PUBLISH = env_bool('CATALOG_AUTO_PUBLISH', False)
-# Download-link size filler (apps/catalog/link_sizes.py).
-CATALOG_LINK_SIZE_TITLES_PER_TICK = int(os.environ.get('CATALOG_LINK_SIZE_TITLES_PER_TICK', '40'))
-CATALOG_LINK_SIZE_BUDGET_SECONDS = float(os.environ.get('CATALOG_LINK_SIZE_BUDGET_SECONDS', '150'))
+# Download-link sizes (apps/catalog/link_sizes.py). Every save that brings new
+# links queues a per-title run on the ``link-sizes`` lane; the beat sweep works
+# through the backlog (hot chart → Top 250 → popularity) on the same lane.
+CATALOG_LINK_SIZE_ON_IMPORT = env_bool('CATALOG_LINK_SIZE_ON_IMPORT', True)
+CATALOG_LINK_SIZE_TITLE_BUDGET_SECONDS = float(os.environ.get('CATALOG_LINK_SIZE_TITLE_BUDGET_SECONDS', '240'))
+CATALOG_LINK_SIZE_TITLES_PER_TICK = int(os.environ.get('CATALOG_LINK_SIZE_TITLES_PER_TICK', '150'))
+CATALOG_LINK_SIZE_BUDGET_SECONDS = float(os.environ.get('CATALOG_LINK_SIZE_BUDGET_SECONDS', '270'))
+CATALOG_LINK_SIZE_WORKERS = int(os.environ.get('CATALOG_LINK_SIZE_WORKERS', '6'))
+CATALOG_LINK_SIZE_LINKS_PER_TITLE = int(os.environ.get('CATALOG_LINK_SIZE_LINKS_PER_TITLE', '200'))
+# Source fill (apps/catalog/provider_import/source_fill.py): per tick, how many
+# titles missing a provider get asked, and the wall-clock budget for the tick.
+# Every title costs a search + page fetch per missing provider, plus the dead-link
+# screen of whatever it finds, so keep it well under the discovery lanes' share.
+CATALOG_SOURCE_FILL_ENABLED = env_bool('CATALOG_SOURCE_FILL_ENABLED', True)
+CATALOG_SOURCE_FILL_TITLES_PER_TICK = int(os.environ.get('CATALOG_SOURCE_FILL_TITLES_PER_TICK', '35'))
+CATALOG_SOURCE_FILL_BUDGET_SECONDS = float(os.environ.get('CATALOG_SOURCE_FILL_BUDGET_SECONDS', '300'))
+CATALOG_SOURCE_FILL_SCAN_WINDOW = int(os.environ.get('CATALOG_SOURCE_FILL_SCAN_WINDOW', '400'))
 # Draft source hunt: how often to look for download links for unpublished titles,
 # how many to enrol per run, and how many to actually crawl providers for. The fix
 # limit is the only one that costs provider requests — keep it well under the
@@ -869,14 +933,14 @@ CATALOG_IMPORT_SILENCE_MINUTES = int(os.environ.get('CATALOG_IMPORT_SILENCE_MINU
 CATALOG_TOP250_ENABLED = env_bool('CATALOG_TOP250_ENABLED', True)
 CATALOG_TOP250_LIMIT = int(os.environ.get('CATALOG_TOP250_LIMIT', '40') or 40)
 CATALOG_TOP250_RETRY_HOURS = float(os.environ.get('CATALOG_TOP250_RETRY_HOURS', '24') or 24)
-CATALOG_TOP250_DELAY_SECONDS = float(os.environ.get('CATALOG_TOP250_DELAY_SECONDS', '1') or 0)
+CATALOG_TOP250_DELAY_SECONDS = float(os.environ.get('CATALOG_TOP250_DELAY_SECONDS', '0.5') or 0)
 CATALOG_TOP250_BUDGET_SECONDS = int(os.environ.get('CATALOG_TOP250_BUDGET_SECONDS', '1200') or 1200)
 # Hot titles lane: TMDB trending/now-playing/new releases, completed hottest first
 # (see apps.catalog.hot_titles). The same chart orders every other queue.
 CATALOG_HOT_ENABLED = env_bool('CATALOG_HOT_ENABLED', True)
 CATALOG_HOT_LIMIT = int(os.environ.get('CATALOG_HOT_LIMIT', '30') or 30)
 CATALOG_HOT_RETRY_HOURS = float(os.environ.get('CATALOG_HOT_RETRY_HOURS', '6') or 6)
-CATALOG_HOT_DELAY_SECONDS = float(os.environ.get('CATALOG_HOT_DELAY_SECONDS', '1') or 0)
+CATALOG_HOT_DELAY_SECONDS = float(os.environ.get('CATALOG_HOT_DELAY_SECONDS', '0.5') or 0)
 CATALOG_HOT_BUDGET_SECONDS = int(os.environ.get('CATALOG_HOT_BUDGET_SECONDS', '540') or 540)
 CATALOG_HOT_CHART_SIZE = int(os.environ.get('CATALOG_HOT_CHART_SIZE', '80') or 80)
 CATALOG_HOT_CHART_MAX_AGE_HOURS = float(os.environ.get('CATALOG_HOT_CHART_MAX_AGE_HOURS', '2') or 2)
@@ -886,6 +950,8 @@ CATALOG_HOT_TMDB_PAGES = int(os.environ.get('CATALOG_HOT_TMDB_PAGES', '2') or 2)
 #   imports        — long admin catalog import jobs (hours, network bound)
 #   softsub        — bulk subtitle extraction backlog (tens of thousands of rows)
 #   softsub-urgent — live player subtitle requests, must never queue behind bulk
+#   softsub-drain  — re-runs of old viewer reports; same worker, read only when
+#                    softsub-urgent is empty, hunts on the bulk provider lane
 # Without these routes every task landed on ``celery`` behind the bulk backlog,
 # so beat ticks piled up unprocessed and the crawler effectively never ran.
 CELERY_TASK_ROUTES = {
@@ -896,6 +962,9 @@ CELERY_TASK_ROUTES = {
     'apps.engagement.tasks.process_support_ticket_task': {'queue': 'support'},
     'apps.catalog.tasks.handle_content_report_task': {'queue': 'support'},
     'apps.catalog.tasks.drain_content_reports_task': {'queue': 'support'},
+    # Admin desk «تکمیل کامل» runs on its own worker (catalog-worker-admin);
+    # bulk selections pass queue='imports' explicitly.
+    'apps.catalog.tasks.complete_title_task': {'queue': 'admin-ops'},
     'apps.catalog.tasks.extract_movie_softsub_task': {'queue': 'softsub'},
     'apps.catalog.tasks.extract_series_softsub_task': {'queue': 'softsub'},
     'apps.catalog.provider_import.tasks.run_catalog_import_task': {'queue': 'imports'},
@@ -916,10 +985,17 @@ CELERY_TASK_ROUTES = {
     'apps.catalog.provider_import.tasks.import_missing_dornatv_task': {'queue': 'imports-discovery'},
     'apps.catalog.provider_import.tasks.import_missing_myf2m_task': {'queue': 'imports-discovery'},
     'apps.catalog.provider_import.tasks.import_missing_kargadan_task': {'queue': 'imports-discovery'},
+    'apps.catalog.provider_import.tasks.fill_missing_sources_task': {'queue': 'imports-discovery'},
     # Top 250 gets a lane of its own, listed first on the imports worker: it is
     # the shelf users see first, and it must not wait behind either of the above.
     'apps.catalog.provider_import.tasks.complete_top250_task': {'queue': 'imports-top250'},
     'apps.catalog.provider_import.tasks.complete_hot_titles_task': {'queue': 'imports-hot'},
+    # جدول پخش: new episodes are the hottest titles there are, so the date sync
+    # and the release hunter ride the hot lane. See apps/catalog/airing.py.
+    'apps.catalog.tasks.sync_airing_schedule_task': {'queue': 'imports-hot'},
+    'apps.catalog.tasks.hunt_airing_releases_task': {'queue': 'imports-hot'},
+    'apps.catalog.tasks.fill_link_sizes_task': {'queue': 'link-sizes'},
+    'apps.catalog.tasks.size_title_links_task': {'queue': 'link-sizes'},
     'apps.catalog.provider_import.tasks.import_watchdog_task': {'queue': 'support'},
     'apps.catalog.provider_import.tasks.reap_stale_import_jobs_task': {'queue': 'support'},
 }
@@ -956,12 +1032,13 @@ CELERY_BEAT_SCHEDULE = {
         'schedule': 1800,
         'options': {'expires': 1700, 'queue': 'support'},
     },
-    # Sizes on every download link («1080p · 2.30 GB»). Bounded per tick; the
-    # support lane has two slots and this holds one for at most the budget.
+    # Sizes on every download link («1080p · 2.30 GB»): the backlog sweep. New
+    # links are sized at import by their own per-title run on the same lane —
+    # it used to share the two support slots with viewers' tickets.
     'catalog-fill-link-sizes': {
         'task': 'apps.catalog.tasks.fill_link_sizes_task',
-        'schedule': 10 * 60,
-        'options': {'expires': 30 * 60, 'queue': 'support'},
+        'schedule': 5 * 60,
+        'options': {'expires': 4 * 60, 'queue': 'link-sizes'},
     },
     'catalog-sync-watchdog': {
         'task': 'apps.catalog.tasks.catalog_sync_watchdog_task',
@@ -1017,18 +1094,34 @@ CELERY_BEAT_SCHEDULE = {
         'schedule': 300,
         'options': {'queue': 'imports-discovery', 'expires': 3 * 300},
     },
-    # Film2Media is walked on a slower cadence than Dornatv: its listings are HTML
-    # pages rather than a REST feed, so each tick costs more requests per title.
+    # Film2Media is the primary provider, so it is walked at least as often as
+    # Dornatv. A tick finishes its listing pages in well under a minute (the
+    # 14-minute lock still stops two ticks overlapping), so the old 600s cadence
+    # left the lane idle most of the time while the deep walk crawled along.
     'catalog-myf2m-import-missing': {
         'task': 'apps.catalog.provider_import.tasks.import_missing_myf2m_task',
-        'schedule': 600,
-        'options': {'queue': 'imports-discovery', 'expires': 3 * 600},
+        'schedule': 300,
+        'options': {'queue': 'imports-discovery', 'expires': 3 * 300},
     },
     # Kargadan: sitemap diff, so a tick with nothing new costs ~10 requests.
     'catalog-kargadan-import-missing': {
         'task': 'apps.catalog.provider_import.tasks.import_missing_kargadan_task',
         'schedule': 600,
         'options': {'queue': 'imports-discovery', 'expires': 3 * 600},
+    },
+    # Every published title should carry links from every provider that has it.
+    # Asks only the providers a title has no links from, hot chart first; each
+    # (title, provider) answer is remembered for a week. See source_fill.py.
+    'catalog-source-fill': {
+        'task': 'apps.catalog.provider_import.tasks.fill_missing_sources_task',
+        'schedule': 600,
+        'options': {'queue': 'imports-discovery', 'expires': 3 * 600},
+    },
+    # Newly published titles -> Bing/Yandex in one IndexNow batch. See indexnow.py.
+    'catalog-indexnow-flush': {
+        'task': 'apps.catalog.tasks.indexnow_flush_task',
+        'schedule': 600,
+        'options': {'queue': 'celery', 'expires': 600},
     },
     # IMDb Top 250 completion. A tick that finds nothing left to do returns in
     # seconds, so a short cadence costs nothing once the shelf is complete.
@@ -1042,6 +1135,20 @@ CELERY_BEAT_SCHEDULE = {
     'catalog-hot-titles-complete': {
         'task': 'apps.catalog.provider_import.tasks.complete_hot_titles_task',
         'schedule': 600,
+        'options': {'queue': 'imports-hot', 'expires': 3 * 600},
+    },
+    # جدول پخش. Sync: TMDB episode air dates / digital release dates of every
+    # airing title (each re-read every 6–12 h; a tick with nothing due is a few
+    # queries). Hunt: from the morning a release is due (Tehran), crawl the
+    # providers for it every 2 h → 6 h → daily until it is on the site.
+    'catalog-airing-sync': {
+        'task': 'apps.catalog.tasks.sync_airing_schedule_task',
+        'schedule': 30 * 60,
+        'options': {'queue': 'imports-hot', 'expires': 25 * 60},
+    },
+    'catalog-airing-hunt': {
+        'task': 'apps.catalog.tasks.hunt_airing_releases_task',
+        'schedule': 10 * 60,
         'options': {'queue': 'imports-hot', 'expires': 3 * 600},
     },
     # Last line of defence: restarts discovery whenever it stops finishing runs,

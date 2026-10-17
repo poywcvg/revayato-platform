@@ -25,6 +25,7 @@ _TTL_DEFAULTS = {
     'detail': 300,
     'trending': 120,
     'home': 300,
+    'slider': 60,
     'genres': 600,
     'search': 30,
     'actors': 600,
@@ -34,6 +35,7 @@ _TTL_ENV = {
     'detail': 'CATALOG_CACHE_DETAIL_TTL',
     'trending': 'CATALOG_CACHE_TRENDING_TTL',
     'home': 'CATALOG_CACHE_HOME_TTL',
+    'slider': 'CATALOG_CACHE_SLIDER_TTL',
     'genres': 'CATALOG_CACHE_GENRES_TTL',
     'search': 'CATALOG_CACHE_SEARCH_TTL',
     'actors': 'CATALOG_CACHE_ACTORS_TTL',
@@ -177,12 +179,18 @@ def _spawn_refresh(job) -> bool:
     return True
 
 
-def cached_catalog_payload(namespace: str, request, kind: str, compute) -> tuple[Any, str]:
+def cached_catalog_payload(namespace: str, request, kind: str, compute, *,
+                       allow_stale: bool = True) -> tuple[Any, str]:
     """Return ``(payload, 'HIT' | 'STALE' | 'MISS')`` for a public catalog read.
 
     Fresh versioned entries are served as before. When the version has moved
     on, the previous payload for the same URL is served at once (``STALE``)
     and a single background rebuild per URL refreshes both copies.
+
+    ``allow_stale=False`` skips the stale copy and builds fresh immediately.
+    Reserved for admin-curated payloads (the home slider): the build costs a
+    fraction of a second, while serving a stale hero after an explicit editorial
+    save reads as "the panel and the site disagree".
     """
     ttl = catalog_cache_ttl(kind)
     if ttl <= 0:
@@ -192,7 +200,7 @@ def cached_catalog_payload(namespace: str, request, kind: str, compute) -> tuple
     digest = hashlib.sha256(f'{request.path}?{raw}'.encode()).hexdigest()[:24]
     fresh_key = f'{CATALOG_CACHE_NS}:v{version}:{namespace}:{digest}'
     stale_key = f'{CATALOG_CACHE_NS}:last:{namespace}:{digest}'
-    stale_ttl = catalog_stale_ttl()
+    stale_ttl = catalog_stale_ttl() if allow_stale else 0
 
     cached = cache.get(fresh_key)
     if cached is not None:

@@ -85,9 +85,9 @@ export function normalizeMediaRatings(raw: unknown): MediaRating[] {
  * a normalized ``ratings`` array.
  */
 export function ratingsFromLegacyFields(input: {
-  imdb_rating?: number | null
-  tmdb_rating?: number | null
-  site_rating?: number | null
+  imdb_rating?: number | string | null
+  tmdb_rating?: number | string | null
+  site_rating?: number | string | null
   imdb_id?: string | null
   tmdb_id?: number | null
   type?: 'movie' | 'series'

@@ -17,6 +17,7 @@ import com.revayato.app.core.playback.WatchProgressStore
 import com.revayato.app.core.util.toAbsoluteUrl
 import com.revayato.app.data.model.DownloadLinkDto
 import com.revayato.app.data.model.EpisodeDto
+import com.revayato.app.data.model.PlaybackFailureRequest
 import com.revayato.app.data.model.PlaybackSubtitleEnsureRequest
 import com.revayato.app.data.model.SubtitleTrackDto
 import com.revayato.app.data.repository.CatalogRepository
@@ -32,6 +33,9 @@ import javax.inject.Inject
 
 data class PlayerUiState(
     val isPlaying: Boolean = false,
+    // The viewer's intent (play vs pause). Unlike [isPlaying] it stays true while
+    // the stream buffers, so the play/pause button shows and does the right thing.
+    val playWhenReady: Boolean = true,
     val isBuffering: Boolean = true,
     val positionMs: Long = 0,
     val durationMs: Long = 0,
@@ -115,6 +119,9 @@ class PlayerViewModel @Inject constructor(
     private var candidateSources: List<PlayerQuality> = emptyList()
     private val triedSourceUrls = HashSet<String>()
     private var reportedPlaybackGap = false
+    // Auto-heal dedup: one playback-failure report per failed source URL, so a
+    // retry loop or every group member failing at once cannot flood the intake.
+    private val healedSourceKeys = HashSet<String>()
 
     val player: ExoPlayer by lazy {
         // Cache-backed so a title downloaded for offline plays without the network.
@@ -158,6 +165,19 @@ class PlayerViewModel @Inject constructor(
             if (!isPlaying) persistProgress()
         }
 
+        override fun onPlayWhenReadyChanged(playWhenReady: Boolean, reason: Int) {
+            _state.value = _state.value.copy(playWhenReady = playWhenReady)
+        }
+
+        override fun onPositionDiscontinuity(
+            oldPosition: Player.PositionInfo,
+            newPosition: Player.PositionInfo,
+            reason: Int,
+        ) {
+            // Seeks (and auto-advances) land on the timeline at once, even paused.
+            _state.value = _state.value.copy(positionMs = player.currentPosition.coerceAtLeast(0))
+        }
+
         override fun onPlaybackStateChanged(playbackState: Int) {
             _state.value = _state.value.copy(
                 isBuffering = playbackState == Player.STATE_BUFFERING,
@@ -186,6 +206,7 @@ class PlayerViewModel @Inject constructor(
                     recovering = false,
                     recoveryNotice = null,
                 )
+                explainGeoLockIfNeeded()
                 return
             }
             _state.value = _state.value.copy(
@@ -193,6 +214,7 @@ class PlayerViewModel @Inject constructor(
                 recovering = false,
                 recoveryNotice = null,
             )
+            explainGeoLockIfNeeded()
         }
 
         // Attach (or re-attach) the loudness booster whenever the audio session is
@@ -266,6 +288,7 @@ class PlayerViewModel @Inject constructor(
         candidateSources = args.qualities
         triedSourceUrls.clear()
         reportedPlaybackGap = false
+        healedSourceKeys.clear()
         val startUrl = chooseCompatibleStartUrl(args.url, args.qualities)
         triedSourceUrls.add(startUrl)
 
@@ -385,6 +408,7 @@ class PlayerViewModel @Inject constructor(
         candidateSources = qualities
         triedSourceUrls.clear()
         reportedPlaybackGap = false
+        healedSourceKeys.clear()
         val startRaw = chooseCompatibleStartUrl(raw, qualities)
         triedSourceUrls.add(startRaw)
         val abs = startRaw.toAbsoluteUrl() ?: return
@@ -529,6 +553,29 @@ class PlayerViewModel @Inject constructor(
         return classifyPlaybackVersion(match ?: DownloadLinkDto(url = currentMediaUrl))
     }
 
+    /**
+     * Some CDNs answer only Iranian IPs; with a VPN on they return a small
+     * «turn off your VPN» page with HTTP 200, which ExoPlayer reports as an
+     * unsupported container. Blaming the device codec there sends the viewer the
+     * wrong way, so when the source on screen is flagged `iran_only` the error
+     * says what actually fixes it. Same wording as the web player's geo panel.
+     */
+    private fun explainGeoLockIfNeeded() {
+        val failedUrl = currentMediaUrl
+        if (failedUrl.isBlank()) return
+        viewModelScope.launch {
+            val links = runCatching { fetchCurrentLinks() }.getOrNull().orEmpty()
+            val geoLocked = links.any { link ->
+                link.iranOnly && ((link.url.toAbsoluteUrl() ?: link.url) == failedUrl || link.url == failedUrl)
+            }
+            if (geoLocked && currentMediaUrl == failedUrl && _state.value.error != null) {
+                _state.value = _state.value.copy(
+                    error = "این لینک فقط با اینترنت ایران باز می‌شود. اگر فیلترشکن روشن است خاموشش کنید و دوباره پخش را بزنید.",
+                )
+            }
+        }
+    }
+
     /** Fetch the download/stream links for the title or episode now playing. */
     private suspend fun fetchCurrentLinks(): List<DownloadLinkDto> =
         if (contentType.equals("movie", ignoreCase = true)) {
@@ -655,14 +702,19 @@ class PlayerViewModel @Inject constructor(
             var lastReport = 0L
             var lastPersist = 0L
             while (true) {
+                // Keep the timeline truthful while paused or buffering too — a seek
+                // made while paused must show where it landed, and the buffered bar
+                // keeps filling. StateFlow skips identical copies, so this is cheap.
+                if (player.duration > 0) {
+                    _state.value = _state.value.copy(
+                        positionMs = player.currentPosition.coerceAtLeast(0),
+                        durationMs = player.duration,
+                        bufferedMs = player.bufferedPosition.coerceAtLeast(0),
+                    )
+                }
                 if (player.isPlaying) {
                     val pos = player.currentPosition
                     val dur = player.duration.coerceAtLeast(1)
-                    _state.value = _state.value.copy(
-                        positionMs = pos,
-                        durationMs = dur,
-                        bufferedMs = player.bufferedPosition,
-                    )
                     // Report progress to the backend every ~15s.
                     if (pos - lastReport > 15_000) {
                         lastReport = pos
@@ -721,11 +773,23 @@ class PlayerViewModel @Inject constructor(
     }
 
     fun playPause() {
-        if (player.isPlaying) player.pause() else player.play()
+        // Decide on playWhenReady, not isPlaying: while buffering isPlaying is false,
+        // so the old check turned a «pause» tap into another play() that did nothing.
+        when {
+            player.playbackState == Player.STATE_ENDED -> {
+                player.seekTo(0)
+                player.play()
+            }
+            player.playWhenReady -> player.pause()
+            else -> player.play()
+        }
     }
 
     fun seekTo(positionMs: Long) {
-        player.seekTo(positionMs.coerceIn(0, player.duration.coerceAtLeast(0)))
+        val target = positionMs.coerceIn(0, player.duration.coerceAtLeast(0))
+        player.seekTo(target)
+        // Show the new spot immediately instead of waiting for the next tick.
+        _state.value = _state.value.copy(positionMs = target, ended = false)
     }
 
     fun seekBy(deltaMs: Long) {
@@ -754,6 +818,7 @@ class PlayerViewModel @Inject constructor(
         triedSourceUrls.clear()
         triedSourceUrls.add(rawUrl)
         reportedPlaybackGap = false
+        healedSourceKeys.clear()
         currentMediaUrl = abs
         player.setMediaItem(buildMediaItem(abs, _state.value.subtitles), pos)
         player.prepare()
@@ -809,9 +874,13 @@ class PlayerViewModel @Inject constructor(
      * self-heal report) once no untried, decodable mirror remains.
      */
     private fun tryAutoFallback(error: androidx.media3.common.PlaybackException): Boolean {
+        // File the failure through the classified auto-heal intake *before* local
+        // mirrors are tried, so the crawler repair runs in parallel instead of
+        // after giving up — same as the web player's handleSourceFailed.
+        autoHealFailedSource(error)
         triedSourceUrls.add(_state.value.activeQualityUrl)
         val next = nextFallbackSource() ?: run {
-            reportPlaybackGapOnce()
+            reportPlaybackGapOnce(error)
             return false
         }
         val abs = next.url.toAbsoluteUrl() ?: run {
@@ -844,15 +913,18 @@ class PlayerViewModel @Inject constructor(
      * MP4/HLS mirror when this device has no playable source. Best-effort and
      * silent — it self-heals the catalog for the next viewer.
      */
-    private fun reportPlaybackGapOnce() {
+    private fun reportPlaybackGapOnce(error: androidx.media3.common.PlaybackException? = null) {
         if (reportedPlaybackGap) return
         if (titleSlug.isBlank() && titleId == 0) return
         reportedPlaybackGap = true
-        val reportType = if (contentType.equals("movie", ignoreCase = true)) "movie" else "series"
+        if (error != null) {
+            // Already filed in tryAutoFallback; keep the once-per-title guard.
+            return
+        }
         viewModelScope.launch {
             runCatching {
                 catalogRepository.reportContentIssue(
-                    contentType = reportType,
+                    contentType = if (contentType.equals("movie", ignoreCase = true)) "movie" else "series",
                     problemType = "playback",
                     objectId = titleId,
                     slug = titleSlug,
@@ -862,6 +934,104 @@ class PlayerViewModel @Inject constructor(
                 )
             }
         }
+    }
+
+    /**
+     * Automatic heal for *every* playback failure (not just exhausted mirrors).
+     *
+     * Files through POST api/catalog/playback-failure/ — the same deduped intake
+     * and crawler repair as a manual «گزارش خطا», classified from the exact
+     * ExoPlayer error — then retries immediately when the catalog already serves
+     * something better, or polls in the background and swaps it in when the
+     * repair lands. The viewer sees one Persian notice; recovery is automatic.
+     * Never throws and never breaks playback: every failure is best-effort.
+     */
+    private fun autoHealFailedSource(error: androidx.media3.common.PlaybackException) {
+        val failedUrl = currentMediaUrl
+        if (failedUrl.isBlank()) return
+        if (titleSlug.isBlank() && titleId == 0) return
+        val key = "$failedUrl|${error.errorCode}"
+        if (!healedSourceKeys.add(key)) return
+        if (healedSourceKeys.size > 200) healedSourceKeys.clear()
+        val playedMs = try { player.currentPosition.coerceAtLeast(0) } catch (_: Exception) { 0L }
+        val reportType = if (contentType.equals("movie", ignoreCase = true)) "movie" else "series"
+        viewModelScope.launch {
+            val versionToken = runCatching { currentPlaybackVersion(null).backendToken }.getOrDefault("")
+            val res = runCatching {
+                catalogRepository.reportPlaybackFailure(
+                    PlaybackFailureRequest(
+                        contentType = reportType,
+                        objectId = titleId,
+                        slug = titleSlug,
+                        episodeId = if (reportType == "series") episodeId else 0,
+                        errorCode = error.errorCode.toString(),
+                        errorMessage = "auto heal android ${error.errorCodeName} cause=${error.cause?.message}".take(500),
+                        sourceUrl = failedUrl,
+                        version = versionToken,
+                        player = "android",
+                        playedSeconds = playedMs / 1000.0,
+                        hadPlayed = playedMs > 1000,
+                    ),
+                )
+            }.getOrNull() as? ApiResult.Success ?: return@launch
+            val body = res.data
+            if (!body.ok) return@launch
+            val notice = body.messageFa.ifBlank { "خطای پخش ثبت شد؛ داریم نسخه سالم را آماده می‌کنیم…" }
+            _state.value = _state.value.copy(recovering = true, recoveryNotice = notice)
+            val fixed = body.fixedUrl.trim()
+            if (body.shouldRetry && fixed.isNotBlank() && fixed != failedUrl) {
+                switchToFixedUrl(fixed, "پخش درست شد؛ ادامه از همان لحظه")
+                return@launch
+            }
+            val reportId = body.reportId
+            if (reportId != null && reportId > 0 && !body.shouldRetry) {
+                pollFixedUrl(reportId, failedUrl)
+            }
+        }
+    }
+
+    /** Poll a filed report until the catalog serves a URL different from the failed one. */
+    private fun pollFixedUrl(reportId: Int, failedUrl: String) {
+        viewModelScope.launch {
+            val delays = longArrayOf(3000, 5000, 8000, 12000, 15000, 15000)
+            for (step in delays) {
+                delay(step)
+                val poll = runCatching { catalogRepository.contentIssueStatus(reportId) }.getOrNull()
+                val fixed = (poll as? ApiResult.Success)?.data?.fixedUrl?.trim().orEmpty()
+                if (fixed.isNotBlank() && fixed != failedUrl && fixed != currentMediaUrl) {
+                    switchToFixedUrl(fixed, "پخش درست شد؛ ادامه از همین لحظه")
+                    return@launch
+                }
+                val status = (poll as? ApiResult.Success)?.data?.status.orEmpty()
+                if (status == "needs_review") return@launch
+            }
+        }
+    }
+
+    /** Swap the running player onto a backend-healed URL, keeping position/speed. */
+    private fun switchToFixedUrl(fixedRaw: String, notice: String) {
+        val abs = fixedRaw.toAbsoluteUrl() ?: return
+        if (abs == currentMediaUrl || triedSourceUrls.contains(fixedRaw)) return
+        val pos = try { player.currentPosition.coerceAtLeast(0) } catch (_: Exception) { 0L }
+        val wasPlaying = try { player.playWhenReady } catch (_: Exception) { true }
+        val speed = _state.value.playbackSpeed
+        val subtitleIndex = _state.value.activeSubtitleIndex
+        triedSourceUrls.add(fixedRaw)
+        currentMediaUrl = abs
+        runCatching {
+            player.setMediaItem(buildMediaItem(abs, _state.value.subtitles), pos)
+            player.prepare()
+            player.playWhenReady = wasPlaying
+            player.setPlaybackSpeed(speed)
+        }
+        _state.value = _state.value.copy(
+            activeQualityUrl = fixedRaw,
+            error = null,
+            recovering = false,
+            recoveryNotice = notice,
+            isBuffering = true,
+        )
+        if (subtitleIndex >= 0) selectSubtitle(subtitleIndex)
     }
 
     /** Numeric resolution rank of a quality label so higher resolutions sort first. */
@@ -964,6 +1134,7 @@ class PlayerViewModel @Inject constructor(
         // A manual retry re-opens the self-heal report so a fresh exhaustion can
         // ping the backend again.
         reportedPlaybackGap = false
+        healedSourceKeys.clear()
         if (currentMediaUrl.isNotBlank()) {
             player.setMediaItem(buildMediaItem(currentMediaUrl, _state.value.subtitles), player.currentPosition)
             player.prepare()
@@ -973,11 +1144,11 @@ class PlayerViewModel @Inject constructor(
 
     /**
      * File a structured «گزارش خطا» for the title/episode now playing. The backend
-     * auto-remediation engine dispatches the fix by [problemType]
-     * (subtitle / wrong_title / wrong_episode / playback / audio / other):
-     * re-running the subtitle pipeline, re-crawling playback sources, or stripping
-     * a contaminated link and re-importing. Best-effort — a failure only surfaces a
-     * gentle notice and never disrupts playback.
+     * auto-remediation engine dispatches the fix by [problemType] (the 12-value
+     * server catalogue shared with the web player): re-running the subtitle
+     * pipeline, re-crawling playback sources, or stripping a contaminated link
+     * and re-importing. Best-effort — a failure only surfaces a gentle notice
+     * and never disrupts playback.
      */
     fun submitContentReport(problemType: String, detail: String) {
         if (_state.value.reportSubmitting) return

@@ -35,8 +35,8 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import com.revayato.app.core.theme.BrandGreen
-import com.revayato.app.core.theme.BrandMint
+import com.revayato.app.core.theme.BrandDeep
+import com.revayato.app.core.theme.Brand
 import com.revayato.app.core.theme.ErrorRed
 import com.revayato.app.core.theme.OnBrand
 import com.revayato.app.core.theme.TextMuted
@@ -75,7 +75,7 @@ fun WatchPartyLandingScreen(
         Icon(
             Icons.Rounded.Groups,
             contentDescription = null,
-            tint = BrandMint,
+            tint = Brand,
             modifier = Modifier.size(64.dp),
         )
         Spacer(Modifier.height(16.dp))
@@ -102,8 +102,8 @@ fun WatchPartyLandingScreen(
             keyboardOptions = KeyboardOptions(imeAction = ImeAction.Go),
             keyboardActions = KeyboardActions(onGo = { viewModel.join() }),
             colors = OutlinedTextFieldDefaults.colors(
-                focusedBorderColor = BrandMint,
-                cursorColor = BrandMint,
+                focusedBorderColor = Brand,
+                cursorColor = Brand,
             ),
         )
         if (state.error != null) {
@@ -124,7 +124,7 @@ fun WatchPartyLandingScreen(
                 .height(52.dp),
             shape = RoundedCornerShape(14.dp),
             colors = ButtonDefaults.buttonColors(
-                containerColor = BrandMint,
+                containerColor = Brand,
                 contentColor = OnBrand,
             ),
         ) {
@@ -156,7 +156,7 @@ private fun FeatureRow(text: String) {
         Spacer(
             Modifier
                 .size(7.dp)
-                .background(BrandGreen, RoundedCornerShape(4.dp)),
+                .background(BrandDeep, RoundedCornerShape(4.dp)),
         )
         Spacer(Modifier.size(10.dp))
         Text(text, style = MaterialTheme.typography.bodyMedium, color = TextMuted)

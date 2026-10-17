@@ -47,7 +47,7 @@ def main() -> int:
     from django.conf import settings
 
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--delay', type=float, default=0.55)
+    parser.add_argument('--delay', type=float, default=0.3)
     parser.add_argument('--movies-only', action='store_true')
     parser.add_argument('--series-only', action='store_true')
     parser.add_argument('--limit', type=int, default=0, help='0 = no limit')

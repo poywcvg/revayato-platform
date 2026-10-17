@@ -1,13 +1,14 @@
 <script setup lang="ts">
+import type { CinematicIconName } from '~/types'
 // The download page used to hardcode the build it offered, so every release
 // needed an edit here too — and a forgotten one left the page advertising a
 // version the directory no longer held. `/api/app/version/` is the same source
 // of truth the installed app polls for updates, and it only ever names an APK
 // that is actually on disk. These constants are the floor: what the page shows
 // before the call answers, and if it never does.
-const APP_VERSION_FALLBACK = '1.0.16'
+const APP_VERSION_FALLBACK = '1.0.22'
 const APP_SIZE_FALLBACK = '۳ مگابایت'
-const APK_URL_FALLBACK = '/downloads/revayato-1.0.16.apk'
+const APK_URL_FALLBACK = '/downloads/revayato-1.0.22.apk'
 const STORE_URL = 'https://revayato.com/app'
 
 interface AppRelease {
@@ -45,7 +46,7 @@ const APP_SIZE = computed(() => {
   return `${shown.toLocaleString('fa-IR')} مگابایت`
 })
 
-const features = [
+const features: { icon: CinematicIconName, title: string, text: string }[] = [
   { icon: 'play', title: 'پخش آنلاین', text: 'پخش روان فیلم و سریال با انتخاب کیفیت و منبع جایگزین خودکار.' },
   { icon: 'subtitle', title: 'زیرنویس و دوبله', text: 'پشتیبانی از زیرنویس فارسی و نسخه‌های دوبله‌شده.' },
   { icon: 'users', title: 'تماشای گروهی', text: 'اتاق بسازید و با دوستانتان هم‌زمان یک فیلم را تماشا کنید.' },
@@ -56,6 +57,7 @@ const steps = [
   'فایل نصب (APK) را از دکمهٔ بالا دانلود کنید.',
   'در تنظیمات گوشی، بخش «امنیت»، گزینهٔ «منابع ناشناخته» را برای مرورگر خود فعال کنید.',
   'فایل دانلودشده را باز کنید و نصب را تأیید کنید.',
+  'اگر پنجرهٔ «Google Play Protect» باز شد، «Scan app» را بزنید؛ اسکن چند ثانیه طول می‌کشد و بعد نصب ادامه پیدا می‌کند.',
   'اپ روایتو را باز کنید و با حساب خود وارد شوید.',
 ]
 

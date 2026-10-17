@@ -66,33 +66,8 @@ def _resolve(content_type: str, *, object_id: int, slug: str, episode_id: int):
     return obj, episode
 
 
-def _mirror_to_inbox(report, obj, episode, detail: str, *, reopened: bool = False):
-    """File the report as a support ticket so staff always have eyes on it.
-
-    Only for signed-in reporters (a ticket requires an owner). Idempotent per
-    report row — a repeat report bumps the counter but never spams the inbox.
-    """
-    from apps.engagement.models import SupportTicket
-    from apps.engagement import services as engagement_services
-
-    if report.support_ticket_id:
-        ticket = report.support_ticket
-        if reopened and ticket.status in {
-            SupportTicket.Status.RESOLVED, SupportTicket.Status.CLOSED,
-            SupportTicket.Status.WAITING_USER,
-        }:
-            # The viewer says it is still broken: put the ticket back in the queue
-            # (reply_support_ticket flips it to OPEN + unread for the engine).
-            engagement_services.reply_support_ticket(
-                ticket=ticket, author=ticket.user, is_staff_reply=False,
-                body='این مشکل هنوز برطرف نشده و دوباره از پلیر گزارش شد.',
-                auto_process=False,
-            )
-        return ticket
-    reporter = report.reporter
-    if reporter is None:
-        return None
-
+def _build_ticket_body(report, obj, episode, detail: str) -> tuple[str, str, str]:
+    """Shared subject/body/where for every inbox ticket linked to this report."""
     label = PROBLEM_LABELS.get(report.problem_type, report.problem_type)
     where = report.title or getattr(obj, 'title', '') or report.slug
     if episode is not None:
@@ -103,6 +78,84 @@ def _mirror_to_inbox(report, obj, episode, detail: str, *, reopened: bool = Fals
     if detail.strip():
         body_lines.append(f'توضیح کاربر: {detail.strip()}')
     body_lines.append(f'کد گزارش داخلی: CIR-{report.pk}')
+    subject = f'گزارش پلیر: {label} — {where}'[:200]
+    return subject, '\n'.join(body_lines), where
+
+
+def _mirror_to_inbox(report, obj, episode, detail: str, *, reopened: bool = False):
+    """File the report as a support ticket so staff always have eyes on it.
+
+    Only for signed-in reporters (a ticket requires an owner).
+
+    Remediation dedupes globally on (content, episode, problem_type) so a popular
+    breakage crawls once — but the inbox is per-user: every authenticated reporter
+    gets their own ticket in «درخواست‌های من». The first ticket stays linked via
+    ``report.support_ticket``; follow-up reporters get their own ticket whose body
+    carries the same ``CIR-<id>`` reference so the automation can resolve it
+    against the same report without a schema change.
+    """
+    from apps.engagement.models import SupportTicket
+    from apps.engagement import services as engagement_services
+
+    current_user = getattr(report, '_current_reporter', None)
+    # ``record_content_issue_report`` sets ``report.reporter`` to the first
+    # reporter only; the current caller is passed via a transient attr so a
+    # second user bumping the same deduped row still gets their own inbox entry.
+    # Fall back to the stored reporter for legacy direct calls.
+    reporter = current_user if current_user is not None else report.reporter
+    if reporter is None:
+        return None
+
+    if report.support_ticket_id:
+        ticket = report.support_ticket
+        if ticket is not None and ticket.user_id == reporter.pk:
+            if reopened and ticket.status in {
+                SupportTicket.Status.RESOLVED, SupportTicket.Status.CLOSED,
+                SupportTicket.Status.WAITING_USER,
+            }:
+                # The viewer says it is still broken: put the ticket back in the queue
+                # (reply_support_ticket flips it to OPEN + unread for the engine).
+                engagement_services.reply_support_ticket(
+                    ticket=ticket, author=ticket.user, is_staff_reply=False,
+                    body='این مشکل هنوز برطرف نشده و دوباره از پلیر گزارش شد.',
+                    auto_process=False,
+                )
+            return ticket
+        # A different user hit the same deduped breakage: they must see their own
+        # ticket in «درخواست‌های من», not someone else's. Create a sibling ticket
+        # that references the same CIR id; automation resolves it via that ref.
+        if ticket is not None:
+            subject, body, where = _build_ticket_body(report, obj, episode, detail)
+            sibling = engagement_services.create_support_ticket(
+                user=reporter,
+                category=(
+                    SupportTicket.Category.CONTENT_FIX
+                    if report.problem_type in {'wrong_title', 'wrong_episode'}
+                    else SupportTicket.Category.BUG
+                ),
+                subject=subject,
+                body=body,
+                related_title=where[:255],
+                related_year=getattr(obj, 'release_year', None) if report.content_type == 'movie' else None,
+                auto_process=True,
+            )
+            try:
+                meta = dict(report.meta or {})
+                extra = list(meta.get('extra_tickets') or [])
+                if sibling.pk not in extra:
+                    extra.append(sibling.pk)
+                meta['extra_tickets'] = extra[-20:]
+                report.meta = meta
+                report.save(update_fields=['meta', 'updated_at'])
+            except Exception:  # noqa: BLE001 — inbox bookkeeping must not fail intake
+                logger.warning('could not record sibling ticket for report %s', report.pk, exc_info=True)
+            return sibling
+        # Fall through (dangling FK): create the primary ticket below.
+    reporter = report.reporter
+    if reporter is None:
+        return None
+
+    subject, body, where = _build_ticket_body(report, obj, episode, detail)
 
     ticket = engagement_services.create_support_ticket(
         user=reporter,
@@ -111,8 +164,8 @@ def _mirror_to_inbox(report, obj, episode, detail: str, *, reopened: bool = Fals
             if report.problem_type in {'wrong_title', 'wrong_episode'}
             else SupportTicket.Category.BUG
         ),
-        subject=f'گزارش پلیر: {label} — {where}'[:200],
-        body='\n'.join(body_lines),
+        subject=subject,
+        body=body,
         related_title=where[:255],
         related_year=getattr(obj, 'release_year', None) if report.content_type == 'movie' else None,
         # The report's own task remediates first and then lets the ticket speak, so
@@ -261,8 +314,13 @@ def record_content_issue_report(
             ])
 
     # Always visible to staff (best-effort — inbox failure must not fail intake).
+    # The deduped row keeps the first reporter; the current caller rides along
+    # as a transient so a second user gets their own inbox ticket (see
+    # _mirror_to_inbox) instead of silently sharing the first user's ticket.
+    inbox_ticket = None
     try:
-        _mirror_to_inbox(report, obj, episode, detail, reopened=reopened)
+        report._current_reporter = reporter
+        inbox_ticket = _mirror_to_inbox(report, obj, episode, detail, reopened=reopened)
     except Exception:  # noqa: BLE001
         logger.warning('could not mirror content report %s to the inbox', report.pk, exc_info=True)
 
@@ -271,7 +329,7 @@ def record_content_issue_report(
         auto_ran = _kick_remediation(report)
 
     report.refresh_from_db(fields=['status', 'report_count'])
-    return {
+    result: dict[str, Any] = {
         'ok': True,
         'report_id': report.pk,
         'status': report.status,
@@ -280,6 +338,31 @@ def record_content_issue_report(
         'auto': auto_ran,
         'created': created,
     }
+    # Let an authenticated reporter jump straight into «درخواست‌های من»: the
+    # mirrored (or sibling) ticket code is the deep-link the apps need. Anon
+    # reporters get an empty string — polling via report_id still works.
+    try:
+        code = getattr(inbox_ticket, 'tracking_code', '') or ''
+        # The caller may own a sibling ticket rather than the row's primary one
+        # (deduped breakage): prefer a ticket actually owned by this reporter.
+        if reporter is not None and (not code or getattr(inbox_ticket, 'user_id', None) != reporter.pk):
+            from apps.engagement.models import SupportTicket as _ST
+
+            owned = (
+                _ST.objects.filter(user=reporter)
+                .filter(messages__body__contains=f'CIR-{report.pk}')
+                .order_by('-created_at')
+                .first()
+            )
+            if owned is not None:
+                inbox_ticket = owned
+                code = owned.tracking_code
+        if code:
+            result['tracking_code'] = code
+            result['ticket_status'] = getattr(inbox_ticket, 'status', '')
+    except Exception:  # noqa: BLE001 — tracking code is convenience, never fatal
+        pass
+    return result
 
 
 def read_report_status(report_id: int) -> dict[str, Any]:

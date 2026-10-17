@@ -211,7 +211,7 @@ watch(() => [props.objectId, props.contentType], () => { void loadSummary() })
     radial-gradient(120% 140% at 100% 0%, rgb(var(--media-accent-rgb, 176 228 204) / 14%), transparent 55%),
     var(--surface-1, #fff);
   border: 1px solid var(--border-color, rgba(0, 0, 0, 0.08));
-  box-shadow: 0 1px 2px rgb(0 0 0 / 4%);
+  box-shadow: none;
   overflow: hidden;
 }
 .rw--dark {
@@ -223,7 +223,7 @@ watch(() => [props.objectId, props.contentType], () => { void loadSummary() })
 /* Zeigarnik nudge: a soft accent glow while the viewer hasn't rated yet. */
 .rw--nudge {
   border-color: rgb(var(--media-accent-rgb, 176 228 204) / 45%);
-  box-shadow: 0 0 0 1px rgb(var(--media-accent-rgb, 176 228 204) / 22%), 0 8px 30px rgb(var(--media-accent-rgb, 176 228 204) / 12%);
+  box-shadow: 0 0 0 1px rgb(var(--media-accent-rgb, 176 228 204) / 22%);
 }
 
 .rw__head { display: flex; align-items: center; justify-content: space-between; gap: 0.5rem; }
@@ -288,7 +288,7 @@ watch(() => [props.objectId, props.contentType], () => { void loadSummary() })
   background: var(--media-accent, #0a7d55);
   border-color: transparent;
   color: #fff;
-  box-shadow: 0 4px 14px rgb(var(--media-accent-rgb, 176 228 204) / 30%);
+  box-shadow: none;
 }
 .rw--dark .rw__seg--on { color: #05130d; }
 /* The already-saved rating stays visible with a subtly different tone. */

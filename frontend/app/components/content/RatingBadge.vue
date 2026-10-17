@@ -22,7 +22,7 @@ const scaleText = computed(() => (props.rating ? formatScaleLabel(props.rating) 
 <template>
   <span
     v-if="hasRating"
-    class="inline-flex items-center gap-1.5 rounded-lg bg-elevated/95 px-2 py-1 text-xs font-black text-ink shadow-sm ring-1 ring-line"
+    class="inline-flex items-center gap-1.5 rounded-lg bg-elevated/95 px-2 py-1 text-xs font-black text-ink ring-1 ring-line"
   >
     <template v-if="rating">
       <RatingSourceLogo :source="rating.source" />

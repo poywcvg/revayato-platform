@@ -55,7 +55,9 @@ export function useAdminOps() {
     return api<BulkResponse>('/admin/catalog/bulk/', {
       method: 'POST',
       body: { kind, ids, action, ...payload },
-      timeout: 120_000,
+      // The backend stops a batch at 70s and reports the rest as time_budget;
+      // Cloudflare cuts the connection at 100s. Stay between the two.
+      timeout: 95_000,
     })
   }
 
@@ -133,11 +135,111 @@ export const BLOCKER_LABEL: Record<string, string> = {
   media_failed: 'تست منابع شکست خورد',
   no_download_links: 'هیچ لینکی ندارد',
   no_episodes: 'هیچ قسمتی ندارد',
+  // Gap codes exactly as the publish gate (completeness.py) reports them.
+  missing_title: 'عنوان',
+  missing_persian_title: 'عنوان فارسی',
+  missing_english_title: 'عنوان انگلیسی',
+  non_latin_english_title: 'عنوان انگلیسی با حروف لاتین نیست',
+  missing_description: 'خلاصهٔ داستان',
+  missing_persian_description: 'خلاصهٔ داستان فارسی',
+  missing_short_description: 'خلاصهٔ کوتاه',
+  missing_cast: 'بازیگران',
+  missing_genres: 'ژانر',
+  missing_directors: 'کارگردان',
+  missing_poster: 'پوستر',
+  missing_backdrop: 'تصویر پس‌زمینه',
+  missing_imdb_rating: 'امتیاز IMDb',
+  missing_rating: 'امتیاز',
+  missing_release_year: 'سال انتشار',
+  media_sources_dead: 'هیچ لینک سالمی پیدا نشد',
 }
 
 /** Falls back to the raw key so a new backend blocker is never swallowed. */
 export function blockerLabel(key: string) {
   return BLOCKER_LABEL[key] || key
+}
+
+/** Refusal codes the admin endpoints answer with, in words an admin can act on. */
+const ADMIN_ERROR_CODE: Record<string, string> = {
+  contaminated_link: 'این لینک متعلق به عنوان دیگری است',
+  link_rejected_by_normalizer: 'لینک پذیرفته نشد (میزبان مرده یا پسوند نامعتبر)',
+  publish_blocked: 'برای انتشار کامل نیست',
+  queue_failed: 'صف پردازش در دسترس نبود؛ کمی بعد دوباره امتحان کنید',
+  action_failed: 'اجرای عملیات روی سرور با خطا تمام شد',
+  duplicate_link: 'این لینک از قبل ثبت شده است',
+  link_not_found: 'این لینک دیگر در فهرست نیست؛ صفحه را تازه کنید',
+  selection_too_large: 'تعداد انتخاب‌ها برای این عملیات زیاد است',
+  time_budget: 'به‌خاطر محدودیت زمان انجام نشد؛ دوباره اجرا کنید',
+  not_found: 'این عنوان پیدا نشد',
+  subtitle_worker_needs_published_title: 'زیرنویس فقط برای عنوان منتشرشده جستجو می‌شود',
+}
+
+/** Persian text for one refusal code (plus its blockers), for per-row bulk results. */
+export function adminErrorCodeLabel(code?: string | null, blockers?: string[] | null) {
+  const head = (code && ADMIN_ERROR_CODE[code]) || code || 'انجام نشد'
+  const tail = (blockers || []).map(blockerLabel).join('، ')
+  return tail ? `${head}: ${tail}` : head
+}
+
+function firstFieldError(data: Record<string, unknown>): string {
+  for (const [field, value] of Object.entries(data)) {
+    if (['detail', 'code', 'action', 'blockers'].includes(field)) continue
+    const message = Array.isArray(value) ? value[0] : value
+    if (typeof message === 'string' && message) return message
+    if (message && typeof message === 'object') {
+      const nested = firstFieldError(message as Record<string, unknown>)
+      if (nested) return nested
+    }
+  }
+  return ''
+}
+
+/**
+ * Why an admin request failed, as one line. Every admin page used to say only
+ * «عملیات ناموفق بود», which hid a throttle, a timeout, a validation message
+ * and a publish gate behind the same words — so every failure looked like the
+ * same unfixable bug.
+ */
+export function adminErrorMessage(error: unknown, fallback = 'عملیات ناموفق بود'): string {
+  const err = error as {
+    status?: number, statusCode?: number, name?: string, message?: string,
+    data?: unknown, response?: { status?: number, headers?: Headers },
+  }
+  const status = err?.status || err?.statusCode || err?.response?.status || 0
+  const data = (err?.data && typeof err.data === 'object') ? err.data as Record<string, unknown> : null
+
+  if (!status) {
+    const text = `${err?.name || ''} ${err?.message || ''}`
+    if (/timeout|abort/i.test(text)) {
+      return 'پاسخ سرور بیش از حد طول کشید؛ ممکن است عملیات انجام شده باشد — صفحه را تازه کنید'
+    }
+    return 'ارتباط با سرور برقرار نشد؛ اتصال اینترنت را بررسی کنید'
+  }
+  if (status === 429) {
+    const wait = Number(err?.response?.headers?.get?.('Retry-After')) || 0
+    return wait
+      ? `درخواست‌ها زیاد بود؛ ${wait} ثانیه دیگر دوباره امتحان کنید`
+      : 'درخواست‌ها زیاد بود؛ چند ثانیه دیگر دوباره امتحان کنید'
+  }
+  if (status === 401) return 'نشست شما تمام شده؛ دوباره وارد شوید'
+  if (status === 403) return 'دسترسی مدیریت برای این حساب فعال نیست'
+  if (status === 404) return 'این عنوان پیدا نشد (شاید حذف یا ادغام شده باشد)'
+  if (status === 502 || status === 504 || status === 524) {
+    if (data?.code) return adminErrorCodeLabel(String(data.code))
+    return 'سرور در زمان مقرر پاسخ نداد؛ ممکن است عملیات انجام شده باشد — صفحه را تازه کنید'
+  }
+  if (data) {
+    const code = typeof data.code === 'string' ? data.code : ''
+    const blockers = Array.isArray(data.blockers) ? data.blockers as string[] : []
+    if (code && (ADMIN_ERROR_CODE[code] || blockers.length)) return adminErrorCodeLabel(code, blockers)
+    if (typeof data.detail === 'string' && data.detail) return data.detail
+    if (typeof data.error === 'string' && data.error) return data.error
+    const field = firstFieldError(data)
+    if (field) return field
+    if (code) return adminErrorCodeLabel(code)
+  }
+  if (status >= 500) return 'خطای داخلی سرور؛ جزئیات در لاگ ثبت شد'
+  return fallback
 }
 
 /**

@@ -30,9 +30,10 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import com.revayato.app.core.theme.OutlineSoft
 import com.revayato.app.core.theme.AccentYellow
-import com.revayato.app.core.theme.BrandGreen
-import com.revayato.app.core.theme.BrandMint
+import com.revayato.app.core.theme.BrandDeep
+import com.revayato.app.core.theme.Brand
 import com.revayato.app.core.theme.OnBrand
 import com.revayato.app.core.theme.TextMuted
 import com.revayato.app.core.theme.TextPrimary
@@ -48,7 +49,7 @@ fun ProfileAvatar(avatar: String?, name: String, size: Int = 84, modifier: Modif
         modifier
             .size(size.dp)
             .clip(CircleShape)
-            .background(Brush.linearGradient(listOf(BrandGreen, BrandMint))),
+            .background(Brush.linearGradient(listOf(BrandDeep, Brand))),
         contentAlignment = Alignment.Center,
     ) {
         if (!avatar.isNullOrBlank()) {
@@ -83,7 +84,7 @@ fun ProfileIdentity(
                 color = TextPrimary,
             )
             if (isVerified) {
-                Icon(Icons.Rounded.Verified, contentDescription = "تأییدشده", tint = BrandMint, modifier = Modifier.size(20.dp))
+                Icon(Icons.Rounded.Verified, contentDescription = "تأییدشده", tint = Brand, modifier = Modifier.size(20.dp))
             }
         }
         if (username.isNotBlank()) {
@@ -132,7 +133,7 @@ private fun StatTile(value: Int, label: String) {
 
 @Composable
 private fun StatDivider() {
-    Box(Modifier.width(1.dp).height(34.dp).background(Color.White.copy(alpha = 0.08f)))
+    Box(Modifier.width(1.dp).height(34.dp).background(OutlineSoft))
 }
 
 /** Section title used across profile screens. */

@@ -7,6 +7,26 @@ from rest_framework import status
 from rest_framework.decorators import throttle_classes
 from rest_framework.response import Response
 
+# One pooled client for the whole worker: the previous version built, opened
+# and closed a brand-new TCP connection on every single health probe (compose
+# hits this every 20s per service plus the edge). redis-py pools are
+# thread-safe, so sharing is both faster and cheaper under load.
+_health_redis_client: Redis | None = None
+
+
+def _shared_redis() -> Redis:
+    global _health_redis_client
+    client = _health_redis_client
+    if client is None:
+        client = Redis.from_url(
+            settings.REDIS_URL,
+            socket_connect_timeout=1,
+            socket_timeout=1,
+            health_check_interval=30,
+        )
+        _health_redis_client = client
+    return client
+
 
 @api_view(['GET'])
 @throttle_classes([])
@@ -24,17 +44,10 @@ def health_check(request):
     if in_memory_channels:
         services['redis'] = True
     else:
-        client = Redis.from_url(
-            settings.REDIS_URL,
-            socket_connect_timeout=1,
-            socket_timeout=1,
-        )
         try:
-            services['redis'] = bool(client.ping())
+            services['redis'] = bool(_shared_redis().ping())
         except RedisError:
             pass
-        finally:
-            client.close()
 
     healthy = all(services.values())
     return Response(

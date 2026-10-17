@@ -70,8 +70,9 @@ const activeIndex = computed(() => tabs.value.findIndex(tab => tab.match(route.p
 <style scoped>
 .magic-bottom-nav {
   --nav-bg: #11151d;
-  --nav-accent: #e4ad49;
+  --nav-accent: var(--theme-accent-primary);
   --nav-muted: #9298a5;
+  --nav-line: rgb(255 255 255 / 8%);
   --nav-count: 5;
   --indicator-size: 3.65rem;
   position: fixed;
@@ -90,14 +91,19 @@ const activeIndex = computed(() => tabs.value.findIndex(tab => tab.match(route.p
   position: absolute;
   inset: 1.3rem 0 0;
   z-index: -2;
-  border-top: 1px solid rgb(255 255 255 / 8%);
+  border-top: 1px solid var(--nav-line);
   background: color-mix(in srgb, var(--nav-bg) 97%, transparent);
-  box-shadow: 0 -14px 34px rgb(0 0 0 / 28%);
+  box-shadow: none;
   /* Surface is 97% opaque, so a large blur is invisible but repaints the whole
      backdrop on every scroll. A small radius keeps the hint of glass cheaply. */
-  -webkit-backdrop-filter: blur(8px);
-  backdrop-filter: blur(8px);
 }
+
+html[data-theme="light"] .magic-bottom-nav {
+  --nav-bg: #ffffff;
+  --nav-muted: var(--theme-text-muted);
+  --nav-line: var(--theme-border);
+}
+
 
 /* One moving element creates both the circular cutout and its curved shoulders.
    inset-inline-start keeps the same math correct in RTL and LTR. */
@@ -111,7 +117,7 @@ const activeIndex = computed(() => tabs.value.findIndex(tab => tab.match(route.p
   border: .42rem solid var(--theme-bg-main, #080a0f);
   border-radius: 50%;
   background: var(--nav-accent);
-  box-shadow: 0 .35rem 1.1rem rgb(0 0 0 / 35%), inset 0 1px 0 rgb(255 255 255 / 28%);
+  box-shadow: none;
   transition: inset-inline-start 420ms cubic-bezier(.22, 1, .36, 1), opacity 180ms ease, transform 420ms cubic-bezier(.22, 1, .36, 1);
 }
 
@@ -188,7 +194,7 @@ const activeIndex = computed(() => tabs.value.findIndex(tab => tab.match(route.p
 }
 
 .magic-bottom-nav__item--active .magic-bottom-nav__icon-wrap {
-  color: #171109;
+  color: var(--theme-on-accent);
   transform: translateY(-.96rem);
 }
 

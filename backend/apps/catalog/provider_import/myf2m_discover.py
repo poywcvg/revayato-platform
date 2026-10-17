@@ -152,7 +152,7 @@ def run_myf2m_missing_import(
     series_limit: int | None = None,
     checkpoint_path: str | None = None,
     budget_seconds: float | None = None,
-    delay: float = 0.55,
+    delay: float = 0.3,
     max_pages: int | None = None,
     dry_run: bool = False,
     queue_softsub: bool = True,
@@ -441,8 +441,14 @@ def run_myf2m_missing_import(
         )
         return 'kept'
 
-    def walk(*, content_type: str, root: str, item_re, done_paths: set, keep_limit: int) -> None:
-        """Walk one listing from its stored cursor until the keep budget is spent."""
+    def walk(*, content_type: str, root: str, item_re, done_paths: set, keep_limit: int,
+             head_pages: int = 0) -> None:
+        """Walk one listing from its stored cursor until the keep budget is spent.
+
+        With ``head_pages`` the walk instead reads only the first N pages and leaves
+        the cursor alone. New titles land on page 1, and the deep cursor needs a
+        full lap of the archive (~7 ticks) to come back round to it.
+        """
         nonlocal movie_page, series_page
         if keep_limit <= 0:
             return
@@ -450,18 +456,21 @@ def run_myf2m_missing_import(
         kept_key = 'series_created' if is_series else 'movies_created'
         label = 'سریال' if is_series else 'فیلم'
         start_kept = stats[kept_key]
-        page = series_page if is_series else movie_page
+        page = 1 if head_pages else (series_page if is_series else movie_page)
+        page_cap = head_pages or max_pages
         pages_walked = 0
 
         def set_cursor(value: int) -> None:
             nonlocal movie_page, series_page
+            if head_pages:
+                return
             if is_series:
                 series_page = value
             else:
                 movie_page = value
             stats['series_page' if is_series else 'movie_page'] = value
 
-        while pages_walked < max_pages and stats[kept_key] - start_kept < keep_limit:
+        while pages_walked < page_cap and stats[kept_key] - start_kept < keep_limit:
             if should_cancel():
                 return
             if out_of_time():
@@ -533,7 +542,11 @@ def run_myf2m_missing_import(
                 stats['tried'] += 1
                 progress(f'{label}: {slug}')
                 try:
-                    import_one(content_type=content_type, page_path=path, slug=slug)
+                    outcome = import_one(content_type=content_type, page_path=path, slug=slug)
+                    if outcome == 'error':
+                        # A network or TMDB hiccup is not a verdict on the title;
+                        # remembering it would skip the title for good.
+                        done_paths.discard(path)
                 except ProviderRateLimited as exc:
                     # Retry this path on the next tick rather than burning it.
                     done_paths.discard(path)
@@ -550,9 +563,19 @@ def run_myf2m_missing_import(
                 page += 1
                 set_cursor(page)
             persist()
+            if head_pages and not finished_page:
+                return
 
     try:
         with _suppress_provider_publish_signals():
+            head = max(0, int(getattr(settings, 'MYF2M_IMPORT_HEAD_PAGES', 2)))
+            if head:
+                if movie_page > head:
+                    walk(content_type='movie', root='movies', item_re=MOVIE_ITEM_RE,
+                         done_paths=done_movie_paths, keep_limit=movies_limit, head_pages=head)
+                if series_page > head and not should_cancel():
+                    walk(content_type='series', root='series', item_re=SERIES_ITEM_RE,
+                         done_paths=done_series_paths, keep_limit=series_limit, head_pages=head)
             walk(content_type='movie', root='movies', item_re=MOVIE_ITEM_RE,
                  done_paths=done_movie_paths, keep_limit=movies_limit)
             if not should_cancel():

@@ -20,7 +20,7 @@ fun PosterGrid(
     items: List<CatalogCardDto>,
     onItemClick: (CatalogCardDto) -> Unit,
     modifier: Modifier = Modifier,
-    columns: Int = 3,
+    columns: Int = posterGridColumns(),
     state: LazyGridState = rememberLazyGridState(),
     header: (@Composable () -> Unit)? = null,
 ) {

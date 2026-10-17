@@ -131,16 +131,30 @@ def _resolve_target(report):
 
 
 def target_playable(obj, episode=None) -> bool:
-    """Crawl-free truth: can a strict browser play the thing that was reported?
+    """Crawl-free truth: can the player open the thing that was reported?
 
     Episode-scoped reports are judged on the episode's *own* source (a series with
     one HLS episode is "playable" at series level while episode 27 is still an
     ``.mkv``). Movie/series-wide reports use the title-level diagnosis.
+
+    "Playable" means direct (strict browser) *or* gateway (server HLS rewrap):
+    both open in the player today. A geo-locked MKV the gateway cannot reach
+    stays unplayable — the viewer still needs a browser-safe mirror.
     """
     from apps.catalog import playback_sources
 
     if episode is not None:
-        return playback_sources.episode_browser_safe(episode)
+        return playback_sources.episode_resolved(episode)
+    if obj is not None and hasattr(obj, 'playback_mode'):
+        # A movie with a tested gateway stream plays via the gateway even
+        # though its container is MKV — the strict diagnose still calls it
+        # unplayable, which is right for the crawler ("keep hunting MP4") but
+        # wrong for "can the viewer watch it now?".
+        try:
+            if playback_sources.episode_gateway_playable(obj):
+                return True
+        except Exception:  # noqa: BLE001
+            pass
     return not playback_sources.browser_unplayable(obj)
 
 
@@ -219,7 +233,14 @@ def _remediate_playback(report, obj, episode) -> dict[str, Any]:
     # series-level "refreshed" verdict says nothing about that episode's own source.
     state = str(outcome.get('outcome') or '').lower()
     if episode is not None:
-        episode.refresh_from_db(fields=['video_url'])
+        episode.refresh_from_db(fields=['video_url', 'playback_mode'])
+        # The gate may have marked the fresh mirror gateway-playable without
+        # changing the URL (same MKV, now tested) — refresh the owner too.
+        try:
+            if obj is not None and hasattr(obj, 'playback_mode'):
+                obj.refresh_from_db(fields=['video_url', 'playback_mode'])
+        except Exception:  # noqa: BLE001
+            pass
     detail = {
         'outcome': state,
         'codes': outcome.get('codes'),

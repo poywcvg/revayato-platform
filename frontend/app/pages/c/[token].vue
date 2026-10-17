@@ -14,11 +14,12 @@ if (error.value) {
   throw createError({ statusCode: 404, statusMessage: 'این کالکشن در دسترس نیست.', fatal: true })
 }
 
+const siteUrl = useRuntimeConfig().public.siteUrl
 useSeoMeta({
   title: () => (collection.value ? `${collection.value.title} — کالکشن ${collection.value.owner.username}` : 'کالکشن'),
   description: () => collection.value?.description || `فهرستی از ${collection.value?.item_count ?? 0} عنوان در روایتو`,
   ogTitle: () => collection.value?.title,
-  ogImage: () => collection.value?.covers?.[0] || undefined,
+  ogImage: () => seoImage(siteUrl, collection.value?.covers?.[0]) || undefined,
 })
 </script>
 

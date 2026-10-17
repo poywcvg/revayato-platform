@@ -205,7 +205,7 @@ onClickOutside(root, () => closeMenu())
         role="listbox"
         class="genre-select__menu soft-scrollbar"
         :class="[
-          openAbove ? 'genre-select__menu--above' : 'genre-select__menu--below',
+ openAbove ? 'genre-select__menu--above' : 'genre-select__menu--below',
           alignToInlineEnd && 'genre-select__menu--align-end',
         ]"
         :aria-labelledby="`${instanceId}-trigger`"
@@ -240,7 +240,7 @@ onClickOutside(root, () => closeMenu())
             role="option"
             class="genre-select__option"
             :class="[
-              !modelValue && 'genre-select__option--selected',
+ !modelValue && 'genre-select__option--selected',
               activeIndex === -1 && 'genre-select__option--active',
             ]"
             :aria-selected="!modelValue"
@@ -277,7 +277,7 @@ onClickOutside(root, () => closeMenu())
             role="option"
             class="genre-select__option"
             :class="[
-              modelValue === genre.slug && 'genre-select__option--selected',
+ modelValue === genre.slug && 'genre-select__option--selected',
               index === activeIndex && 'genre-select__option--active',
             ]"
             :aria-selected="modelValue === genre.slug"
@@ -330,7 +330,6 @@ onClickOutside(root, () => closeMenu())
 
 .genre-select__menu {
   @apply absolute start-0 mt-1 overflow-hidden rounded-xl border border-line bg-elevated shadow-2xl;
-  @apply backdrop-blur-xl;
   width: min(max(100%, 16rem), calc(100dvw - 1rem));
   max-width: calc(100dvw - 1rem);
   max-height: min(22rem, 62dvh);

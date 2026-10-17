@@ -70,7 +70,7 @@ class IsStaffUser(BasePermission):
 
 
 class StaffAdminThrottle(UserRateThrottle):
-    rate = '120/minute'
+    scope = 'staff_admin'  # same bucket as admin_api.StaffAdminThrottle
 
 
 # ---------------------------------------------------------------------------

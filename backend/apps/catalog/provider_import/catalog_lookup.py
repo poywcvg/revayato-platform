@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import re
+from datetime import timedelta
 from urllib.parse import urlsplit
 
 from django.conf import settings
@@ -76,14 +77,47 @@ def schedule_provider_lookup_for_catalog_object(
             force=force,
             trigger=trigger,
         )
-        if job is None:
-            return None
+        if job is None or getattr(job, 'reused', False):
+            return job
         async_result = run_provider_import_job_task.delay(str(job.id))
         ProviderImportJob.objects.filter(pk=job.pk).update(task_id=async_result.id)
         return job
 
     transaction.on_commit(_enqueue)
     return True
+
+
+#: Job states the ``uniq_active_provider_*_job`` constraints treat as active.
+ACTIVE_JOB_STATUSES = [
+    ProviderImportJob.Status.QUEUED,
+    ProviderImportJob.Status.VALIDATING,
+    ProviderImportJob.Status.SEARCHING,
+    ProviderImportJob.Status.AWAITING_REVIEW,
+    ProviderImportJob.Status.RUNNING,
+    ProviderImportJob.Status.TRANSFERRING,
+    ProviderImportJob.Status.CANCEL_REQUESTED,
+]
+#: Active states in which a worker is (or is about to be) doing the work.
+WORKING_JOB_STATUSES = {
+    ProviderImportJob.Status.QUEUED,
+    ProviderImportJob.Status.VALIDATING,
+    ProviderImportJob.Status.SEARCHING,
+    ProviderImportJob.Status.RUNNING,
+    ProviderImportJob.Status.TRANSFERRING,
+}
+#: A "working" job untouched this long lost its worker (restart, expired message).
+STALE_JOB_AFTER_SECONDS = 45 * 60
+
+
+def _retire_job(job, reason: str):
+    """Close an active job so a new one may take its slot. A status change, never a delete."""
+    ProviderImportJob.objects.filter(pk=job.pk, status__in=ACTIVE_JOB_STATUSES).update(
+        status=ProviderImportJob.Status.CANCELLED,
+        error_message=reason[:500],
+        finished_at=timezone.now(),
+        updated_at=timezone.now(),
+    )
+    append_log(job, 'info', reason, event_code='superseded')
 
 
 def create_catalog_discover_job(
@@ -95,55 +129,67 @@ def create_catalog_discover_job(
     trigger: str = ProviderImportJob.Trigger.MANUAL,
     mode: str = ProviderImportJob.Mode.DISCOVER_ONLY,
 ):
+    """The discover job for one catalog row — reusing, or replacing, an active one.
+
+    The database allows one active job per provider+title+mode. ``force`` used
+    to create a second one anyway, which is how a re-search on a series whose
+    last job sat in «awaiting review» died with a unique-constraint error. Now:
+
+    * a job a worker is actually running is returned as is (``job.reused``) —
+      two crawls of the same title only race each other;
+    * without ``force`` the existing job is returned, as before;
+    * with ``force`` an idle one (awaiting review, or a worker that vanished)
+      is closed as superseded and a fresh job takes its place.
+
+    Callers must not queue a job that comes back with ``reused`` set.
+    """
+    from django.db import IntegrityError
+
     provider = ensure_myf2m_provider()
-    movie = None
-    series = None
+    movie = series = None
     if content_type == 'movie':
         movie = Movie.objects.get(pk=object_id)
-        active = ProviderImportJob.objects.filter(
-            provider=provider,
-            target_movie=movie,
-            status__in=[
-                ProviderImportJob.Status.QUEUED,
-                ProviderImportJob.Status.VALIDATING,
-                ProviderImportJob.Status.SEARCHING,
-                ProviderImportJob.Status.AWAITING_REVIEW,
-                ProviderImportJob.Status.RUNNING,
-                ProviderImportJob.Status.TRANSFERRING,
-                ProviderImportJob.Status.CANCEL_REQUESTED,
-            ],
-        ).first()
-        if active and not force:
-            return active
+        target = {'target_movie': movie}
     else:
         series = Series.objects.get(pk=object_id)
-        active = ProviderImportJob.objects.filter(
-            provider=provider,
-            target_series=series,
-            status__in=[
-                ProviderImportJob.Status.QUEUED,
-                ProviderImportJob.Status.VALIDATING,
-                ProviderImportJob.Status.SEARCHING,
-                ProviderImportJob.Status.AWAITING_REVIEW,
-                ProviderImportJob.Status.RUNNING,
-                ProviderImportJob.Status.TRANSFERRING,
-                ProviderImportJob.Status.CANCEL_REQUESTED,
-            ],
-        ).first()
-        if active and not force:
-            return active
+        target = {'target_series': series}
 
-    return ProviderImportJob.objects.create(
-        provider=provider,
-        started_by=user,
-        trigger=trigger,
-        target_movie=movie,
-        target_series=series,
-        content_type=ProviderImportJob.ContentType.MOVIE if movie else ProviderImportJob.ContentType.SERIES,
-        mode=mode,
-        params=sanitize_payload({'force': force, 'dry_run': True}),
-        status=ProviderImportJob.Status.QUEUED,
+    stale_before = timezone.now() - timedelta(seconds=STALE_JOB_AFTER_SECONDS)
+    actives = list(
+        ProviderImportJob.objects.filter(provider=provider, status__in=ACTIVE_JOB_STATUSES, **target)
+        .order_by('-updated_at')
     )
+    for job in actives:
+        if job.status in WORKING_JOB_STATUSES and job.updated_at >= stale_before:
+            job.reused = True
+            return job
+    if actives and not force:
+        return actives[0]
+    for job in actives:
+        _retire_job(job, 'Superseded by a new re-search requested from the admin panel.')
+
+    try:
+        with transaction.atomic():
+            job = ProviderImportJob.objects.create(
+                provider=provider,
+                started_by=user,
+                trigger=trigger,
+                target_movie=movie,
+                target_series=series,
+                content_type=ProviderImportJob.ContentType.MOVIE if movie else ProviderImportJob.ContentType.SERIES,
+                mode=mode,
+                params=sanitize_payload({'force': force, 'dry_run': True}),
+                status=ProviderImportJob.Status.QUEUED,
+            )
+    except IntegrityError:
+        # Another request created the active job between our read and write.
+        job = ProviderImportJob.objects.filter(
+            provider=provider, mode=mode, status__in=ACTIVE_JOB_STATUSES, **target,
+        ).order_by('-updated_at').first()
+        if job is None:
+            raise
+        job.reused = True
+    return job
 
 
 def run_catalog_discover_job(job_id) -> dict:

@@ -4,6 +4,7 @@ import Activity from '~icons/lucide/activity'
 import Film from '~icons/lucide/film'
 import DownloadCloud from '~icons/lucide/download-cloud'
 import Tv from '~icons/lucide/tv'
+import GalleryHorizontal from '~icons/lucide/gallery-horizontal'
 import Users from '~icons/lucide/users-round'
 import MessageSquare from '~icons/lucide/message-square'
 import Headset from '~icons/lucide/headset'
@@ -39,6 +40,7 @@ const groups: NavGroup[] = [
     items: [
       { label: 'فیلم‌ها', to: '/admin/movies', icon: Film },
       { label: 'سریال‌ها', to: '/admin/series', icon: Tv },
+      { label: 'اسلایدر خانه', to: '/admin/slider', icon: GalleryHorizontal },
       { label: 'ورود محتوا', to: '/admin/import', icon: DownloadCloud },
       { label: 'سلامت محتوا', to: '/admin/health', icon: HeartPulse },
     ],
@@ -95,7 +97,7 @@ async function onLogout() {
     <div class="rv-admin__aura" />
 
     <!-- Mobile top bar -->
-    <div class="sticky top-0 z-40 flex items-center justify-between gap-3 border-b border-[var(--rv-border)] bg-[var(--rv-bg)]/85 px-4 py-3 backdrop-blur lg:hidden">
+    <div class="sticky top-0 z-40 flex items-center justify-between gap-3 border-b border-[var(--rv-border)] bg-[var(--rv-bg)]/85 px-4 py-3 lg:hidden">
       <button type="button" class="rv-btn rv-btn--ghost rv-focus !min-h-10 !px-3" @click="drawerOpen = true">
         <Menu class="size-5" />
       </button>
@@ -108,7 +110,7 @@ async function onLogout() {
     <div class="relative z-10 mx-auto flex w-full max-w-[1600px]">
       <!-- Sidebar (desktop) + drawer (mobile) -->
       <Transition name="rv-fade">
-        <div v-if="drawerOpen" class="fixed inset-0 z-40 bg-black/60 backdrop-blur-sm lg:hidden" @click="drawerOpen = false" />
+        <div v-if="drawerOpen" class="fixed inset-0 z-40 bg-black/60 lg:hidden" @click="drawerOpen = false" />
       </Transition>
 
       <aside
@@ -117,7 +119,7 @@ async function onLogout() {
       >
         <div class="flex items-center justify-between gap-2 px-5 pb-4 pt-5">
           <NuxtLink to="/admin" class="rv-focus flex items-center gap-2.5">
-            <span class="grid size-9 place-items-center rounded-[var(--rv-radius-sm)] bg-[var(--rv-accent)] text-[var(--rv-on-accent)] shadow-[0_8px_24px_-10px_var(--rv-accent-glow)]">
+            <span class="grid size-9 place-items-center rounded-[var(--rv-radius-sm)] bg-[var(--rv-accent)] text-[var(--rv-on-accent)]">
               <span class="text-base font-black">ر</span>
             </span>
             <span class="leading-tight">
@@ -139,12 +141,12 @@ async function onLogout() {
                   :to="item.to"
                   class="rv-focus group relative flex items-center gap-3 rounded-[var(--rv-radius-sm)] px-3 py-2.5 text-sm font-bold transition"
                   :class="isActive(item)
-                    ? 'bg-[var(--rv-accent-soft)] text-[var(--rv-text)]'
+ ? 'bg-[var(--rv-accent-soft)] text-[var(--rv-text)]'
                     : 'text-[var(--rv-muted)] hover:bg-[var(--rv-surface-2)] hover:text-[var(--rv-text)]'"
                 >
                   <span
                     v-if="isActive(item)"
-                    class="absolute inset-y-2 right-0 w-[3px] rounded-full bg-[var(--rv-accent)] shadow-[0_0_12px_var(--rv-accent-glow)]"
+                    class="absolute inset-y-2 right-0 w-[3px] rounded-full bg-[var(--rv-accent)]"
                   />
                   <component
                     :is="item.icon"

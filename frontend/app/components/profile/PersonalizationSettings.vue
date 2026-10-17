@@ -77,7 +77,7 @@ onMounted(() => {
             :class="personalizationEnabled ? 'bg-primary-500 ring-primary-400' : 'bg-elevated ring-line'"
             @click="setPersonalizationEnabled(!personalizationEnabled)"
           >
-            <span class="absolute top-2 h-7 w-7 rounded-full bg-ink shadow-sm transition" :class="personalizationEnabled ? 'left-1.5' : 'left-6'" />
+            <span class="absolute top-2 h-7 w-7 rounded-full bg-ink transition" :class="personalizationEnabled ? 'left-1.5' : 'left-6'" />
           </button>
         </div>
       </div>

@@ -34,6 +34,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.ReadOnlyComposable
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -46,10 +47,12 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.revayato.app.core.theme.OutlineSoft
+import com.revayato.app.core.theme.NeutralSurface
 import com.revayato.app.core.theme.AccentBlue
 import com.revayato.app.core.theme.AccentRed
 import com.revayato.app.core.theme.AccentYellow
-import com.revayato.app.core.theme.BrandMint
+import com.revayato.app.core.theme.Brand
 import com.revayato.app.core.theme.PlayAccent
 import com.revayato.app.core.ui.UiState
 import com.revayato.app.data.model.CountryDto
@@ -66,16 +69,17 @@ import com.revayato.app.ui.components.SectionHeader
 /** A palette of soft gradient pairs cycled across the genre tiles. */
 private val TILE_GRADIENTS = listOf(
     listOf(Color(0xFF3A6EA5), Color(0xFF12406B)),
-    listOf(Color(0xFF9B5DE5), Color(0xFF5A2A8C)),
+    listOf(Color(0xFF8A72B0), Color(0xFF43325F)),
     listOf(Color(0xFFE07A5F), Color(0xFF8C3B22)),
-    listOf(Color(0xFF2EC4B6), Color(0xFF14776E)),
-    listOf(Color(0xFFF2C14E), Color(0xFF9C7A16)),
-    listOf(Color(0xFFEF476F), Color(0xFF8C1C3B)),
-    listOf(Color(0xFF06D6A0), Color(0xFF0A6E56)),
+    listOf(Color(0xFF6A8CA8), Color(0xFF2E4459)),
+    listOf(Color(0xFFD4AE5E), Color(0xFF7A5E1E)),
+    listOf(Color(0xFFC4606E), Color(0xFF5E2231)),
+    listOf(Color(0xFFC9894A), Color(0xFF6B3F1D)),
     listOf(Color(0xFF577590), Color(0xFF33475B)),
 )
 
-private val CHIP_ACCENTS = listOf(AccentYellow, AccentRed, AccentBlue, PlayAccent, BrandMint)
+private val CHIP_ACCENTS: List<Color>
+    @Composable @ReadOnlyComposable get() = listOf(AccentYellow, AccentRed, AccentBlue, PlayAccent, Brand)
 
 /** A one-tap access shortcut backed by a ready-made catalog route. */
 private data class QuickAccess(
@@ -88,11 +92,11 @@ private data class QuickAccess(
 private val QUICK_ACCESS = listOf(
     QuickAccess("۲۵۰ برتر IMDb", Icons.Rounded.EmojiEvents, listOf(Color(0xFFF5C518), Color(0xFF8A6A00)), Routes.catalogList("top250", "۲۵۰ برتر IMDb")),
     QuickAccess("فیلم‌ها", Icons.Rounded.Movie, listOf(Color(0xFF3A6EA5), Color(0xFF12406B)), Routes.catalogList("movies", "فیلم‌ها", sort = "popular")),
-    QuickAccess("سریال‌ها", Icons.Rounded.LiveTv, listOf(Color(0xFF9B5DE5), Color(0xFF5A2A8C)), Routes.catalogList("series", "سریال‌ها", sort = "popular")),
-    QuickAccess("دوبله فارسی", Icons.Rounded.Mic, listOf(Color(0xFF06D6A0), Color(0xFF0A6E56)), Routes.catalogList("movies", "دوبله فارسی", sort = "popular", availability = "dubbed")),
+    QuickAccess("سریال‌ها", Icons.Rounded.LiveTv, listOf(Color(0xFF8A72B0), Color(0xFF43325F)), Routes.catalogList("series", "سریال‌ها", sort = "popular")),
+    QuickAccess("دوبله فارسی", Icons.Rounded.Mic, listOf(Color(0xFFC9894A), Color(0xFF6B3F1D)), Routes.catalogList("movies", "دوبله فارسی", sort = "popular", availability = "dubbed")),
     QuickAccess("زیرنویس‌دار", Icons.Rounded.ClosedCaption, listOf(Color(0xFF577590), Color(0xFF33475B)), Routes.catalogList("movies", "زیرنویس‌دار", sort = "newest", availability = "subtitle")),
-    QuickAccess("دنیای انیمه", Icons.Rounded.Fireplace, listOf(Color(0xFFEF476F), Color(0xFF8C1C3B)), Routes.catalogList("anime", "دنیای انیمه")),
-    QuickAccess("انیمیشن", Icons.Rounded.Animation, listOf(Color(0xFFF2C14E), Color(0xFF9C7A16)), Routes.catalogList("movies", "انیمیشن‌ها", sort = "popular", format = "animation")),
+    QuickAccess("دنیای انیمه", Icons.Rounded.Fireplace, listOf(Color(0xFFC4606E), Color(0xFF5E2231)), Routes.catalogList("anime", "دنیای انیمه")),
+    QuickAccess("انیمیشن", Icons.Rounded.Animation, listOf(Color(0xFFD4AE5E), Color(0xFF7A5E1E)), Routes.catalogList("movies", "انیمیشن‌ها", sort = "popular", format = "animation")),
     QuickAccess("تازه‌ها", Icons.Rounded.NewReleases, listOf(Color(0xFFE07A5F), Color(0xFF8C3B22)), Routes.catalogList("recent", "تازه‌ها و به‌روزشده‌ها")),
 )
 
@@ -124,7 +128,7 @@ private fun DiscoveryContent(
     ) {
         // ---- Quick access shortcuts ----
         item(key = "quick-header") {
-            SectionHeader(title = "دسترسی سریع", accent = BrandMint)
+            SectionHeader(title = "دسترسی سریع", accent = Brand)
         }
         item(key = "quick") {
             LazyRow(
@@ -282,8 +286,8 @@ private fun CountryPill(country: CountryDto, onClick: () -> Unit) {
         modifier = Modifier
             .width(88.dp)
             .clip(RoundedCornerShape(16.dp))
-            .background(Color(0x14FFFFFF))
-            .border(1.dp, Color(0x1FFFFFFF), RoundedCornerShape(16.dp))
+            .background(NeutralSurface)
+            .border(1.dp, OutlineSoft, RoundedCornerShape(16.dp))
             .clickable(onClick = onClick)
             .padding(vertical = 14.dp, horizontal = 8.dp),
         horizontalAlignment = Alignment.CenterHorizontally,

@@ -14,6 +14,12 @@ export default defineEventHandler((event) => {
   if (SKIP_PREFIXES.some(prefix => path.startsWith(prefix))) return
   // Collapse leading slashes too: `//evil.example/` must never become a
   // protocol-relative redirect to another host.
-  const target = `/${path.replace(/^\/+/, '').replace(/\/+$/, '')}` + (queryAt === -1 ? '' : url.slice(queryAt))
+  const bare = `/${path.replace(/^\/+/, '').replace(/\/+$/, '')}`
+  // decode-path may have handed us a decoded (non-ASCII) path; a Location
+  // header must be ASCII, so encode it exactly once.
+  let encoded = bare
+  try { encoded = encodeURI(decodeURI(bare)) }
+  catch { /* malformed escapes: keep as sent */ }
+  const target = encoded + (queryAt === -1 ? '' : url.slice(queryAt))
   return sendRedirect(event, target, 301)
 })

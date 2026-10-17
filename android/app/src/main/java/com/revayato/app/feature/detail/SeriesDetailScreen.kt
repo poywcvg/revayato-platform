@@ -1,60 +1,44 @@
 package com.revayato.app.feature.detail
 
-import androidx.compose.foundation.background
-import androidx.compose.foundation.clickable
+import com.revayato.app.ui.components.FlatSnackbar
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
-import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.asPaddingValues
-import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.navigationBarsPadding
-import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
-import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.rounded.Groups
-import androidx.compose.material.icons.rounded.PlayArrow
-import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
-import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.SnackbarDuration
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.SnackbarResult
-import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.setValue
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.setValue
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import com.revayato.app.core.theme.NeutralSurfaceActive
-import com.revayato.app.core.theme.TextPrimary
+import kotlinx.coroutines.launch
 import com.revayato.app.data.model.EpisodeDto
 import com.revayato.app.data.model.GenreDto
 import com.revayato.app.data.model.SeasonDto
 import com.revayato.app.data.model.SeriesDetailDto
+import com.revayato.app.data.model.englishCatalogTitle
 import com.revayato.app.feature.collections.AddToCollectionSheet
 import com.revayato.app.feature.player.buildQualitiesFromLinks
 import com.revayato.app.feature.player.encodeQualities
@@ -62,7 +46,6 @@ import com.revayato.app.feature.player.encodeSubtitles
 import com.revayato.app.ui.components.ErrorState
 import com.revayato.app.ui.components.LoadingState
 import com.revayato.app.ui.components.MediaRail
-import com.revayato.app.ui.components.NetworkImage
 import com.revayato.app.core.ui.UiState
 
 @Composable
@@ -154,7 +137,7 @@ fun SeriesDetailScreen(
             modifier = Modifier
                 .align(Alignment.BottomCenter)
                 .navigationBarsPadding(),
-        )
+        ) { FlatSnackbar(it) }
     }
 
     if (state.showReportSheet) {
@@ -200,46 +183,50 @@ private fun SeriesDetailBody(
     // Add the gesture/navigation-bar height to the bottom padding so the last row
     // clears the phone's system bar (this screen has no Scaffold bottom bar).
     val navBottom = WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding()
+    val listState = rememberLazyListState()
+    val scope = rememberCoroutineScope()
+    // hero, body, [similar], ratings — the stars in the hero scroll to the last.
+    val ratingsIndex = if (state.similar.isNotEmpty()) 3 else 2
+    val latest = remember(seasons) { latestEpisodeStream(seasons) }
+    val heroData = remember(series, anyPlayable) {
+        DetailHeroData(
+            isSeries = true,
+            title = series.title,
+            englishTitle = englishCatalogTitle(series.title, series.secondaryTitle, series.originalTitle),
+            year = series.startYear,
+            posterUrl = series.poster,
+            backdropUrl = series.backdrop,
+            genres = series.genres,
+            ageRating = series.ageRating,
+            facts = heroFacts(null, series.seasons.size, series.countries.map { it.name }),
+            freshPills = freshPills(isSeries = true, links = series.downloadLinks),
+            hasSubtitle = series.hasSubtitle,
+            isDubbed = series.isDubbed,
+            canPlay = anyPlayable,
+            trailerUrl = series.trailerUrl,
+            ratings = series.ratings,
+            imdbRating = series.imdbRating,
+            siteRating = series.siteRating,
+            siteRatingCount = series.siteRatingCount,
+            imdbRank = series.imdbRank,
+        )
+    }
     LazyColumn(
+        state = listState,
         modifier = Modifier.fillMaxSize(),
         contentPadding = PaddingValues(bottom = 32.dp + navBottom),
     ) {
         item {
-            DetailBackdrop(
-                backdropUrl = series.backdrop ?: series.poster,
-                posterUrl = series.poster,
-                title = series.title,
-            )
-        }
-        item {
-            // Pull the content column up so the poster overlaps the backdrop's lower
-            // edge — the same cinematic hero as the movie detail page.
-            Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .offset(y = (-48).dp)
-                    .padding(horizontal = 16.dp),
-                verticalArrangement = Arrangement.spacedBy(14.dp),
-            ) {
-                PosterHeader(
-                    posterUrl = series.poster,
-                    title = series.title,
-                    secondaryTitle = series.secondaryTitle,
-                    year = series.startYear,
-                    rating = series.imdbRating ?: series.ratingAverage,
-                    durationMinutes = null,
-                    ageRating = series.ageRating,
-                )
-                GenreChips(genres = series.genres, onGenreClick = onOpenGenre)
-                PrimaryActions(
-                    canPlay = anyPlayable,
-                    inWatchlist = state.inWatchlist,
-                    liked = state.liked,
-                    hasDownloads = anyPlayable,
+            DetailHero(
+                data = heroData,
+                inWatchlist = state.inWatchlist,
+                liked = state.liked,
+                actions = DetailHeroActions(
                     onPlay = { showPlaySheet = true },
+                    onPlayLatest = latest?.let { (episode, url) -> { onPlayEpisode(episode, url) } },
+                    onDownload = if (anyPlayable) ({ showDownloadSheet = true }) else null,
                     onToggleWatchlist = onToggleWatchlist,
                     onToggleLike = onToggleLike,
-                    onDownload = { showDownloadSheet = true },
                     onWatchTogether = {
                         selectedSeason?.episodes
                             ?.firstOrNull { resolveEpisodeStreamUrl(it) != null }
@@ -248,7 +235,18 @@ private fun SeriesDetailBody(
                     onAddToCollection = {
                         if (state.isLoggedIn) showCollectionSheet = true else onRequireLogin()
                     },
-                )
+                    onGenreClick = onOpenGenre,
+                    onRate = { scope.launch { listState.animateScrollToItem(ratingsIndex) } },
+                ),
+            )
+        }
+        item {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(start = 16.dp, end = 16.dp, top = 8.dp),
+                verticalArrangement = Arrangement.spacedBy(14.dp),
+            ) {
                 series.description?.takeIf { it.isNotBlank() }?.let {
                     SectionTitle("خلاصه داستان")
                     ExpandableText(text = it)
@@ -273,7 +271,7 @@ private fun SeriesDetailBody(
                     DetailFacts(facts = facts)
                 }
                 // Episode selection now lives entirely in the play/download sheets
-                // (season → episode → quality), opened from PrimaryActions above —
+                // (season → episode → quality), opened from the hero above —
                 // the long inline episode list was replaced by the comments &
                 // ratings panel below, consistent with the movie detail screen.
             }
@@ -348,6 +346,26 @@ internal fun buildSeriesFacts(series: SeriesDetailDto): List<Pair<String, String
     series.seasons.size.takeIf { it > 0 }?.let { add("فصل‌ها" to "$it فصل") }
     availabilityLabel(series.isDubbed, series.hasSubtitle)?.let { add("امکانات" to it) }
     series.imdbId?.takeIf { it.isNotBlank() }?.let { add("IMDb" to it) }
+}
+
+/**
+ * The newest episode that can play, with its subtitled mirror first (dubbed only
+ * when that is all there is) — «تماشای آخرین قسمت».
+ */
+internal fun latestEpisodeStream(seasons: List<SeasonDto>): Pair<EpisodeDto, String>? {
+    val episode = seasons
+        .sortedByDescending { it.seasonNumber }
+        .firstNotNullOfOrNull { season ->
+            season.episodes
+                .sortedByDescending { it.episodeNumber }
+                .firstOrNull { resolveEpisodeStreamUrl(it) != null }
+        } ?: return null
+    val links = episode.streamLinks.filter { it.url.isNotBlank() }
+    val url = links.firstOrNull { it.kind == "softsub" }?.url
+        ?: links.firstOrNull { it.kind != "dubbed" }?.url
+        ?: resolveEpisodeStreamUrl(episode)
+        ?: return null
+    return episode to url
 }
 
 /** Resolve the best available online stream URL for an episode. */

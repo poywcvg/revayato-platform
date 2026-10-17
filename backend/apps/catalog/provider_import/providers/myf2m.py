@@ -14,6 +14,7 @@ from dataclasses import dataclass, field
 from urllib.parse import quote_plus, urljoin, urlsplit
 
 from django.conf import settings
+from django.core.cache import cache
 
 from ..base import ProviderAuthResult
 from ..exceptions import ProviderImportError, ProviderNotConfigured, ProviderRateLimited
@@ -158,6 +159,33 @@ IMDB_TITLE_LINK_RE = re.compile(r'imdb\.com/title/(tt\d{7,10})', re.I)
 PAGE_HEADING_RE = re.compile(r'<h1[^>]*class="[^"]*entry-title[^"]*"[^>]*>(.*?)</h1>', re.I | re.S)
 
 
+class CachedMyf2MPage:
+    """Minimal httpx.Response-compatible stand-in for cached detail HTML.
+
+    Only the attributes the myf2m connector reads off a live response are
+    exposed (text / status_code / url), so cached and live fetches are
+    interchangeable for parsing callers. Mirrors CachedDornatvPage.
+    """
+
+    def __init__(self, html: str, *, final_path: str, headers: dict | None = None):
+        self._html = html
+        self.text = html
+        self.content = html.encode('utf-8', 'replace')
+        self.status_code = 200
+        self.url = final_path  # used only for url-splitting by callers
+        self.headers = headers or {
+            'content-type': 'text/html; charset=UTF-8',
+            'x-wp-cached': '1',
+        }
+
+
+# Only exact detail pages are cached: movie ``/{id}/{slug}/`` and series
+# ``/series/{slug}/``. Listing walks (/movies/, /series/, /page/N/) and search
+# (/?s=) must always reach the live page or new titles would be missed.
+_MYF2M_MOVIE_DETAIL_RE = re.compile(r'^/\d+/[^/]+/?$')
+_MYF2M_SERIES_DETAIL_RE = re.compile(r'^/series/([^/]+)/?$')
+
+
 @dataclass
 class ProviderTitleCandidate:
     provider_item_id: str
@@ -189,7 +217,10 @@ class MyF2MConnector:
         self.provider = provider_source
         self.base_url = getattr(settings, 'MYF2M_BASE_URL', 'https://www.myf2ms.top').rstrip('/')
         self.timeout = int(getattr(settings, 'MYF2M_TIMEOUT_SECONDS', 30))
-        self.rate_limit = max(1, int(getattr(settings, 'MYF2M_RATE_LIMIT_PER_MINUTE', 30)))
+        # 1 req/s aggregate is still polite for a WordPress catalog (a human
+        # browses faster); bursts that do trip the WAF are retried with backoff
+        # in _request, so a 429 degrades into a short sleep, not a failure.
+        self.rate_limit = max(1, int(getattr(settings, 'MYF2M_RATE_LIMIT_PER_MINUTE', 60)))
         self.verify_ssl = bool(getattr(settings, 'MYF2M_VERIFY_SSL', True))
         self.user_agent = getattr(
             settings,
@@ -241,6 +272,82 @@ class MyF2MConnector:
             return path
         return urljoin(self.base_url + '/', path.lstrip('/'))
 
+    # --- detail-page HTML cache -----------------------------------------
+    # Download boxes are re-read within minutes by the multi-provider crawl
+    # (myf2m fetch, then a second fetch inside crawl_myf2m_downloads_* with a
+    # fresh connector), by refresh ticks and by the drafts hunter. The raw
+    # detail HTML is cached for a short TTL so those re-reads cost no network
+    # and no rate budget, while the hourly refresh passes always see a live
+    # page. Listing/search pages are never cached. Mirrors the dornatv cache.
+    def _cache_key(self, path: str) -> str:
+        import hashlib
+
+        digest = hashlib.sha1(str(path).encode('utf-8', 'replace')).hexdigest()
+        return f'catalog:myf2m:page:{digest}'
+
+    def _cacheable_detail_path(self, path: str) -> bool:
+        """Only exact detail pages (not listings/search/home) are cached."""
+        raw = str(path or '')
+        if not raw.startswith('/') or '?' in raw:
+            return False
+        if _MYF2M_MOVIE_DETAIL_RE.match(raw):
+            return True
+        match = _MYF2M_SERIES_DETAIL_RE.match(raw)
+        if match and match.group(1) not in {'page'}:
+            return True
+        return False
+
+    def _detail_from_cache(self, path: str) -> str | None:
+        try:
+            ttl = int(getattr(settings, 'MYF2M_PAGE_CACHE_TTL_SECONDS', 300))
+        except (TypeError, ValueError):
+            ttl = 300
+        if ttl <= 0 or not self._cacheable_detail_path(path):
+            return None
+        from apps.catalog.title_rebuild import is_fresh_fetch
+
+        if is_fresh_fetch():
+            # A rebuild re-asks the provider; the fresh page refills the cache.
+            return None
+        try:
+            blob = cache.get(self._cache_key(path))
+        except Exception:
+            return None
+        if isinstance(blob, bytes):
+            try:
+                return blob.decode('utf-8', 'replace')
+            except Exception:
+                return None
+        if isinstance(blob, str) and blob:
+            return blob
+        return None
+
+    def _detail_to_cache(self, path: str, html: str, *, final_url: str = '') -> None:
+        try:
+            ttl = int(getattr(settings, 'MYF2M_PAGE_CACHE_TTL_SECONDS', 300))
+        except (TypeError, ValueError):
+            ttl = 300
+        if ttl <= 0 or not self._cacheable_detail_path(path):
+            return
+        # A soft-404/profile redirect is a miss, not a page — never cache it.
+        if '/profile/' in str(final_url or ''):
+            return
+        # Only cache usable pages: a truncated (IncompleteRead partial) body
+        # without any download marker must never poison later lanes.
+        lowered = (html or '').lower()
+        if 'download-list' not in lowered and '.mkv' not in lowered and '.mp4' not in lowered:
+            return
+        try:
+            max_bytes = int(getattr(settings, 'MYF2M_PAGE_CACHE_MAX_BYTES', 512 * 1024))
+        except (TypeError, ValueError):
+            max_bytes = 512 * 1024
+        if not html or len(html) > max_bytes:
+            return
+        try:
+            cache.set(self._cache_key(path), html, timeout=ttl)
+        except Exception:
+            pass
+
     def _request_urllib(self, method: str, path: str):
         """Fallback GET/HEAD that keeps IncompleteRead.partial (large myf2m pages)."""
         import http.client
@@ -285,6 +392,13 @@ class MyF2MConnector:
         return _Resp(status_code=status, url=final, text=text)
 
     def _request(self, method: str, path: str, **kwargs):
+        # Serve cached detail HTML for plain GETs so refresh ticks and the
+        # multi-provider second fetch do not re-download the same page or burn
+        # rate budget. Cached hits skip the throttle entirely.
+        if method.upper() == 'GET' and not kwargs and self._cacheable_detail_path(path):
+            cached = self._detail_from_cache(path)
+            if cached is not None:
+                return CachedMyf2MPage(cached, final_path=path)
         self._throttle()
         # Prefer urllib for HTML GETs — httpx frequently hits Incomplete chunked reads on
         # large Film2Media series pages inside Docker, while urllib keeps usable partials.
@@ -299,6 +413,8 @@ class MyF2MConnector:
                     response = self._request_urllib(method, path)
                     if response.status_code == 429:
                         raise ProviderRateLimited('myf2m rate-limited the crawler.')
+                if response.status_code < 400:
+                    self._detail_to_cache(path, response.text or '', final_url=str(response.url))
                 return response
             except ProviderRateLimited:
                 raise
@@ -350,6 +466,16 @@ class MyF2MConnector:
             if response.status_code == 429:
                 raise ProviderRateLimited('myf2m rate-limited the crawler.')
             # Leave 403 to the caller so alternate search terms can still be tried.
+        if (
+            method.upper() == 'GET' and not kwargs
+            and response.status_code < 400
+        ):
+            try:
+                self._detail_to_cache(
+                    path, response.text or '', final_url=str(response.url),
+                )
+            except Exception:
+                pass
         return response
 
     def validate_credentials(self) -> ProviderAuthResult:

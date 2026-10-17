@@ -177,13 +177,13 @@ class MovieAdmin(admin.ModelAdmin):
     list_display = [
         'poster_thumb', 'title', 'release_year', 'content_format', 'imdb_rating',
         'tmdb_id', 'is_dubbed', 'has_subtitle',
-        'is_published', 'is_featured', 'media_status', 'rights_verified',
+        'is_published', 'is_featured', 'featured_order', 'slider_platform', 'media_status', 'rights_verified',
         'auto_publish', 'view_count',
     ]
     list_display_links = ['poster_thumb', 'title']
-    list_editable = ['is_published', 'is_featured']
+    list_editable = ['is_published', 'is_featured', 'featured_order', 'slider_platform']
     list_filter = [
-        'is_published', 'is_featured', 'content_format',
+        'is_published', 'is_featured', 'slider_platform', 'content_format',
         'is_dubbed', 'has_subtitle', 'is_uncensored', 'media_status',
         'rights_verified', 'auto_publish', 'metadata_source', 'genres', 'release_year',
     ]
@@ -243,7 +243,7 @@ class MovieAdmin(admin.ModelAdmin):
             'fields': ('meta_title', 'meta_description'),
         }),
         (_('Publication'), {
-            'fields': ('is_published', 'is_featured'),
+            'fields': ('is_published', 'is_featured', 'featured_order', 'slider_platform'),
         }),
         (_('Metadata sync'), {
             'fields': ('metadata_source', 'metadata_synced_at', 'source_metadata'),
@@ -397,9 +397,10 @@ class SeriesAdmin(admin.ModelAdmin):
     list_display = [
         'title', 'start_year', 'status', 'content_format', 'imdb_rating', 'tmdb_id',
         'is_dubbed', 'has_subtitle', 'is_uncensored', 'is_published', 'is_featured',
+        'featured_order', 'slider_platform',
     ]
     list_filter = [
-        'is_published', 'is_featured', 'status', 'content_format',
+        'is_published', 'is_featured', 'slider_platform', 'status', 'content_format',
         'is_dubbed', 'has_subtitle', 'is_uncensored', 'genres',
     ]
     search_fields = ['title', 'original_title', 'description', 'imdb_id', 'tmdb_id']
@@ -481,7 +482,7 @@ class ContentIssueReportAdmin(admin.ModelAdmin):
     list_filter = ('status', 'problem_type', 'content_type')
     search_fields = ('slug', 'title', 'object_id', 'detail')
     readonly_fields = [field.name for field in ContentIssueReport._meta.fields]
-    actions = ['remediate_now']
+    actions = ['remediate_now', 'delete_resolved_reports']
 
     @admin.action(description='تلاش برای رفع خودکار گزارش‌های انتخاب‌شده')
     def remediate_now(self, request, queryset):
@@ -493,6 +494,21 @@ class ContentIssueReportAdmin(admin.ModelAdmin):
             if outcome.get('status') == ContentIssueReport.Status.RESOLVED:
                 resolved += 1
         messages.success(request, f'{queryset.count()} گزارش پردازش شد، {resolved} مورد حل شد.')
+
+    @admin.action(description='حذف گزارش‌های حل‌شدهٔ انتخاب‌شده از پنل')
+    def delete_resolved_reports(self, request, queryset):
+        finished = [
+            ContentIssueReport.Status.RESOLVED,
+            ContentIssueReport.Status.REJECTED,
+            ContentIssueReport.Status.UNAVAILABLE,
+        ]
+        deletable = queryset.filter(status__in=finished)
+        skipped = queryset.count() - deletable.count()
+        deleted, _details = deletable.delete()
+        if deleted:
+            messages.success(request, f'{deleted} گزارش حل‌شده حذف شد.')
+        if skipped:
+            messages.warning(request, f'{skipped} گزارش باز حذف نشد (فقط حل‌شده‌ها حذف می‌شوند).')
 
     def has_add_permission(self, request):
         return False

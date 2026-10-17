@@ -113,14 +113,14 @@ export const catalogCountries: CatalogCountry[] = Object.entries(countryNames)
   .map(([code, name]) => ({ code, name }))
   .sort((a, b) => a.name.localeCompare(b.name, 'fa'))
 
-export function localizeCountry(name = '', code = '') {
+export function localizeCountry(name = '', code = ''): string {
   const normalizedCode = code.trim().toUpperCase()
-  if (countryNames[normalizedCode]) return countryNames[normalizedCode]
-  if (/^[A-Za-z]{2}$/.test(name.trim()) && countryNames[name.trim().toUpperCase()]) {
-    return countryNames[name.trim().toUpperCase()]
-  }
+  const byCode = countryNames[normalizedCode]
+  if (byCode) return byCode
+  const byTwoLetterName = /^[A-Za-z]{2}$/.test(name.trim()) ? countryNames[name.trim().toUpperCase()] : undefined
+  if (byTwoLetterName) return byTwoLetterName
   const inferredCode = englishNameToCode[name.trim().toLowerCase()]
-  return countryNames[inferredCode] || name.trim() || normalizedCode
+  return (inferredCode && countryNames[inferredCode]) || name.trim() || normalizedCode
 }
 
 export function countryCodeForName(name: string) {

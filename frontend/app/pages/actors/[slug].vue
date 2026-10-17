@@ -28,22 +28,103 @@ const {
   goToPage: goToFilmographyPage,
 } = useClientPagination(filmography, CATALOG_PAGE_SIZE)
 
-const seoDescription = computed(() => {
-  const bio = actor.value?.biography?.slice(0, 140) || ''
-  const titles = filmography.value.slice(0, 5).map(item => item.title).join('، ')
-  if (bio && titles) return `${bio} آثار: ${titles}`
-  if (bio) return bio
-  if (titles) return `فیلم‌ها و سریال‌های ${actor.value?.name || ''}: ${titles}`
-  return `صفحه ${actor.value?.name || 'بازیگر'} در روایتو`
+const config = useRuntimeConfig()
+/** Both spellings people search: «لئوناردو دی‌کاپریو» and «Leonardo DiCaprio». */
+const otherName = computed(() => {
+  const value = actor.value
+  if (!value) return ''
+  const other = (value.secondary_name || value.original_name || '').trim()
+  return other && other !== value.name ? other : ''
 })
+const filmographyCounts = computed(() => {
+  const movies = filmography.value.filter(item => item.type === 'movie').length
+  return { movies, series: filmography.value.length - movies }
+})
+/** «فیلم‌ها و سریال‌های X» — the words people put in front of an actor's name. */
+const worksLabel = computed(() => {
+  const { movies, series } = filmographyCounts.value
+  return movies && series ? 'فیلم‌ها و سریال‌های' : series ? 'سریال‌های' : 'فیلم‌های'
+})
+const seoTitle = computed(() => {
+  const value = actor.value
+  if (!value) return 'بازیگر'
+  return `${worksLabel.value} ${value.name}${otherName.value ? ` (${otherName.value})` : ''}`
+})
+const seoDescription = computed(() => {
+  const value = actor.value
+  const name = value?.name || 'بازیگر'
+  const { movies, series } = filmographyCounts.value
+  const counts = [movies ? `${movies} فیلم` : '', series ? `${series} سریال` : ''].filter(Boolean).join(' و ')
+  const titles = filmography.value.slice(0, 4).map(item => item.title).filter(Boolean).join('، ')
+  const lead = counts
+    ? `دانلود و تماشای آنلاین ${counts} با بازی ${name}${otherName.value ? ` (${otherName.value})` : ''}`
+    : `صفحه ${name} در روایتو`
+  const bio = (value?.biography || '').replace(/\s+/g, ' ').trim()
+  const text = [titles ? `${lead}؛ ${titles}.` : `${lead}.`, bio].filter(Boolean).join(' ')
+  return text.length > 165 ? `${text.slice(0, 164).replace(/\s+\S*$/, '')}…` : text
+})
+const actorImage = computed(() => seoImage(config.public.siteUrl, actor.value?.photo))
 
 useSeoMeta({
-  title: () => actor.value?.name || 'بازیگر',
+  title: seoTitle,
   description: seoDescription,
-  ogTitle: () => actor.value?.name,
+  ogTitle: seoTitle,
   ogDescription: seoDescription,
-  ogImage: () => actor.value?.photo || undefined,
+  ogType: 'profile',
+  ogImage: () => actorImage.value || undefined,
+  twitterImage: () => actorImage.value || undefined,
   twitterCard: 'summary_large_image',
+  robots: () => (filmography.value.length ? 'index, follow, max-image-preview:large' : 'noindex, follow'),
+})
+
+useHead(() => {
+  const value = actor.value
+  if (!value) return {}
+  const url = absoluteUrl(config.public.siteUrl, `/actors/${value.slug}`)
+  return {
+    script: [{
+      key: 'actor-jsonld',
+      type: 'application/ld+json',
+      innerHTML: jsonLdString({
+        '@context': 'https://schema.org',
+        '@graph': [
+          {
+            '@type': 'ProfilePage',
+            '@id': `${url}#page`,
+            url,
+            name: seoTitle.value,
+            inLanguage: 'fa-IR',
+            mainEntity: {
+              '@type': 'Person',
+              '@id': `${url}#person`,
+              name: value.name,
+              ...(otherName.value ? { alternateName: otherName.value } : {}),
+              ...(actorImage.value ? { image: actorImage.value } : {}),
+              ...(value.biography ? { description: value.biography.slice(0, 500) } : {}),
+              ...(value.birth_date ? { birthDate: value.birth_date } : {}),
+              ...(value.birth_place ? { birthPlace: value.birth_place } : {}),
+            },
+          },
+          {
+            '@type': 'ItemList',
+            name: seoTitle.value,
+            numberOfItems: filmography.value.length,
+            itemListElement: filmography.value.slice(0, 30).map((item, index) => ({
+              '@type': 'ListItem',
+              position: index + 1,
+              url: absoluteUrl(config.public.siteUrl, detailPath(item)),
+              name: item.title,
+            })),
+          },
+          breadcrumbNode(config.public.siteUrl, [
+            { name: SITE_NAME, path: '/' },
+            { name: 'بازیگران', path: '/actors' },
+            { name: value.name, path: `/actors/${value.slug}` },
+          ]),
+        ],
+      }),
+    }],
+  }
 })
 </script>
 
@@ -90,7 +171,7 @@ useSeoMeta({
       </section>
 
       <section class="mt-8" aria-labelledby="filmography-title">
-        <SectionHeader id="filmography-title" title="فیلم‌شناسی" eyebrow="آثار در روایتو" icon="film" />
+        <SectionHeader id="filmography-title" :title="`${worksLabel} ${actor.name}`" eyebrow="آثار در روایتو" icon="film" />
         <div v-if="filmographyPageItems.length" class="catalog-grid mt-5">
           <CinematicCard v-for="item in filmographyPageItems" :key="`${item.type}-${item.id}`" :item="item" />
         </div>

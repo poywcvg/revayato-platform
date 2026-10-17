@@ -198,6 +198,17 @@ def resolve_download_href(value):
     return signed_download_url(raw) or ''
 
 
+def is_geo_locked_url(value):
+    """True when ``value`` is served by a CDN that only answers Iranian IPs (no CORS either)."""
+    host = (urlsplit(str(value or '').strip()).hostname or '').lower()
+    if not host:
+        return False
+    return any(
+        host == locked or host.endswith(f'.{locked}')
+        for locked in getattr(settings, 'GEO_LOCKED_CDN_HOSTS', None) or []
+    )
+
+
 def download_quality_rank(quality):
     """Higher number = better quality; used to order download rows for the public UI."""
     raw = str(quality or '').strip().lower().replace(' ', '')
@@ -315,6 +326,8 @@ def public_download_links(instance):
             'size_label': item.get('size_label') or '',
             'url': href,
         }
+        if is_geo_locked_url(href):
+            row['iran_only'] = True
         kind = str(item.get('kind') or item.get('type') or '').strip()
         subtitle_type = str(item.get('subtitle_type') or '').strip()
         if kind:
@@ -347,12 +360,15 @@ def public_download_links(instance):
     if not href:
         return []
     quality = getattr(instance, 'quality', '') or ''
-    return [{
+    row = {
         'label': quality or 'دانلود',
         'quality': quality,
         'size_label': '',
         'url': href,
-    }]
+    }
+    if is_geo_locked_url(href):
+        row['iran_only'] = True
+    return [row]
 
 
 def site_url(path=''):

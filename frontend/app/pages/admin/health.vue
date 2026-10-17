@@ -18,6 +18,15 @@
  * The last two are the uncomfortable ones: they are titles the site is currently
  * serving while failing its own standard, which is precisely why they belong on
  * the same page as the reported failures rather than in a report nobody opens.
+ *
+ * Any row can be sent to «بازسازی از صفر با تست»: the title is rebuilt from
+ * every provider on a shadow copy, the new links are probed, and only a set
+ * that passes replaces the old one (backed up, undoable from the title desk).
+ * The «آخرین بازسازی» column shows what happened — replaced, or untouched and
+ * why — and the list refreshes itself while any run is still going.
+ * Either rebuild also repairs the problem that put the row here (playback,
+ * subtitles, checks, reports, missing fields, score), and the column says which
+ * were fixed, queued, or are still open.
  */
 import type { AdminContentKind, HealthCounts, HealthQueue, HealthRow } from '~/types/admin'
 import HeartPulse from '~icons/lucide/heart-pulse'
@@ -26,6 +35,8 @@ import RefreshCw from '~icons/lucide/refresh-cw'
 import ExternalLink from '~icons/lucide/external-link'
 import Radar from '~icons/lucide/radar'
 import ShieldCheck from '~icons/lucide/shield-check'
+import Rebuild from '~icons/lucide/rotate-ccw'
+import { anyRepairActive, repairBadge } from '~/utils/stagedRebuild'
 
 definePageMeta({ layout: 'admin', middleware: 'staff' })
 useSeoMeta({ title: 'سلامت محتوا — روایتو' })
@@ -61,6 +72,9 @@ watch(queue, (value) => {
   offset.value = 0
   void router.replace({ query: { ...route.query, queue: value } })
 })
+// A selection belongs to the page it was made on.
+const selected = ref<string[]>([])
+watch([queue, offset], () => { selected.value = [] })
 
 const { data, pending, error, refresh } = await useAsyncData(
   'admin-health',
@@ -70,6 +84,7 @@ const { data, pending, error, refresh } = await useAsyncData(
 
 const counts = computed<HealthCounts>(() => data.value?.counts || {
   source_gaps: 0, subtitle_gaps: 0, failed_checks: 0, reports: 0, unverified: 0, incomplete: 0,
+  approx_ratings: 0, sourceless_drafts: 0,
 })
 const rows = computed<HealthRow[]>(() => data.value?.results || [])
 const fa = (n: number | null | undefined) => (n ?? 0).toLocaleString('fa-IR')
@@ -114,6 +129,80 @@ async function repairVisible(action: 'recrawl' | 'refresh_subtitles' | 'verify')
   catch { notify.error('خطا', 'اجرای گروهی ناموفق بود') }
   finally { running.value = '' }
 }
+
+// ----- «بازسازی از صفر با تست» -------------------------------------------- //
+const rowKey = (row: HealthRow) => `${row.target.kind}:${row.target.id}`
+// One title can sit on several rows (a subtitle gap per episode); it is rebuilt once.
+const pageKeys = computed(() => [...new Set(rows.value.map(rowKey))])
+const allSelected = computed(() => !!pageKeys.value.length && pageKeys.value.every(key => selected.value.includes(key)))
+function toggleAll() {
+  selected.value = allSelected.value ? [] : [...pageKeys.value]
+}
+function toggleRow(row: HealthRow) {
+  const key = rowKey(row)
+  selected.value = selected.value.includes(key)
+    ? selected.value.filter(item => item !== key)
+    : [...selected.value, key]
+}
+
+/** The two «از صفر» verbs: tested on a shadow copy, or replaced outright (undoable). */
+type RebuildAction = 'rebuild_staged' | 'rebuild'
+
+// Both verbs also repair whatever put each title on this page (see title_problems.py).
+const PROBLEMS_NOTE = 'مشکل ثبت‌شدهٔ هر عنوان (پخش، زیرنویس، تست، گزارش کاربر، اطلاعات ناقص، نمره) هم جداگانه رفع می‌شود.'
+
+const REBUILD_CONFIRM: Record<RebuildAction, string> = {
+  rebuild_staged: 'از صفر از همهٔ منابع روی نسخهٔ آزمایشی ساخته و تست می‌شوند.\n'
+    + 'فقط عنوان‌هایی که تست را قبول کنند جایگزین می‌شوند (با نسخهٔ پشتیبان)؛ بقیه دست نمی‌خورند.\n'
+    + PROBLEMS_NOTE,
+  rebuild: 'بدون تست، همه‌چیز از صفر با خزنده دوباره استخراج می‌شود: اطلاعات و نمره، لینک‌های دانلود همهٔ منابع، پخش آنلاین و زیرنویس.\n'
+    + 'نسخهٔ فعلی پشتیبان‌گیری می‌شود و از میز هر عنوان قابل بازگردانی است.\n'
+    + PROBLEMS_NOTE,
+}
+
+async function rebuildSelected(action: RebuildAction = 'rebuild_staged') {
+  const keys = selected.value
+  if (!keys.length || running.value) return
+  if (!window.confirm(`${fa(keys.length)} عنوان ${REBUILD_CONFIRM[action]}`)) return
+  const byKind: Record<AdminContentKind, number[]> = { movie: [], series: [] }
+  for (const key of keys) {
+    const [kind, id] = key.split(':') as [AdminContentKind, string]
+    byKind[kind]?.push(Number(id))
+  }
+  running.value = action
+  try {
+    let queued = 0
+    let failed = 0
+    for (const kind of ['movie', 'series'] as const) {
+      if (!byKind[kind].length) continue
+      const response = await bulk(kind, byKind[kind], action)
+      queued += response.succeeded
+      failed += response.failed
+    }
+    if (failed) notify.error('بخشی در صف نرفت', `${fa(queued)} در صف، ${fa(failed)} ناموفق`)
+    else {
+      notify.success(
+        action === 'rebuild' ? 'در صف جایگزینی' : 'در صف بازسازی',
+        `${fa(queued)} عنوان — نتیجه در ستون «آخرین بازسازی» می‌آید`,
+      )
+    }
+    selected.value = []
+    await refresh()
+  }
+  catch { notify.error('خطا', 'بازسازی گروهی در صف نرفت') }
+  finally { running.value = '' }
+}
+
+// While any run on this page is still going, keep the column current.
+let repairPoll: ReturnType<typeof setTimeout> | null = null
+const REPAIR_POLL_MS = 10_000
+watch(rows, (list) => {
+  if (repairPoll) clearTimeout(repairPoll)
+  repairPoll = null
+  if (import.meta.client && anyRepairActive(list.map(row => row.repair)))
+    repairPoll = setTimeout(() => { void refresh() }, REPAIR_POLL_MS)
+}, { immediate: true })
+onBeforeUnmount(() => { if (repairPoll) clearTimeout(repairPoll) })
 
 const visibleCount = computed(() => rows.value.length)
 const canPageBack = computed(() => offset.value > 0)
@@ -160,6 +249,28 @@ const canPageForward = computed(() => rows.value.length === PAGE_SIZE)
     <RvPanel :icon="HeartPulse" :title="QUEUES.find(q => q.key === queue)?.label || 'صف'" :padded="false">
       <template #actions>
         <button
+          type="button" class="rv-btn rv-btn--primary rv-focus !min-h-8 !px-2.5 !text-xs"
+          :disabled="!!running || !selected.length" :title="selected.length ? '' : 'اول عنوان‌ها را انتخاب کنید'"
+          @click="rebuildSelected('rebuild_staged')"
+        >
+          <Loader v-if="running === 'rebuild_staged'" class="size-3.5 animate-spin" />
+          <Rebuild v-else class="size-3.5" />
+          بازسازی از صفر با تست
+          <span v-if="selected.length" class="tabular-nums">({{ fa(selected.length) }})</span>
+        </button>
+        <button
+          type="button" class="rv-btn rv-btn--subtle rv-focus !min-h-8 !px-2.5 !text-xs"
+          :style="{ color: 'var(--rv-danger)' }"
+          :disabled="!!running || !selected.length"
+          :title="selected.length ? 'بدون تست جایگزین می‌شود؛ نسخهٔ قبلی پشتیبان دارد' : 'اول عنوان‌ها را انتخاب کنید'"
+          @click="rebuildSelected('rebuild')"
+        >
+          <Loader v-if="running === 'rebuild'" class="size-3.5 animate-spin" />
+          <Rebuild v-else class="size-3.5" />
+          جایگزینی از صفر بدون تست
+          <span v-if="selected.length" class="tabular-nums">({{ fa(selected.length) }})</span>
+        </button>
+        <button
           type="button" class="rv-btn rv-btn--ghost rv-focus !min-h-8 !px-2.5 !text-xs"
           :disabled="!!running || !visibleCount" @click="repairVisible('recrawl')"
         >
@@ -198,10 +309,18 @@ const canPageForward = computed(() => rows.value.length === PAGE_SIZE)
         <table class="rv-table">
           <thead>
             <tr>
+              <th class="w-10">
+                <input
+                  type="checkbox" class="rv-focus size-4 accent-[var(--rv-accent)]"
+                  :checked="allSelected" :disabled="!rows.length" aria-label="انتخاب همهٔ این صفحه"
+                  @change="toggleAll"
+                >
+              </th>
               <th>عنوان</th>
               <th>نوع</th>
               <th>وضعیت</th>
               <th>جزئیات</th>
+              <th>آخرین بازسازی</th>
               <th>آخرین تغییر</th>
               <th class="text-center">اقدامات</th>
             </tr>
@@ -209,10 +328,17 @@ const canPageForward = computed(() => rows.value.length === PAGE_SIZE)
           <tbody>
             <template v-if="pending && !rows.length">
               <tr v-for="i in 6" :key="`sk${i}`">
-                <td colspan="6"><div class="rv-skeleton h-8 w-full" /></td>
+                <td colspan="8"><div class="rv-skeleton h-8 w-full" /></td>
               </tr>
             </template>
             <tr v-for="(row, index) in rows" :key="`${row.target.kind}-${row.target.id}-${row.id ?? index}`">
+              <td>
+                <input
+                  type="checkbox" class="rv-focus size-4 accent-[var(--rv-accent)]"
+                  :checked="selected.includes(rowKey(row))" :aria-label="`انتخاب ${row.target.title || row.target.id}`"
+                  @change="toggleRow(row)"
+                >
+              </td>
               <td>
                 <NuxtLink :to="detailPath(row)" class="rv-focus block max-w-[18rem] truncate font-bold text-[var(--rv-text)] hover:text-[var(--rv-accent)]">
                   {{ row.target.title || `#${fa(row.target.id)}` }}
@@ -236,6 +362,15 @@ const canPageForward = computed(() => rows.value.length === PAGE_SIZE)
                 <template v-else-if="row.reason">{{ row.reason }}</template>
                 <template v-else-if="row.link_count !== undefined">{{ fa(row.link_count) }} لینک</template>
                 <template v-else>—</template>
+              </td>
+              <td class="whitespace-nowrap text-xs font-semibold">
+                <template v-if="repairBadge(row.repair)">
+                  <RvBadge :tone="repairBadge(row.repair)!.tone" dot>{{ repairBadge(row.repair)!.label }}</RvBadge>
+                  <span v-if="repairBadge(row.repair)!.hint" class="mt-1 block max-w-[16rem] leading-5 text-[var(--rv-muted)]" :title="repairBadge(row.repair)!.hint">
+                    {{ repairBadge(row.repair)!.hint }}
+                  </span>
+                </template>
+                <span v-else class="text-[var(--rv-muted)]">—</span>
               </td>
               <td class="whitespace-nowrap text-xs font-bold text-[var(--rv-muted)]">
                 {{ when(row.updated_at || row.checked_at) }}

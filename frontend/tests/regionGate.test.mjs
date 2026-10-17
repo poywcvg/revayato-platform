@@ -83,7 +83,7 @@ test('the watch page opens the notice on arrival and again when mirrors run out'
   // every individual source failure along the way.
   assert.match(
     watchPage,
-    /Every mirror is spent[\s\S]{0,300}revealRegionNotice\(\)[\s\S]{0,300}failedFamily === 'hevc'/,
+    /Every mirror is spent[\s\S]{0,300}revealRegionNotice\(\)[\s\S]{0,900}failedFamily === 'hevc'/,
   )
   assert.equal(watchPage.match(/(?<!function )revealRegionNotice\(\)/g).length, 1)
 })

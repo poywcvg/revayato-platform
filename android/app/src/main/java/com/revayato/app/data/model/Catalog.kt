@@ -11,6 +11,13 @@ data class PagedResponse<T>(
     val results: List<T> = emptyList(),
 )
 
+/** Admin-curated home slider (api/home/slider/): one ordered list for every client. */
+@Serializable
+data class SliderResponse(
+    val platform: String = "all",
+    val results: List<CatalogCardDto> = emptyList(),
+)
+
 @Serializable
 data class GenreDto(
     val id: Int = 0,
@@ -104,6 +111,8 @@ data class DownloadLinkDto(
     @SerialName("subtitle_type") val subtitleType: String? = null,
     @SerialName("season_number") val seasonNumber: Int? = null,
     @SerialName("episode_number") val episodeNumber: Int? = null,
+    /** The CDN only serves Iranian IPs (backend GEO_LOCKED_CDN_HOSTS); a VPN breaks it. */
+    @SerialName("iran_only") val iranOnly: Boolean = false,
 )
 
 @Serializable
@@ -120,6 +129,33 @@ data class SubtitleTrackDto(
     @SerialName("season_number") val seasonNumber: Int? = null,
     @SerialName("episode_number") val episodeNumber: Int? = null,
 )
+
+/** One entry of the server's `ratings` list (imdb, tmdb, site, …). */
+@Serializable
+data class RatingSourceDto(
+    val source: String = "",
+    val value: Double? = null,
+    val scale: Double = 10.0,
+    val displayValue: String = "",
+    val voteCount: Int? = null,
+    val url: String? = null,
+)
+
+/** The English name a card or hero leads with: the Latin title when there is one. */
+fun englishCatalogTitle(title: String, secondaryTitle: String?, originalTitle: String?): String {
+    val english = (secondaryTitle?.takeIf { it.isNotBlank() } ?: originalTitle.orEmpty()).trim()
+    if (english.isNotEmpty() && english.isMostlyLatin()) return english
+    return listOfNotNull(originalTitle, secondaryTitle)
+        .map { it.trim() }
+        .firstOrNull { it.isNotEmpty() && it.isMostlyLatin() }
+        ?: title.trim()
+}
+
+private fun String.isMostlyLatin(): Boolean {
+    val letters = filter { it.isLetter() }
+    if (letters.isEmpty()) return false
+    return letters.count { it in 'A'..'Z' || it in 'a'..'z' || it in '\u00C0'..'\u024F' } * 2 > letters.length
+}
 
 /**
  * Unified card model for both movies and series list payloads. Series expose
@@ -147,6 +183,8 @@ data class CatalogCardDto(
     @SerialName("imdb_rank") val imdbRank: Int? = null,
     @SerialName("rating_average") val ratingAverage: Double? = null,
     @SerialName("site_rating") val siteRating: Double? = null,
+    @SerialName("site_rating_count") val siteRatingCount: Int = 0,
+    val ratings: List<RatingSourceDto> = emptyList(),
     val popularity: Double? = null,
     val poster: String? = null,
     val backdrop: String? = null,
@@ -170,6 +208,7 @@ data class CatalogCardDto(
     val posterUrl: String? get() = poster
     val backdropUrl: String? get() = backdrop ?: poster
     val bestRating: Double? get() = imdbRating ?: ratingAverage ?: siteRating
+    val englishTitle: String get() = englishCatalogTitle(title, secondaryTitle, originalTitle)
 }
 
 @Serializable
@@ -191,6 +230,9 @@ data class MovieDetailDto(
     @SerialName("imdb_rating") val imdbRating: Double? = null,
     @SerialName("rating_average") val ratingAverage: Double? = null,
     @SerialName("site_rating") val siteRating: Double? = null,
+    @SerialName("site_rating_count") val siteRatingCount: Int = 0,
+    @SerialName("imdb_rank") val imdbRank: Int? = null,
+    val ratings: List<RatingSourceDto> = emptyList(),
     @SerialName("imdb_id") val imdbId: String? = null,
     val poster: String? = null,
     val backdrop: String? = null,
@@ -255,6 +297,9 @@ data class SeriesDetailDto(
     @SerialName("imdb_rating") val imdbRating: Double? = null,
     @SerialName("rating_average") val ratingAverage: Double? = null,
     @SerialName("site_rating") val siteRating: Double? = null,
+    @SerialName("site_rating_count") val siteRatingCount: Int = 0,
+    @SerialName("imdb_rank") val imdbRank: Int? = null,
+    val ratings: List<RatingSourceDto> = emptyList(),
     @SerialName("imdb_id") val imdbId: String? = null,
     val poster: String? = null,
     val backdrop: String? = null,
@@ -312,7 +357,10 @@ data class PlaybackSubtitleResult(
  * api/catalog/report-issue/). Unlike the free-text support ticket, `problemType`
  * lets the backend auto-remediation engine dispatch the fix to the right crawler
  * (subtitle pipeline, playback re-crawl, link-integrity strip). `problemType` is
- * one of: subtitle, wrong_title, wrong_episode, playback, audio, other.
+ * one of the 12 server catalogue values also used by the web player: playback,
+ * buffering, audio_silent, audio_desync, subtitle_missing, subtitle_sync,
+ * subtitle_garbled, wrong_title, wrong_episode, quality, download_dead, other.
+ * Legacy `subtitle`/`audio` are still accepted server-side but never sent.
  */
 @Serializable
 data class ContentIssueReportRequest(
@@ -336,6 +384,64 @@ data class ContentIssueReportResult(
     @SerialName("report_count") val reportCount: Int = 1,
     val auto: Boolean = false,
     val created: Boolean = false,
+    // Inbox deep-link for the authenticated reporter («درخواست‌های من»).
+    // Empty for anonymous reports (poll via reportId instead).
+    @SerialName("tracking_code") val trackingCode: String = "",
+    @SerialName("ticket_status") val ticketStatus: String = "",
+)
+
+/**
+ * Automatic playback-failure intake (POST api/catalog/playback-failure/).
+ * Same deduped intake + crawler repair as a manual «گزارش خطا», classified
+ * from the player error code — so an ExoPlayer failure heals via the exact
+ * same path as the web player's auto-heal, and the fixed URL comes back for
+ * an immediate retry.
+ */
+@Serializable
+data class PlaybackFailureRequest(
+    @SerialName("content_type") val contentType: String,
+    @SerialName("object_id") val objectId: Int = 0,
+    val slug: String = "",
+    @SerialName("episode_id") val episodeId: Int = 0,
+    @SerialName("error_code") val errorCode: String = "",
+    @SerialName("error_message") val errorMessage: String = "",
+    @SerialName("gateway_code") val gatewayCode: String = "",
+    @SerialName("source_url") val sourceUrl: String = "",
+    val version: String = "",
+    val player: String = "android",
+    @SerialName("room_code") val roomCode: String = "",
+    @SerialName("played_seconds") val playedSeconds: Double = 0.0,
+    @SerialName("had_played") val hadPlayed: Boolean = false,
+    @SerialName("problem_type") val problemType: String = "",
+)
+
+/** Server answer for an auto-filed playback failure. */
+@Serializable
+data class PlaybackFailureResult(
+    val ok: Boolean = true,
+    @SerialName("report_id") val reportId: Int? = null,
+    @SerialName("problem_type") val problemType: String = "",
+    val status: String = "",
+    @SerialName("fixed_url") val fixedUrl: String = "",
+    @SerialName("playback_mode") val playbackMode: String = "",
+    @SerialName("should_retry") val shouldRetry: Boolean = false,
+    @SerialName("room_notified") val roomNotified: Boolean = false,
+    @SerialName("message_fa") val messageFa: String = "",
+    val classification: String = "",
+)
+
+/** Lightweight poll for a filed report's remediation status. */
+@Serializable
+data class ContentIssueStatusResult(
+    val ok: Boolean = true,
+    val resolved: Boolean = false,
+    @SerialName("report_id") val reportId: Int? = null,
+    val status: String = "",
+    @SerialName("problem_type") val problemType: String = "",
+    @SerialName("fixed_url") val fixedUrl: String = "",
+    @SerialName("playback_mode") val playbackMode: String = "",
+    @SerialName("has_fixed_url") val hasFixedUrl: Boolean = false,
+    @SerialName("message_fa") val messageFa: String = "",
 )
 
 @Serializable

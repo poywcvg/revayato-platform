@@ -547,3 +547,57 @@ def _first_segment(manifest_url: str, probe: Probe) -> str:
         if line and not line.startswith('#'):
             return urljoin(manifest_url, line)
     return ''
+
+
+def _probe_workers() -> int:
+    """Concurrent probe threads. I/O-bound (CDN ranged GETs), not site CPU.
+
+    Bounded and env-tunable: raising this adds parallel CDN connections from
+    the crawler/import workers only — it never touches the public request
+    path, the DB pool or the beat schedule, so site latency is unaffected.
+    """
+    try:
+        from django.conf import settings
+
+        value = int(getattr(settings, 'CATALOG_PROBE_WORKERS', 6) or 6)
+    except (TypeError, ValueError):
+        value = 6
+    return max(1, min(8, value))
+
+
+def probe_many(urls, *, expect: str = 'video', use_cache: bool = True,
+               max_workers: int | None = None) -> dict[str, Probe]:
+    """Probe several URLs concurrently; same verdicts as serial ``probe_url``.
+
+    Order-preserving: the returned dict follows ``urls`` order, and every URL
+    still goes through the cache, the circuit breaker and the dead-confirm
+    path exactly as a single call would. Only the wall-clock time changes —
+    one slow CDN no longer stalls every link behind it.
+    """
+    ordered = [str(url or '').strip() for url in (urls or []) if str(url or '').strip()]
+    if not ordered:
+        return {}
+    if len(ordered) == 1:
+        single = ordered[0]
+        if single.lower().split('?')[0].endswith('.m3u8') and expect == 'video':
+            return {single: probe_manifest(single, use_cache=use_cache)}
+        return {single: probe_url(single, expect=expect, use_cache=use_cache)}
+    workers = max(1, min(int(max_workers or _probe_workers()), len(ordered), 8))
+    from concurrent.futures import ThreadPoolExecutor
+
+    def _one(url: str) -> Probe:
+        if url.lower().split('?')[0].endswith('.m3u8') and expect == 'video':
+            return probe_manifest(url, use_cache=use_cache)
+        if expect == 'manifest':
+            return probe_manifest(url, use_cache=use_cache)
+        return probe_url(url, expect=expect, use_cache=use_cache)
+
+    results: dict[str, Probe] = {}
+    if workers <= 1:
+        for url in ordered:
+            results[url] = _one(url)
+        return results
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        for url, probed in zip(ordered, pool.map(_one, ordered)):
+            results[url] = probed
+    return results

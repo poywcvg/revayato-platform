@@ -35,7 +35,7 @@ function continueWatching() {
         image-class="opacity-80 transition-transform duration-300 group-hover:scale-[1.025]"
       />
       <div class="absolute inset-0 bg-gradient-to-t from-night-950 via-transparent to-black/10" />
-      <span class="absolute inset-0 m-auto grid size-12 place-items-center rounded-full bg-primary-500 text-night-950 shadow-lg shadow-black/25 transition group-hover:scale-105"><CinematicIcon name="resume" class="size-6" /></span>
+      <span class="absolute inset-0 m-auto grid size-12 place-items-center rounded-full bg-primary-500 text-night-950 transition group-hover:scale-105"><CinematicIcon name="resume" class="size-6" /></span>
       <span class="absolute right-3 top-3 rounded-lg bg-black/65 px-2 py-1 text-[11px] font-bold text-slate-200 ring-1 ring-white/10">{{ item.type === 'series' ? 'سریال' : 'فیلم' }}</span>
       <div class="absolute inset-x-0 bottom-0 h-1.5 bg-white/15" role="progressbar" :aria-valuenow="roundedProgress" aria-valuemin="0" aria-valuemax="100" :aria-label="`پیشرفت تماشای ${displayTitle}: ${roundedProgress.toLocaleString('fa-IR')} درصد`"><div class="h-full rounded-l-full bg-primary-500 transition-[width] duration-300" :style="{ width: `${roundedProgress}%` }" /></div>
     </div>

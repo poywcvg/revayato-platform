@@ -33,7 +33,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
-import com.revayato.app.core.theme.BrandMint
+import com.revayato.app.core.theme.Brand
 import com.revayato.app.core.theme.TextMuted
 import com.revayato.app.data.model.CollectionVisibility
 import com.revayato.app.ui.components.RevayatoSpinner
@@ -67,9 +67,9 @@ fun CollectionEditDialog(
                 enabled = !busy && name.isNotBlank(),
             ) {
                 if (busy) {
-                    RevayatoSpinner(size = 18.dp, color = BrandMint)
+                    RevayatoSpinner(size = 18.dp, color = Brand)
                 } else {
-                    Text(confirmLabel, color = BrandMint, fontWeight = FontWeight.Bold)
+                    Text(confirmLabel, color = Brand, fontWeight = FontWeight.Bold)
                 }
             }
         },
@@ -134,13 +134,13 @@ private fun VisibilityOption(
     selected: Boolean,
     onClick: () -> Unit,
 ) {
-    val border = if (selected) BrandMint else MaterialTheme.colorScheme.outline.copy(alpha = 0.4f)
+    val border = if (selected) Brand else MaterialTheme.colorScheme.outline.copy(alpha = 0.4f)
     Row(
         modifier = Modifier
             .fillMaxWidth()
             .clip(RoundedCornerShape(12.dp))
             .border(if (selected) 1.5.dp else 1.dp, border, RoundedCornerShape(12.dp))
-            .background(if (selected) BrandMint.copy(alpha = 0.08f) else MaterialTheme.colorScheme.surface)
+            .background(if (selected) Brand.copy(alpha = 0.08f) else MaterialTheme.colorScheme.surface)
             .clickable(onClick = onClick)
             .padding(horizontal = 12.dp, vertical = 10.dp),
         verticalAlignment = Alignment.CenterVertically,
@@ -149,7 +149,7 @@ private fun VisibilityOption(
         Icon(
             icon,
             contentDescription = null,
-            tint = if (selected) BrandMint else TextMuted,
+            tint = if (selected) Brand else TextMuted,
             modifier = Modifier.size(20.dp),
         )
         Column(Modifier.weight(1f)) {
@@ -158,7 +158,7 @@ private fun VisibilityOption(
         }
         if (selected) {
             Spacer(Modifier.size(6.dp))
-            Text("✓", color = BrandMint, fontWeight = FontWeight.Black)
+            Text("✓", color = Brand, fontWeight = FontWeight.Black)
         }
     }
 }

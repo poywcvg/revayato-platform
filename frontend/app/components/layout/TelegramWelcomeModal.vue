@@ -155,7 +155,6 @@ onBeforeUnmount(() => {
   align-items: flex-end;
   justify-content: center;
   background: var(--theme-overlay-backdrop);
-  backdrop-filter: blur(8px);
 }
 
 .telegram-welcome__dialog {
@@ -167,7 +166,7 @@ onBeforeUnmount(() => {
   border-radius: 1.75rem;
   background: var(--theme-bg-surface);
   color: var(--theme-text-primary);
-  box-shadow: 0 28px 80px rgb(0 0 0 / 58%);
+  box-shadow: none;
   outline: none;
 }
 
@@ -184,7 +183,6 @@ onBeforeUnmount(() => {
   border-radius: 9999px;
   background: rgb(0 0 0 / 24%);
   color: rgb(255 255 255 / 78%);
-  backdrop-filter: blur(10px);
   transition: background-color 160ms ease, color 160ms ease, transform 160ms ease;
 }
 
@@ -227,8 +225,7 @@ onBeforeUnmount(() => {
   height: 7.5rem;
   border-radius: 50%;
   background: #2aabee;
-  filter: blur(44px);
-  opacity: .3;
+  display: none;
 }
 
 .telegram-welcome__logo {
@@ -241,7 +238,7 @@ onBeforeUnmount(() => {
   border-radius: 1.75rem;
   background: linear-gradient(145deg, #39b8f3, #168ac7);
   color: #fff;
-  box-shadow: 0 18px 44px rgb(3 110 167 / 38%);
+  box-shadow: none;
   transform: rotate(-3deg);
 }
 

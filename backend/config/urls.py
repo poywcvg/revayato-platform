@@ -19,12 +19,13 @@ from users.analytics_api import (
     analytics_users,
 )
 from users.dashboard_api import insights_dashboard
+from apps.catalog.indexnow import indexnow_key_file
 from apps.catalog.sitemap_api import catalog_sitemap
 from apps.catalog.api import (
     anime_catalog, catalog_filters, imdb_top250, collection_detail, collection_list, recent_catalog,
     actor_detail, actor_list, country_list, director_detail, director_list,
-    genre_list, home_rails, movie_detail, movie_list, movie_similar,
-    content_issue_options, content_issue_status, playback_subtitle_ensure,
+    genre_list, home_rails, home_slider, movie_detail, movie_list, movie_similar,
+    content_issue_options, content_issue_status, playback_failure_report, playback_subtitle_ensure,
     playback_subtitle_status, report_content_issue,
     search_content, search_suggest, series_detail, series_list, series_similar,
     subtitle_sync_report, trending, weekly_schedule,
@@ -37,6 +38,7 @@ from apps.catalog.stream_api import (
 from apps.catalog.admin_api import (
     admin_movie_detail, admin_movie_list_create,
     admin_series_detail, admin_series_list_create,
+    admin_slider_list, admin_slider_reorder,
     catalog_importer_settings,
     catalog_sync_run_cancel, catalog_sync_run_detail, catalog_sync_run_list_create,
     movie_sync_tmdb, series_sync_tmdb,
@@ -44,7 +46,7 @@ from apps.catalog.admin_api import (
     tmdb_series_import, tmdb_series_preview,
 )
 from apps.catalog.admin_ops import (
-    audit_feed, bulk_action, catalog_health, media_desk, ops_overview,
+    audit_feed, bulk_action, catalog_health, content_reports_purge, media_desk, ops_overview,
 )
 from apps.catalog.taxonomy_api import (
     admin_actor_detail, admin_actor_list_create,
@@ -79,12 +81,12 @@ from apps.catalog.provider_import.api import (
     series_provider_discover,
 )
 from apps.engagement.api import (
-    create_event, create_privacy_safe_event, like_toggle, likes_list, rate_content, rating_summary,
+    community_messages, create_event, create_privacy_safe_event, like_toggle, likes_list, rate_content, rating_summary,
     support_ticket_detail, support_ticket_list_create, watch_stats, watchlist_list, watchlist_toggle,
 )
 from apps.engagement.admin_api import (
     admin_interaction_overview, admin_review_detail, admin_reviews_list,
-    admin_support_inbox, admin_support_ticket_detail,
+    admin_support_inbox, admin_support_ticket_detail, admin_support_tickets_purge,
 )
 from apps.engagement.collections_api import (
     collections_root,
@@ -131,12 +133,14 @@ urlpatterns = [
     path('api/catalog/anime/', anime_catalog, name='catalog_anime'),
     path('api/catalog/top250/', imdb_top250, name='catalog_top250'),
     path('api/catalog/sitemap/', catalog_sitemap, name='catalog_sitemap'),
+    path('api/catalog/indexnow-key/', indexnow_key_file, name='catalog_indexnow_key'),
     path('api/catalog/filters/', catalog_filters, name='catalog_filters'),
     path('api/catalog/playback-subtitle-ensure/', playback_subtitle_ensure, name='playback_subtitle_ensure'),
     path('api/catalog/playback-subtitle-status/', playback_subtitle_status, name='playback_subtitle_status'),
     path('api/catalog/subtitle-sync/report/', subtitle_sync_report, name='subtitle_sync_report'),
     path('api/catalog/report-issue/', report_content_issue, name='report_content_issue'),
     path('api/catalog/report-issue/status/', content_issue_status, name='content_issue_status'),
+    path('api/catalog/playback-failure/', playback_failure_report, name='playback_failure_report'),
     # The button catalogue itself, so a new repair becomes a new button in
     # every client without an app release.
     path('api/catalog/report-issue/options/', content_issue_options, name='content_issue_options'),
@@ -168,6 +172,7 @@ urlpatterns = [
     path('api/series/<uslug:slug>/similar/', series_similar, name='series_similar'),
     path('api/genres/', genre_list, name='genre_list'),
     path('api/home/rails/', home_rails, name='home_rails'),
+    path('api/home/slider/', home_slider, name='home_slider'),
     path('api/countries/', country_list, name='country_list'),
     path('api/actors/', actor_list, name='actor_list'),
     path('api/actors/<uslug:slug>/', actor_detail, name='actor_detail'),
@@ -199,6 +204,7 @@ urlpatterns = [
     path('api/users/<str:username>/collections/<uslug:slug>/', public_collection, name='public_collection'),
     path('api/support/tickets/', support_ticket_list_create, name='support_ticket_list_create'),
     path('api/support/tickets/<str:tracking_code>/', support_ticket_detail, name='support_ticket_detail'),
+    path('api/community/messages/', community_messages, name='community_messages'),
 
     # --- Staff admin API (Nuxt admin panel) ---
     path('api/admin/tmdb/search/', tmdb_search, name='admin_tmdb_search'),
@@ -209,6 +215,8 @@ urlpatterns = [
     path('api/admin/movies/', admin_movie_list_create, name='admin_movie_list_create'),
     path('api/admin/movies/<int:movie_id>/', admin_movie_detail, name='admin_movie_detail'),
     path('api/admin/movies/<int:movie_id>/sync-tmdb/', movie_sync_tmdb, name='admin_movie_sync_tmdb'),
+    path('api/admin/slider/', admin_slider_list, name='admin_slider_list'),
+    path('api/admin/slider/reorder/', admin_slider_reorder, name='admin_slider_reorder'),
     path('api/admin/series/<int:series_id>/sync-tmdb/', series_sync_tmdb, name='admin_series_sync_tmdb'),
     path('api/admin/series/', admin_series_list_create, name='admin_series_list_create'),
     path('api/admin/series/<int:series_id>/', admin_series_detail, name='admin_series_detail'),
@@ -257,11 +265,13 @@ urlpatterns = [
     path('api/admin/catalog/<str:kind>/<int:object_id>/media/', media_desk, name='admin_media_desk'),
     path('api/admin/catalog/bulk/', bulk_action, name='admin_catalog_bulk'),
     path('api/admin/catalog/health/', catalog_health, name='admin_catalog_health'),
+    path('api/admin/catalog/reports/purge/', content_reports_purge, name='admin_content_reports_purge'),
     path('api/admin/ops/overview/', ops_overview, name='admin_ops_overview'),
     path('api/admin/audit/', audit_feed, name='admin_audit_feed'),
     path('api/admin/interaction-overview/', admin_interaction_overview, name='admin_interaction_overview'),
     path('api/admin/reviews/', admin_reviews_list, name='admin_reviews_list'),
     path('api/admin/reviews/<int:rating_id>/', admin_review_detail, name='admin_review_detail'),
     path('api/admin/support/tickets/', admin_support_inbox, name='admin_support_inbox'),
+    path('api/admin/support/tickets/purge/', admin_support_tickets_purge, name='admin_support_tickets_purge'),
     path('api/admin/support/tickets/<str:tracking_code>/', admin_support_ticket_detail, name='admin_support_ticket_detail'),
 ]

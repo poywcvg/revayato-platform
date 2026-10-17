@@ -77,7 +77,7 @@ a.review-card__title:hover { color: var(--theme-accent-primary); }
   line-height: 1.75;
   overflow-wrap: anywhere;
 }
-.review-card__text--masked { filter: blur(6px); user-select: none; }
+.review-card__text--masked { border-radius: 0.4rem; background: var(--theme-bg-soft); color: transparent; user-select: none; }
 .review-card__reveal {
   display: inline-flex;
   align-items: center;

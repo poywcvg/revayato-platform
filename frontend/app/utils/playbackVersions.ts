@@ -73,7 +73,7 @@ export function normalizePlaybackUrl(url?: string | null) {
     const path = parsed.pathname.replace(/\/+$/, '') || '/'
     return `${host}${path}`.toLowerCase()
   } catch {
-    return raw.split(/[?#]/)[0].replace(/\/+$/, '').toLowerCase()
+    return (raw.split(/[?#]/)[0] || '').replace(/\/+$/, '').toLowerCase()
   }
 }
 

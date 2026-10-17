@@ -36,11 +36,11 @@ import com.revayato.app.ui.components.LoadingState
 
 private val COUNTRY_GRADIENTS = listOf(
     listOf(Color(0xFF3A6EA5), Color(0xFF12406B)),
-    listOf(Color(0xFF9B5DE5), Color(0xFF5A2A8C)),
+    listOf(Color(0xFF8A72B0), Color(0xFF43325F)),
     listOf(Color(0xFFE07A5F), Color(0xFF8C3B22)),
-    listOf(Color(0xFF2EC4B6), Color(0xFF14776E)),
-    listOf(Color(0xFFEF476F), Color(0xFF8C1C3B)),
-    listOf(Color(0xFF06D6A0), Color(0xFF0A6E56)),
+    listOf(Color(0xFF6A8CA8), Color(0xFF2E4459)),
+    listOf(Color(0xFFC4606E), Color(0xFF5E2231)),
+    listOf(Color(0xFFC9894A), Color(0xFF6B3F1D)),
 )
 
 /**

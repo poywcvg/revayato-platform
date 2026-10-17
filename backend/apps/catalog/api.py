@@ -1,6 +1,7 @@
 ﻿from decimal import Decimal, InvalidOperation
 from urllib.parse import urlsplit, urlunsplit
 
+from django.core.cache import cache
 from django.db.models import Case, Count, Exists, F, IntegerField, OuterRef, Prefetch, Q, Value, When
 from django.shortcuts import get_object_or_404
 from rest_framework.decorators import api_view, throttle_classes
@@ -69,6 +70,12 @@ class SubtitleSyncReportThrottle(AnonRateThrottle):
     scope = 'subtitle_sync_report'
 
 
+class PlaybackFailureThrottle(AnonRateThrottle):
+    """Automatic player-failure intake; shares the report budget, not catalog reads."""
+
+    scope = 'playback_failure'
+
+
 def _queue_missing_softsub(obj, *, kind: str) -> None:
     """Best-effort SoftSub / SubtitleStar backfill when a public detail page is viewed."""
     try:
@@ -127,9 +134,9 @@ def _queue_missing_softsub(obj, *, kind: str) -> None:
         logging.getLogger(__name__).exception('softsub queue on detail failed for %s %s', kind, getattr(obj, 'pk', None))
 
 
-def _cached_response(request, namespace: str, kind: str, builder):
+def _cached_response(request, namespace: str, kind: str, builder, *, allow_stale: bool = True):
     """Serve anonymous catalog JSON from Redis when available."""
-    payload, state = cached_catalog_payload(namespace, request, kind, builder)
+    payload, state = cached_catalog_payload(namespace, request, kind, builder, allow_stale=allow_stale)
     response = Response(payload)
     response['Cache-Control'] = cache_control_for(kind)
     response['X-Catalog-Cache'] = state
@@ -158,6 +165,27 @@ def _paginated_cached_response(request, namespace: str, queryset, serializer_cla
         }
 
     return _cached_response(request, namespace, kind, build)
+
+
+def _age_band_raw_values(model):
+    """Distinct stored age certifications, cached: the table scan below ran on
+    every age-filtered list request and never changes within the hour."""
+    key = f'catalog:age_ratings:{model.__name__}'
+    try:
+        values = cache.get(key)
+    except Exception:
+        values = None
+    if values is None:
+        values = list(
+            model.objects.exclude(age_rating='')
+            .values_list('age_rating', flat=True)
+            .distinct()
+        )
+        try:
+            cache.set(key, values, timeout=3600)
+        except Exception:
+            pass
+    return values
 
 
 def _bounded_int(value, default, minimum=0, maximum=100):
@@ -315,7 +343,7 @@ def _apply_catalog_filters(queryset, request, year_field):
         if age_rating in BANDS:
             # Rows store the board's own certification (R, PG-13, 15…); the
             # site filters by the band it shows.
-            raw_values = queryset.model.objects.exclude(age_rating='').values_list('age_rating', flat=True).distinct()
+            raw_values = _age_band_raw_values(queryset.model)
             queryset = queryset.filter(age_rating__in=raw_ratings_in_band(raw_values, age_rating))
         else:
             queryset = queryset.filter(age_rating=age_rating)
@@ -711,28 +739,34 @@ def recent_catalog(request):
 @api_view(['GET'])
 @throttle_classes([CatalogReadThrottle])
 def weekly_schedule(request):
-    """Weekly airing schedule built from real Episode.air_date / release dates."""
+    """Weekly airing schedule: what aired on each day and is on the site now.
+
+    Only releases a viewer can play or download are listed (a date alone is
+    not worth a card). The window is the ``days`` days that end on ``end``
+    (default: today, Tehran time; never later than today), newest last.
+    """
     import datetime
 
-    from django.utils import timezone
-
-    from .schedule import DEFAULT_DAYS, build_weekly_schedule, week_start_for
+    from .airing import today_tehran
+    from .schedule import DEFAULT_DAYS, build_weekly_schedule
 
     days = _bounded_int(request.GET.get('days'), DEFAULT_DAYS, 1, 21)
     include_movies = request.GET.get('movies', '1').strip().lower() not in {'0', 'false', 'no'}
 
-    start = None
-    raw_start = (request.GET.get('start') or '').strip()
-    if raw_start:
+    today = today_tehran()
+    end = today
+    raw_end = (request.GET.get('end') or '').strip()
+    if raw_end:
         try:
-            start = datetime.date.fromisoformat(raw_start)
+            end = min(datetime.date.fromisoformat(raw_end), today)
         except ValueError:
-            start = None
-    if start is None:
-        start = week_start_for(timezone.localdate())
+            end = today
+    start = end - datetime.timedelta(days=days - 1)
 
     def build():
-        return build_weekly_schedule(start=start, days=days, include_movies=include_movies)
+        return build_weekly_schedule(
+            start=start, days=days, include_movies=include_movies, available_only=True,
+        )
 
     return _cached_response(request, 'weekly-schedule', 'list', build)
 
@@ -976,32 +1010,75 @@ def genre_list(request):
 def home_rails(request):
     """Home discovery rails scored on the backend (featured / dubbed / popular series)."""
     limit = _bounded_int(request.GET.get('limit'), 7, 1, 24)
+    platform = (request.GET.get('platform') or '').strip().lower() or None
 
     def build():
-        from apps.catalog.trending import build_home_rails, lean_public_queryset, rail_rotation_meta
+        from apps.catalog.trending import build_home_rails, rail_rotation_meta
 
         rails = build_home_rails(limit=limit)
         meta = rails.get('meta') or rail_rotation_meta()
-        # Hero picks are explicitly curated and ordered by the most recent
-        # editorial update. Keep this separate from the scored featured rail:
-        # popularity must never push an unverified title into the main slider.
-        hero = list(
-            lean_public_queryset(Movie.objects.filter(is_published=True, is_featured=True))
-            .order_by('-updated_at', '-id')[:limit]
-        )
+        # The main slider is admin-curated (is_featured + featured_order) and
+        # covers movies and series for the requesting platform (web/app/both).
+        # Kept separate from the scored featured rail: popularity must never
+        # push an unverified title into the main slider.
         return {
             'meta': meta,
-            'hero': MovieListSerializer(hero, many=True).data,
+            'hero': serialize_slider_items(platform=platform, limit=limit),
             'featured': MovieListSerializer(rails['featured'], many=True).data,
             'dubbed': MovieListSerializer(rails['dubbed'], many=True).data,
             'popular_series': SeriesListSerializer(rails['popular_series'], many=True).data,
         }
 
-    # Include rotation bucket in namespace so CDN/cache keys rotate with the slot.
+    # Include rotation bucket + platform in namespace so CDN/cache keys rotate
+    # with the slot and never serve the app slider to the web or vice versa.
+    # No stale serving here: the hero is admin-curated, the build is ~0.3 s,
+    # and a stale hero after an editorial save reads as panel/site disagreement.
     from apps.catalog.trending import rail_rotation_meta
     meta = rail_rotation_meta()
-    namespace = f"home-rails:{meta.get('day')}:{meta.get('bucket')}:{limit}"
-    return _cached_response(request, namespace, 'home', build)
+    namespace = f"home-rails:{meta.get('day')}:{meta.get('bucket')}:{limit}:{platform or 'all'}"
+    return _cached_response(request, namespace, 'home', build, allow_stale=False)
+
+
+def serialize_slider_items(*, platform=None, limit=24):
+    """Admin-ordered slider cards with an explicit ``content_type`` per item."""
+    from apps.catalog.slider import slider_items
+
+    cards = []
+    for entry in slider_items(platform=platform, limit=limit):
+        kind = entry.get('content_type')
+        if kind == 'series':
+            payload = SeriesListSerializer(entry['series']).data
+        else:
+            payload = MovieListSerializer(entry['movie']).data
+            kind = 'movie'
+        payload['content_type'] = kind
+        cards.append(payload)
+    return cards
+
+
+@api_view(['GET'])
+@throttle_classes([CatalogReadThrottle])
+def home_slider(request):
+    """Admin-curated home slider for the website and the application.
+
+    ``?platform=web|app`` (default ``all``) selects which client the list is
+    for; ``?limit=`` caps the items (1–30, default 10). Every card carries
+    ``content_type`` (``movie``/``series``) so both clients render the right
+    detail route without guessing from the year shape.
+    """
+    limit = _bounded_int(request.GET.get('limit'), 10, 1, 30)
+    platform = (request.GET.get('platform') or '').strip().lower() or None
+
+    def build():
+        return {
+            'platform': platform or 'all',
+            'results': serialize_slider_items(platform=platform, limit=limit),
+        }
+
+    # No stale serving: admin-curated, ~0.2 s to build, and both clients must
+    # agree with the panel the moment a save lands.
+    namespace = f"home-slider:{platform or 'all'}:{limit}"
+    return _cached_response(request, namespace, 'slider', build, allow_stale=False)
 
 
 def _country_options_payload():
@@ -1705,13 +1782,56 @@ def content_issue_status(request):
     """Player poll: has a filed content-issue report been auto-fixed yet?
 
     Query: ``report_id``. Never enqueues work — a pure status read.
+    Enriched with the title's *current* servable URL so a fixed player can
+    retry without another round-trip.
     """
     from apps.catalog.content_reports import read_report_status
+    from apps.catalog.playback_failure import USER_MESSAGES_FA, fixed_playback_for
 
     report_id = request.query_params.get('report_id')
     if not str(report_id or '').strip().isdigit():
         return Response({'ok': False, 'error': 'report_id_required'}, status=400)
-    response = Response(read_report_status(int(report_id)))
+    result = read_report_status(int(report_id))
+    if result.get('ok'):
+        try:
+            from apps.catalog.models import ContentIssueReport
+
+            report = ContentIssueReport.objects.filter(pk=int(report_id)).only(
+                'content_type', 'object_id', 'episode_id', 'status',
+            ).first()
+            if report is not None:
+                from apps.catalog.playback_api import resolve_target
+
+                kind = report.content_type
+                obj_id = report.object_id if kind != 'series' or not report.episode_id else report.object_id
+                # For series episode reports resolve via episode id.
+                if kind == 'series' and report.episode_id:
+                    owner, episode = resolve_target('episode', report.episode_id)
+                else:
+                    owner, episode = resolve_target(kind, obj_id)
+                if owner is not None:
+                    fixed = fixed_playback_for(owner, episode)
+                    result['fixed_url'] = fixed.get('url') or ''
+                    result['playback_mode'] = fixed.get('playback_mode') or ''
+                    result['has_fixed_url'] = bool(fixed.get('has_url'))
+                else:
+                    result['fixed_url'] = ''
+                    result['playback_mode'] = ''
+                    result['has_fixed_url'] = False
+                status = str(result.get('status') or '')
+                if result.get('resolved'):
+                    result['message_fa'] = USER_MESSAGES_FA['fixed']
+                elif status in {'queued', 'open', 'remediating'}:
+                    result['message_fa'] = USER_MESSAGES_FA['queued']
+                elif status == 'needs_review':
+                    result['message_fa'] = USER_MESSAGES_FA['needs_review']
+                elif status == 'unavailable':
+                    result['message_fa'] = USER_MESSAGES_FA['unavailable']
+                else:
+                    result['message_fa'] = USER_MESSAGES_FA['received']
+        except Exception:  # noqa: BLE001 — enrichment is best-effort
+            pass
+    response = Response(result)
     response['Cache-Control'] = 'private, no-store'
     return response
 
@@ -1744,4 +1864,198 @@ def content_issue_options(request):
     # Identical for every viewer of a given content type, and it changes only
     # when we ship a new repair.
     response['Cache-Control'] = 'public, max-age=300, stale-while-revalidate=3600'
+    return response
+
+
+@api_view(['POST'])
+@throttle_classes([PlaybackFailureThrottle])
+def playback_failure_report(request):
+    """Automatic intake for a failed online playback (single or watch-party).
+
+    The player calls this the moment ``<video>`` fails — not after the viewer
+    finds the «گزارش خطا» button. Body::
+
+        { content_type, object_id?, slug?, episode_id?,
+          error_code?, error_message?, gateway_code?,
+          source_url?, version?, player?, room_code?,
+          played_seconds?, had_played?, problem_type? (optional hint) }
+
+    The failure is classified by :mod:`apps.catalog.playback_failure` onto the
+    exact ``problem_type`` a manual report would have used, filed through the
+    same deduped :func:`record_content_issue_report` path (so popular breakages
+    still surface once), and remediated through the same engine. The response
+    carries what the player needs to recover *now* — ``fixed_url`` when the
+    catalog already serves something better, plus a Persian ``message_fa`` to
+    show — and, for watch-party rooms, the fix is also broadcast to the room.
+
+    Never fails player UX: always 200 with ``ok``.
+    """
+    from apps.catalog.content_reports import record_content_issue_report
+    from apps.catalog.playback_failure import (
+        USER_MESSAGES_FA,
+        build_auto_detail,
+        classify_failure,
+        fixed_playback_for,
+    )
+
+    payload = request.data if isinstance(request.data, dict) else {}
+
+    def _int(*keys):
+        for key in keys:
+            raw = payload.get(key)
+            if str(raw or '').strip().isdigit():
+                return int(raw)
+        return 0
+
+    def _float(key, default=0.0):
+        try:
+            return float(payload.get(key) or default)
+        except (TypeError, ValueError):
+            return default
+
+    content_type = str(payload.get('content_type') or payload.get('type') or '').strip().lower()
+    slug = str(payload.get('slug') or '').strip()[:255]
+    object_id = _int('object_id', 'id')
+    episode_id = _int('episode_id', 'episode')
+    error_code = str(payload.get('error_code') or payload.get('code') or '')[:32]
+    error_message = str(payload.get('error_message') or payload.get('message') or '')[:500]
+    gateway_code = str(payload.get('gateway_code') or payload.get('gateway') or '')[:32]
+    source_url = str(payload.get('source_url') or payload.get('sourceUrl') or payload.get('src') or '')[:1000]
+    version = str(payload.get('version') or payload.get('playback_version') or '')[:32]
+    player = str(payload.get('player') or '')[:16] or 'web'
+    room_code = str(payload.get('room_code') or payload.get('roomCode') or payload.get('invite_code') or '')[:32]
+    hint_problem = str(payload.get('problem_type') or payload.get('problem') or '')
+    played_seconds = _float('played_seconds', _float('position_seconds', 0.0))
+    had_played = str(payload.get('had_played') or '').strip().lower() in {'1', 'true', 'yes'} or played_seconds > 1
+
+    classification = classify_failure(
+        error_code=error_code,
+        error_message=error_message,
+        gateway_code=gateway_code,
+        source_url=source_url,
+        played_seconds=played_seconds,
+        had_played=had_played,
+        hint_problem=hint_problem,
+    )
+    problem_type = classification['problem_type']
+    detail = build_auto_detail(
+        error_code=error_code or classification.get('reason', ''),
+        error_message=error_message,
+        gateway_code=gateway_code,
+        player=player,
+        room_code=room_code,
+    )
+
+    result = record_content_issue_report(
+        request,
+        content_type=content_type,
+        problem_type=problem_type,
+        object_id=object_id,
+        slug=slug,
+        episode_id=episode_id,
+        playback_version=version,
+        source_url=source_url,
+        detail=detail,
+    )
+    if not result.get('ok'):
+        # Intake validation (unknown title, bad payload) — still answer 200
+        # so the player never treats telemetry as a playback verdict.
+        response = Response({
+            'ok': False,
+            'error': result.get('error') or 'invalid_payload',
+            'problem_type': problem_type,
+            'message_fa': 'گزارش خطا ثبت نشد؛ لطفاً از دکمه «گزارش خطا» استفاده کن.',
+        })
+        response['Cache-Control'] = 'private, no-store'
+        return response
+
+    # Fast path: what does the catalog serve *right now* after the inline
+    # recheck/queue? A re-signed URL or a gateway-verdict change is often
+    # already enough for the player to retry immediately.
+    fixed_url = ''
+    playback_mode = ''
+    try:
+        from apps.catalog.models import ContentIssueReport
+        from apps.catalog.playback_api import resolve_target
+
+        report = ContentIssueReport.objects.filter(pk=result.get('report_id')).only(
+            'content_type', 'object_id', 'episode_id', 'status',
+        ).first()
+        if report is not None:
+            if report.content_type == 'series' and report.episode_id:
+                owner, episode = resolve_target('episode', report.episode_id)
+            else:
+                owner, episode = resolve_target(report.content_type, report.object_id)
+            if owner is not None:
+                fixed = fixed_playback_for(owner, episode)
+                fixed_url = fixed.get('url') or ''
+                playback_mode = fixed.get('playback_mode') or ''
+                # A stale signed URL that the resolve path just refreshed is
+                # the common win: hand the fresh one back even before the
+                # worker finishes, when it differs from what failed.
+                if fixed_url and fixed_url.strip() != source_url.strip():
+                    try:
+                        from apps.catalog.playback_resolve import resolve_playback
+
+                        fresh = resolve_playback(owner, episode, allow_refresh=True)
+                        if fresh.url and fresh.url.strip() != source_url.strip():
+                            fixed_url = fresh.url
+                            playback_mode = fresh.mode or playback_mode
+                    except Exception:  # noqa: BLE001 — best-effort only
+                        pass
+    except Exception:  # noqa: BLE001
+        pass
+
+    status = str(result.get('status') or 'open')
+    resolved = status == 'resolved'
+    if resolved and fixed_url and fixed_url.strip() != source_url.strip():
+        message_fa = USER_MESSAGES_FA['fixed']
+        should_retry = True
+    elif resolved:
+        message_fa = USER_MESSAGES_FA['already_playable']
+        should_retry = bool(fixed_url)
+    elif status in {'queued', 'open', 'remediating'}:
+        message_fa = USER_MESSAGES_FA['queued']
+        should_retry = bool(fixed_url and fixed_url.strip() != source_url.strip())
+    elif status == 'needs_review':
+        message_fa = USER_MESSAGES_FA['needs_review']
+        should_retry = bool(fixed_url and fixed_url.strip() != source_url.strip())
+    else:
+        message_fa = USER_MESSAGES_FA['unavailable']
+        should_retry = bool(fixed_url and fixed_url.strip() != source_url.strip())
+
+    # Watch-party live room: push the outcome to every member so a host-side
+    # failure heals guests too, and a guest-side failure still informs the host.
+    room_notified = False
+    if room_code:
+        try:
+            from apps.watchparty.playback_notify import notify_room_of_fix
+
+            room_notified = bool(notify_room_of_fix(
+                room_code,
+                report_id=result.get('report_id'),
+                problem_type=problem_type,
+                status=status,
+                fixed_url=fixed_url,
+                playback_mode=playback_mode,
+                message_fa=message_fa,
+            ))
+        except Exception:  # noqa: BLE001 — room notify is best-effort
+            room_notified = False
+
+    response = Response({
+        'ok': True,
+        'report_id': result.get('report_id'),
+        'problem_type': problem_type,
+        'status': status,
+        'report_count': result.get('report_count', 1),
+        'auto': True,
+        'classification': classification.get('confidence'),
+        'fixed_url': fixed_url,
+        'playback_mode': playback_mode,
+        'should_retry': should_retry,
+        'room_notified': room_notified,
+        'message_fa': message_fa,
+    })
+    response['Cache-Control'] = 'private, no-store'
     return response

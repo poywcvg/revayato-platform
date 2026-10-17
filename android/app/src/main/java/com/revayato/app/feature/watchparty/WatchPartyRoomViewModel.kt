@@ -17,10 +17,12 @@ import com.revayato.app.core.auth.TokenStore
 import com.revayato.app.core.network.ApiResult
 import com.revayato.app.core.util.toAbsoluteUrl
 import com.revayato.app.data.model.ChatMessageDto
+import com.revayato.app.data.model.PlaybackFailureRequest
 import com.revayato.app.data.model.PlaybackStateDto
 import com.revayato.app.data.model.RoomContentDto
 import com.revayato.app.data.model.RoomDto
 import com.revayato.app.data.model.RoomMemberDto
+import com.revayato.app.data.repository.CatalogRepository
 import com.revayato.app.data.repository.WatchPartyRepository
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
@@ -89,6 +91,7 @@ class WatchPartyRoomViewModel @Inject constructor(
     @Named("api") apiClient: OkHttpClient,
     private val tokenStore: TokenStore,
     private val watchPartyRepository: WatchPartyRepository,
+    private val catalogRepository: CatalogRepository,
     private val json: Json,
 ) : ViewModel() {
 
@@ -114,6 +117,10 @@ class WatchPartyRoomViewModel @Inject constructor(
     private var clockOffsetMs: Long = 0
     private var pingSentAt: Long = 0
     private var applyingRemote = false
+    // Auto-heal dedup: one playback-failure report per failed source, so every
+    // member failing at once collapses onto the same repair instead of N crawls.
+    private val healedPartyKeys = HashSet<String>()
+    private var currentPartySourceUrl: String = ""
 
     // A long-lived socket must not inherit the REST client's 60s call timeout.
     private val socketClient: OkHttpClient = apiClient.newBuilder()
@@ -150,6 +157,7 @@ class WatchPartyRoomViewModel @Inject constructor(
 
         override fun onPlayerError(error: androidx.media3.common.PlaybackException) {
             _state.update { it.copy(playerError = "پخش با خطا مواجه شد") }
+            autoHealPartySource(error)
         }
 
         override fun onPlaybackParametersChanged(params: androidx.media3.common.PlaybackParameters) {
@@ -244,6 +252,8 @@ class WatchPartyRoomViewModel @Inject constructor(
                 _state.update { it.copy(latencyMs = rtt) }
             }
             is WsEvent.Error -> _state.update { it.copy(toast = event.message) }
+            is WsEvent.PlaybackFix -> onPlaybackFix(event)
+            is WsEvent.MemberFailed -> onMemberFailed(event)
             is WsEvent.Closed -> _state.update {
                 it.copy(connected = false, error = mapCloseReason(event.code, it.error))
             }
@@ -263,6 +273,7 @@ class WatchPartyRoomViewModel @Inject constructor(
         if (player.currentMediaItem != null) return
         val subtitles = toPartySubtitles(content.subtitleTracks)
         val item = buildMediaItemFor(content, subtitles) ?: return
+        currentPartySourceUrl = resolveStreamUrl(content).orEmpty()
         _state.update { it.copy(subtitles = subtitles) }
         player.setMediaItem(item)
         player.prepare()
@@ -402,6 +413,174 @@ class WatchPartyRoomViewModel @Inject constructor(
         player.playWhenReady = _state.value.playing
         val active = _state.value.activeSubtitleIndex
         if (active >= 0) selectSubtitle(active)
+    }
+
+    /**
+     * Automatic heal for every group-playback failure — same intake and repair
+     * as the single player, filed once with room_code so the server also
+     * broadcasts playback.fix to the whole room. Immediate retry when a better
+     * URL already exists, background poll otherwise. Best-effort: never breaks
+     * playback, one Persian notice.
+     */
+    private fun autoHealPartySource(error: androidx.media3.common.PlaybackException) {
+        val content = _state.value.content ?: return
+        val failed = currentPartySourceUrl.ifBlank { resolveStreamUrl(content).orEmpty() }
+        if (failed.isBlank()) return
+        val key = "$failed|${error.errorCode}"
+        if (!healedPartyKeys.add(key)) return
+        if (healedPartyKeys.size > 200) healedPartyKeys.clear()
+        val playedMs = runCatching { player.currentPosition.coerceAtLeast(0) }.getOrDefault(0L)
+        socket?.sendPlaybackFailed(
+            errorCode = error.errorCode.toString(),
+            sourceUrl = failed,
+            playedSeconds = playedMs / 1000.0,
+        )
+        _state.update { it.copy(toast = "خطای پخش ثبت شد؛ داریم نسخه سالم را آماده می‌کنیم…") }
+        viewModelScope.launch {
+            val res = runCatching {
+                catalogRepository.reportPlaybackFailure(
+                    playbackFailureRequestFor(content, error, failed, playedMs),
+                )
+            }.getOrNull() as? ApiResult.Success ?: return@launch
+            val body = res.data
+            if (!body.ok) return@launch
+            if (body.messageFa.isNotBlank()) _state.update { it.copy(toast = body.messageFa) }
+            val fixed = body.fixedUrl.trim()
+            if (body.shouldRetry && fixed.isNotBlank() && fixed != failed) {
+                applyPartyFixedUrl(fixed, "پخش درست شد؛ ادامه از همین‌جا")
+                return@launch
+            }
+            val reportId = body.reportId
+            if (reportId != null && reportId > 0 && !body.shouldRetry) {
+                pollPartyFixedUrl(reportId, failed)
+            }
+        }
+    }
+
+    private fun playbackFailureRequestFor(
+        content: RoomContentDto,
+        error: androidx.media3.common.PlaybackException,
+        failedUrl: String,
+        playedMs: Long,
+    ): PlaybackFailureRequest {
+        val isEpisode = content.type == "episode"
+        return PlaybackFailureRequest(
+            contentType = if (isEpisode) "series" else "movie",
+            objectId = if (isEpisode) (content.series?.id ?: 0) else content.id,
+            slug = if (isEpisode) (content.series?.slug?.ifBlank { content.slug } ?: content.slug) else content.slug,
+            episodeId = if (isEpisode) content.id else 0,
+            errorCode = error.errorCode.toString(),
+            errorMessage = "auto heal android-party ${error.errorCodeName} cause=${error.cause?.message}".take(500),
+            sourceUrl = failedUrl,
+            player = "android",
+            roomCode = inviteCode,
+            playedSeconds = playedMs / 1000.0,
+            hadPlayed = playedMs > 1000,
+        )
+    }
+
+    /** Poll a filed party report until the catalog serves a better URL. */
+    private fun pollPartyFixedUrl(reportId: Int, failedUrl: String) {
+        viewModelScope.launch {
+            val delays = longArrayOf(3000, 5000, 8000, 12000, 15000, 15000)
+            for (step in delays) {
+                delay(step)
+                val poll = runCatching { catalogRepository.contentIssueStatus(reportId) }.getOrNull()
+                val fixed = (poll as? ApiResult.Success)?.data?.fixedUrl?.trim().orEmpty()
+                if (fixed.isNotBlank() && fixed != failedUrl && fixed != currentPartySourceUrl) {
+                    applyPartyFixedUrl(fixed, "پخش درست شد؛ ادامه از همین‌جا")
+                    return@launch
+                }
+                val status = (poll as? ApiResult.Success)?.data?.status.orEmpty()
+                if (status == "needs_review") return@launch
+            }
+        }
+    }
+
+    /** Swap this viewer's player onto a healed URL, keeping position. */
+    private fun applyPartyFixedUrl(fixedRaw: String, notice: String) {
+        val abs = fixedRaw.toAbsoluteUrl() ?: return
+        if (abs == currentPartySourceUrl) return
+        val content = _state.value.content ?: return
+        val subtitles = _state.value.subtitles
+        val pos = runCatching { player.currentPosition.coerceAtLeast(0) }.getOrDefault(0L)
+        val wasPlaying = runCatching { player.playWhenReady }.getOrDefault(false)
+        val item = runCatching {
+            MediaItem.Builder().setUri(abs).also { builder ->
+                if (subtitles.isNotEmpty()) {
+                    builder.setSubtitleConfigurations(
+                        subtitles.mapNotNull { sub ->
+                            val url = sub.url.toAbsoluteUrl() ?: return@mapNotNull null
+                            MediaItem.SubtitleConfiguration.Builder(android.net.Uri.parse(url))
+                                .setMimeType(guessSubtitleMime(url))
+                                .setLanguage(sub.language)
+                                .setLabel(sub.label)
+                                .build()
+                        },
+                    )
+                }
+            }.build()
+        }.getOrNull() ?: return
+        currentPartySourceUrl = abs
+        runCatching {
+            player.setMediaItem(item, pos)
+            player.prepare()
+            player.playWhenReady = wasPlaying
+        }
+        _state.update { it.copy(playerError = null, buffering = true, toast = notice) }
+        if (_state.value.isHost) broadcast("playback.sync")
+    }
+
+    /** A fixed URL broadcast by the server after POST api/catalog/playback-failure/. */
+    private fun onPlaybackFix(event: WsEvent.PlaybackFix) {
+        if (event.messageFa.isNotBlank()) _state.update { it.copy(toast = event.messageFa) }
+        val fixed = event.fixedUrl.trim()
+        if (fixed.isNotBlank() && fixed != currentPartySourceUrl) {
+            applyPartyFixedUrl(fixed, "پخش درست شد؛ ادامه از همین‌جا")
+        }
+    }
+
+    /** Another member's player broke: the host files the shared heal. */
+    private fun onMemberFailed(event: WsEvent.MemberFailed) {
+        if (!_state.value.isHost) {
+            if (event.messageFa.isNotBlank()) _state.update { it.copy(toast = event.messageFa) }
+            return
+        }
+        val content = _state.value.content ?: return
+        val failed = event.sourceUrl.ifBlank { currentPartySourceUrl.ifBlank { resolveStreamUrl(content).orEmpty() } }
+        if (failed.isBlank()) return
+        if (!healedPartyKeys.add("$failed|${event.errorCode}")) return
+        _state.update { st -> st.copy(toast = event.messageFa.ifBlank { "پخش یکی از اعضا قطع شد؛ داریم نسخه سالم را آماده می‌کنیم…" }) }
+        viewModelScope.launch {
+            val res = runCatching {
+                catalogRepository.reportPlaybackFailure(
+                    PlaybackFailureRequest(
+                        contentType = if (content.type == "episode") "series" else "movie",
+                        objectId = if (content.type == "episode") (content.series?.id ?: 0) else content.id,
+                        slug = if (content.type == "episode") (content.series?.slug?.ifBlank { content.slug } ?: content.slug) else content.slug,
+                        episodeId = if (content.type == "episode") content.id else 0,
+                        errorCode = event.errorCode.ifBlank { "member_failed" },
+                        errorMessage = "auto heal android-party member_failed".take(500),
+                        sourceUrl = failed,
+                        player = "android",
+                        roomCode = inviteCode,
+                        playedSeconds = event.playedSeconds,
+                        hadPlayed = event.playedSeconds > 1,
+                    ),
+                )
+            }.getOrNull() as? ApiResult.Success ?: return@launch
+            val body = res.data
+            if (!body.ok) return@launch
+            val fixed = body.fixedUrl.trim()
+            if (body.shouldRetry && fixed.isNotBlank() && fixed != currentPartySourceUrl) {
+                applyPartyFixedUrl(fixed, "پخش درست شد؛ ادامه از همین‌جا")
+                return@launch
+            }
+            val reportId = body.reportId
+            if (reportId != null && reportId > 0 && !body.shouldRetry) {
+                pollPartyFixedUrl(reportId, failed)
+            }
+        }
     }
 
     private fun broadcast(eventType: String) {

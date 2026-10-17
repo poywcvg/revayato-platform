@@ -42,9 +42,11 @@ class EngagementRepository @Inject constructor(
         safeApiCall { api.ratingSummary(contentType, objectId) }
 
     /**
-     * File a problem report against a title from the detail screen. Sent as a
-     * "bug" support ticket so it reaches the admin support inbox; returns the
-     * tracking code so the user can be told their report was recorded.
+     * Legacy fallback for a detail-screen problem report: a free-text "bug"
+     * support ticket so it reaches the admin support inbox; returns the tracking
+     * code so the user can be told their report was recorded. Prefer the
+     * structured `CatalogRepository.reportContentIssue` path (auto-remediated);
+     * this stays only for when that intake is unreachable.
      * `reason` must be at least 10 characters (enforced server-side too).
      */
     suspend fun reportProblem(

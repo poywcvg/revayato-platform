@@ -1,5 +1,8 @@
 package com.revayato.app.feature.catalog
 
+import com.revayato.app.ui.components.posterGridColumns
+import com.revayato.app.core.theme.BgElevated
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -47,7 +50,10 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import com.revayato.app.core.theme.BrandMint
+import com.revayato.app.core.theme.OnBrand
+import com.revayato.app.core.theme.OutlineSoft
+import com.revayato.app.core.theme.NeutralSurface
+import com.revayato.app.core.theme.Brand
 import com.revayato.app.feature.collection.BackTopBar
 import com.revayato.app.ui.components.EmptyState
 import com.revayato.app.ui.components.ErrorState
@@ -102,10 +108,10 @@ private fun FilterDropdown(
         Box(
             modifier = Modifier
                 .clip(RoundedCornerShape(999.dp))
-                .background(if (active) BrandMint else Color(0x14FFFFFF))
+                .background(if (active) Brand else NeutralSurface)
                 .border(
                     1.dp,
-                    if (active) BrandMint else Color(0x22FFFFFF),
+                    if (active) Brand else OutlineSoft,
                     RoundedCornerShape(999.dp),
                 )
                 .clickable { expanded = true }
@@ -118,7 +124,7 @@ private fun FilterDropdown(
                 Text(
                     text = display,
                     style = MaterialTheme.typography.labelMedium,
-                    color = if (active) Color(0xFF0D1A14) else MaterialTheme.colorScheme.onSurface,
+                    color = if (active) OnBrand else MaterialTheme.colorScheme.onSurface,
                     fontWeight = if (active) FontWeight.Bold else FontWeight.Medium,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
@@ -127,7 +133,7 @@ private fun FilterDropdown(
                 Icon(
                     Icons.Rounded.ArrowDropDown,
                     contentDescription = null,
-                    tint = if (active) Color(0xFF0D1A14) else MaterialTheme.colorScheme.onSurfaceVariant,
+                    tint = if (active) OnBrand else MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.size(18.dp),
                 )
             }
@@ -136,6 +142,10 @@ private fun FilterDropdown(
             expanded = expanded,
             onDismissRequest = { expanded = false },
             modifier = Modifier.heightIn(max = 360.dp),
+            containerColor = BgElevated,
+            tonalElevation = 0.dp,
+            shadowElevation = 0.dp,
+            border = BorderStroke(1.dp, OutlineSoft),
         ) {
             options.forEach { (value, label) ->
                 DropdownMenuItem(
@@ -151,7 +161,7 @@ private fun FilterDropdown(
                     },
                     trailingIcon = {
                         if (value == selectedValue) {
-                            Icon(Icons.Rounded.Check, contentDescription = null, tint = BrandMint)
+                            Icon(Icons.Rounded.Check, contentDescription = null, tint = Brand)
                         }
                     },
                 )
@@ -262,7 +272,7 @@ private fun ChartTypeToggle(selected: String, onSelect: (String) -> Unit) {
                 modifier = Modifier
                     .weight(1f)
                     .clip(RoundedCornerShape(12.dp))
-                    .background(if (active) Color(0xFFF5C518) else Color(0x14FFFFFF))
+                    .background(if (active) Color(0xFFF5C518) else NeutralSurface)
                     .clickable { onSelect(value) }
                     .padding(vertical = 11.dp),
                 contentAlignment = Alignment.Center,
@@ -330,25 +340,28 @@ fun CatalogListScreen(
                 if (state.hasActiveFilters) "با این فیلترها چیزی پیدا نشد" else "چیزی برای نمایش نیست",
                 modifier = Modifier.fillMaxSize(),
             )
-            else -> LazyVerticalGrid(
-                columns = GridCells.Fixed(3),
-                state = gridState,
-                modifier = Modifier.fillMaxSize(),
-                contentPadding = PaddingValues(16.dp),
-                horizontalArrangement = Arrangement.spacedBy(12.dp),
-                verticalArrangement = Arrangement.spacedBy(16.dp),
-            ) {
-                items(state.items, key = { "${it.contentType}-${it.id}" }) { item ->
-                    PosterCard(
-                        item = item,
-                        onClick = { onOpenTitle(item.contentType, item.slug) },
-                        modifier = Modifier.fillMaxWidth(),
-                    )
-                }
-                if (state.loadingMore) {
-                    item(span = { GridItemSpan(3) }) {
-                        Box(Modifier.fillMaxWidth().padding(16.dp), contentAlignment = Alignment.Center) {
-                            CircularProgressIndicator(color = BrandMint, strokeWidth = 2.dp)
+            else -> {
+                val columns = posterGridColumns()
+                LazyVerticalGrid(
+                    columns = GridCells.Fixed(columns),
+                    state = gridState,
+                    modifier = Modifier.fillMaxSize(),
+                    contentPadding = PaddingValues(16.dp),
+                    horizontalArrangement = Arrangement.spacedBy(12.dp),
+                    verticalArrangement = Arrangement.spacedBy(16.dp),
+                ) {
+                    items(state.items, key = { "${it.contentType}-${it.id}" }) { item ->
+                        PosterCard(
+                            item = item,
+                            onClick = { onOpenTitle(item.contentType, item.slug) },
+                            modifier = Modifier.fillMaxWidth(),
+                        )
+                    }
+                    if (state.loadingMore) {
+                        item(span = { GridItemSpan(columns) }) {
+                            Box(Modifier.fillMaxWidth().padding(16.dp), contentAlignment = Alignment.Center) {
+                                CircularProgressIndicator(color = Brand, strokeWidth = 2.dp)
+                            }
                         }
                     }
                 }

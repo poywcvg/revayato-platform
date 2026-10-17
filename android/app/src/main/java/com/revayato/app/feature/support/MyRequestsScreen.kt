@@ -1,5 +1,6 @@
 package com.revayato.app.feature.support
 
+import androidx.compose.material3.FloatingActionButtonDefaults
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -53,7 +54,7 @@ import androidx.compose.ui.unit.sp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.revayato.app.core.theme.BgElevated
-import com.revayato.app.core.theme.BrandMint
+import com.revayato.app.core.theme.Brand
 import com.revayato.app.core.theme.ErrorRed
 import com.revayato.app.core.theme.OnBrand
 import com.revayato.app.core.theme.OutlineSoft
@@ -110,6 +111,7 @@ fun MyRequestsScreen(
                 onClick = { showCompose = true },
                 containerColor = MaterialTheme.colorScheme.primary,
                 contentColor = OnBrand,
+                elevation = FloatingActionButtonDefaults.elevation(0.dp, 0.dp, 0.dp, 0.dp),
                 icon = { Icon(Icons.Rounded.Add, contentDescription = null) },
                 text = { Text("درخواست جدید", fontWeight = FontWeight.Bold) },
             )
@@ -147,8 +149,8 @@ fun MyRequestsScreen(
             busy = state.creating,
             error = state.createError,
             onDismiss = { showCompose = false; viewModel.consumeCreateError() },
-            onSubmit = { category, subject, body ->
-                viewModel.create(category, subject, body) { code ->
+            onSubmit = { category, subject, body, relatedTitle, relatedYear, relatedUrl ->
+                viewModel.create(category, subject, body, relatedTitle, relatedYear, relatedUrl) { code ->
                     showCompose = false
                     onOpenRequest(code)
                 }
@@ -172,13 +174,13 @@ private fun RequestCard(item: SupportTicketListItemDto, onClick: () -> Unit) {
         Box(
             Modifier
                 .size(42.dp)
-                .background(BrandMint.copy(alpha = 0.14f), RoundedCornerShape(12.dp)),
+                .background(Brand.copy(alpha = 0.14f), RoundedCornerShape(12.dp)),
             contentAlignment = Alignment.Center,
         ) {
             Icon(
                 categoryIcon(item.category),
                 contentDescription = null,
-                tint = BrandMint,
+                tint = Brand,
                 modifier = Modifier.size(22.dp),
             )
         }
@@ -197,7 +199,7 @@ private fun RequestCard(item: SupportTicketListItemDto, onClick: () -> Unit) {
                     Icon(
                         Icons.Rounded.Circle,
                         contentDescription = "پاسخ خوانده‌نشده",
-                        tint = BrandMint,
+                        tint = Brand,
                         modifier = Modifier.size(9.dp),
                     )
                 }
@@ -244,12 +246,18 @@ private fun NewRequestSheet(
     busy: Boolean,
     error: String?,
     onDismiss: () -> Unit,
-    onSubmit: (category: String, subject: String, body: String) -> Unit,
+    onSubmit: (category: String, subject: String, body: String, relatedTitle: String, relatedYear: Int?, relatedUrl: String) -> Unit,
 ) {
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
     var category by remember { mutableStateOf(SUPPORT_CATEGORIES.first().first) }
     var subject by remember { mutableStateOf("") }
     var body by remember { mutableStateOf("") }
+    var relatedTitle by remember { mutableStateOf("") }
+    var relatedYearText by remember { mutableStateOf("") }
+    var relatedUrl by remember { mutableStateOf("") }
+    // Same contract as web /contact: title/year feed the content_request
+    // automation, so only ask for them where they matter.
+    val needsRelated = category == "content_request" || category == "content_fix"
 
     ModalBottomSheet(
         onDismissRequest = onDismiss,
@@ -309,16 +317,61 @@ private fun NewRequestSheet(
                 colors = sheetFieldColors(),
             )
 
+            if (needsRelated) {
+                OutlinedTextField(
+                    value = relatedTitle,
+                    onValueChange = { relatedTitle = it.take(255) },
+                    label = { Text("نام دقیق فیلم / سریال") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth(),
+                    keyboardOptions = KeyboardOptions(imeAction = ImeAction.Next),
+                    colors = sheetFieldColors(),
+                )
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    OutlinedTextField(
+                        value = relatedYearText,
+                        onValueChange = { input ->
+                            // Accept Persian/Arabic digits like the web form, keep ASCII.
+                            val normalized = input.map { ch ->
+                                when (ch) {
+                                    in '۰'..'۹' -> '0' + (ch - '۰')
+                                    in '٠'..'٩' -> '0' + (ch - '٠')
+                                    else -> ch
+                                }
+                            }.joinToString("").filter { it.isDigit() }.take(4)
+                            relatedYearText = normalized
+                        },
+                        label = { Text("سال (مثلاً 2010)") },
+                        singleLine = true,
+                        modifier = Modifier.weight(1f),
+                        keyboardOptions = KeyboardOptions(imeAction = ImeAction.Next),
+                        colors = sheetFieldColors(),
+                    )
+                    OutlinedTextField(
+                        value = relatedUrl,
+                        onValueChange = { relatedUrl = it.take(500) },
+                        label = { Text("لینک IMDb (اختیاری)") },
+                        singleLine = true,
+                        modifier = Modifier.weight(1.4f),
+                        keyboardOptions = KeyboardOptions(imeAction = ImeAction.Next),
+                        colors = sheetFieldColors(),
+                    )
+                }
+            }
+
             if (!error.isNullOrBlank()) {
                 Text(error, color = ErrorRed, style = MaterialTheme.typography.bodySmall)
             }
 
             Button(
-                onClick = { onSubmit(category, subject, body) },
+                onClick = {
+                    val year = relatedYearText.takeIf { it.isNotBlank() }?.toIntOrNull()
+                    onSubmit(category, subject, body, relatedTitle, year, relatedUrl)
+                },
                 enabled = !busy,
                 modifier = Modifier.fillMaxWidth().height(50.dp),
                 shape = RoundedCornerShape(14.dp),
-                colors = ButtonDefaults.buttonColors(containerColor = BrandMint, contentColor = OnBrand),
+                colors = ButtonDefaults.buttonColors(containerColor = Brand, contentColor = OnBrand),
             ) {
                 if (busy) {
                     RevayatoSpinner(size = 20.dp, color = OnBrand)
@@ -341,12 +394,12 @@ private fun CategoryChip(
     Row(
         modifier = modifier
             .background(
-                if (selected) BrandMint.copy(alpha = 0.16f) else SurfaceSelected.copy(alpha = 0.4f),
+                if (selected) Brand.copy(alpha = 0.16f) else SurfaceSelected.copy(alpha = 0.4f),
                 RoundedCornerShape(12.dp),
             )
             .border(
                 1.dp,
-                if (selected) BrandMint else OutlineSoft,
+                if (selected) Brand else OutlineSoft,
                 RoundedCornerShape(12.dp),
             )
             .selectable(selected = selected, onClick = onSelect)
@@ -357,7 +410,7 @@ private fun CategoryChip(
         Icon(
             categoryIcon(code),
             contentDescription = null,
-            tint = if (selected) BrandMint else TextMuted,
+            tint = if (selected) Brand else TextMuted,
             modifier = Modifier.size(18.dp),
         )
         Text(
@@ -374,11 +427,11 @@ private fun CategoryChip(
 @OptIn(androidx.compose.material3.ExperimentalMaterial3Api::class)
 @Composable
 private fun sheetFieldColors() = OutlinedTextFieldDefaults.colors(
-    focusedBorderColor = BrandMint,
+    focusedBorderColor = Brand,
     unfocusedBorderColor = OutlineSoft,
-    focusedLabelColor = BrandMint,
+    focusedLabelColor = Brand,
     unfocusedLabelColor = TextMuted,
-    cursorColor = BrandMint,
+    cursorColor = Brand,
     focusedTextColor = TextPrimary,
     unfocusedTextColor = TextPrimary,
     focusedContainerColor = Color.Transparent,

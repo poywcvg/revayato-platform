@@ -11,6 +11,7 @@ than a thin one.
 
 from __future__ import annotations
 
+from django.conf import settings
 from django.core.cache import cache
 from django.db.models import Count, Exists, OuterRef, Q
 from rest_framework.decorators import api_view, throttle_classes
@@ -37,6 +38,11 @@ def _image(obj, field='poster'):
         url = media_url(value) or ''
         if url.startswith(('http://', 'https://')):
             return url
+        # No CDN base: media_url is site-relative ("/media/..."). A sitemap
+        # image must be absolute, so anchor it on the site host.
+        site = (getattr(settings, 'SITE_BASE_URL', '') or '').rstrip('/')
+        if url.startswith('/') and site:
+            return f'{site}{url}'
     return (getattr(obj, f'{field}_external_url', '') or '').strip()
 
 

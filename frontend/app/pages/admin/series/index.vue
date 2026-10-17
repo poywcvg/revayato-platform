@@ -91,7 +91,7 @@ async function patchSeries(series: AdminSeries, payload: Record<string, unknown>
     notify.success('انجام شد', okMsg)
     await refresh()
   }
-  catch { notify.error('خطا', 'عملیات ناموفق بود') }
+  catch (err) { notify.error('انجام نشد', adminErrorMessage(err)) }
   finally { busy.value = { ...busy.value, [series.id]: false } }
 }
 
@@ -109,7 +109,7 @@ async function archiveSeries(series: AdminSeries) {
     notify.success('انجام شد', 'بایگانی شد')
     await refresh()
   }
-  catch { notify.error('خطا', 'عملیات ناموفق بود') }
+  catch (err) { notify.error('انجام نشد', adminErrorMessage(err)) }
   finally { busy.value = { ...busy.value, [series.id]: false } }
 }
 </script>

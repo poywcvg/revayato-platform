@@ -31,6 +31,12 @@ const props = withDefaults(defineProps<{
   // 'movie' | 'series' — gates the «قسمت اشتباه» option in the report picker.
   contentType?: 'movie' | 'series' | ''
   canReport?: boolean
+  /**
+   * The source sits on an Iran-only CDN that sends no CORS headers: the remuxer
+   * cannot read it, so only the browser's own `<video>` can, and it gets longer
+   * to start — that CDN redirects once and serves very large single files.
+   */
+  geoLocked?: boolean
   // --- windowed sources ---------------------------------------------------
   // A gateway stream carries only part of the film, on its own timeline that
   // always starts at zero. These say where that window sits so the scrubber,
@@ -70,6 +76,7 @@ const props = withDefaults(defineProps<{
   partySync: false,
   contentType: '',
   canReport: true,
+  geoLocked: false,
   timelineOffset: 0,
   timelineTotal: 0,
   sourceAtPlayhead: false,
@@ -238,6 +245,9 @@ let subtitleSyncTimer: ReturnType<typeof setTimeout> | undefined
 let lastReportedSyncOffset: number | null = null
 let lastReportedSyncKey = ''
 
+// An Iran-only CDN answers through a redirect with one very large file; give it
+// the time a slow domestic line needs before calling it dead.
+const GEO_LOCKED_STARTUP_TIMEOUT_MS = 25_000
 const SOURCE_STARTUP_TIMEOUT_MS = 10_000
 const STALL_RECOVERY_TIMEOUT_MS = 8_000
 const MAX_STALL_RECOVERY_ATTEMPTS = 3
@@ -314,6 +324,17 @@ const progressPercent = computed(() => filmDuration.value > 0
 const bufferedPercent = computed(() => filmDuration.value > 0
   ? Math.min(100, Math.max(0, toFilm(bufferedEnd.value) / filmDuration.value * 100))
   : 0)
+/**
+ * While the thumb is held the scrubber shows where it is, not where the video
+ * is: the seek happens once, on release. Seeking on every drag step fought the
+ * running playhead (the thumb jumped back) and, on a windowed gateway stream,
+ * reopened the stream dozens of times per drag.
+ */
+const scrubPercent = ref<number | null>(null)
+const hoverPercent = ref<number | null>(null)
+const shownProgressPercent = computed(() => scrubPercent.value ?? progressPercent.value)
+const previewPercent = computed(() => scrubPercent.value ?? hoverPercent.value)
+const previewSeconds = computed(() => (previewPercent.value === null ? 0 : filmDuration.value * previewPercent.value / 100))
 /** Where this media's window starts, as a fraction of the scrubber. */
 const windowStartPercent = computed(() => filmDuration.value > 0
   ? Math.min(100, Math.max(0, props.timelineOffset / filmDuration.value * 100))
@@ -843,7 +864,7 @@ function armSourceStartupWatchdog(token: number) {
     }
     emit('notice', 'این منبع شروع نشد؛ در حال امتحان لینک بعدی')
     emitSourceFailure(MEDIA_ERR_NETWORK, 'این منبع در زمان مناسب شروع نشد.')
-  }, SOURCE_STARTUP_TIMEOUT_MS)
+  }, props.geoLocked ? GEO_LOCKED_STARTUP_TIMEOUT_MS : SOURCE_STARTUP_TIMEOUT_MS)
 }
 
 function beginLoading() {
@@ -1054,7 +1075,7 @@ async function loadSource() {
   if (embeddedSrc && embeddedSrc !== String(props.src).trim()) clearEmbeddedSubtitles()
 
   if (!isHlsSource(props.src)) {
-    if (props.src !== remuxRefusedSrc && await startRemux(token, element)) return
+    if (!props.geoLocked && props.src !== remuxRefusedSrc && await startRemux(token, element)) return
     if (token !== loadToken || element !== video.value) return
     reportEmbeddedProbe(String(props.src).trim(), [], false)
     element.src = props.src
@@ -1081,9 +1102,26 @@ async function loadSource() {
       lowLatencyMode: props.lowLatency,
       capLevelToPlayerSize: true,
       backBufferLength: props.lowLatency ? 10 : 30,
-      maxBufferLength: props.lowLatency ? 12 : 36,
-      maxMaxBufferLength: props.lowLatency ? 24 : 72,
+      maxBufferLength: props.lowLatency ? 12 : 30,
+      maxMaxBufferLength: props.lowLatency ? 24 : 60,
       startFragPrefetch: true,
+      // Fast-start tuning (structure/logic untouched — init options only):
+      // skip the extra bandwidth-probe round trip, start from a mid estimate
+      // suited to domestic lines, and fail fast on dead segments so the page
+      // can move to the next mirror instead of stalling on retries.
+      testBandwidth: false,
+      abrEwmaDefaultEstimate: 1000000,
+      startLevel: -1,
+      fragLoadingMaxRetry: 2,
+      manifestLoadingMaxRetry: 2,
+      levelLoadingMaxRetry: 2,
+      fragLoadingRetryDelay: 500,
+      manifestLoadingRetryDelay: 500,
+      levelLoadingRetryDelay: 500,
+      maxBufferHole: 0.5,
+      highBufferWatchdogPeriod: 2,
+      nudgeOffset: 0.1,
+      nudgeMaxRetry: 3,
     })
     hls.loadSource(props.src)
     hls.attachMedia(element)
@@ -1143,8 +1181,10 @@ async function loadSource() {
   emitSourceFailure(MEDIA_ERR_SRC_NOT_SUPPORTED, 'پخش HLS در این مرورگر پشتیبانی نمی‌شود.')
 }
 
+let lastSubtitleId = ''
 function chooseSubtitle(trackId: string) {
   subtitleChosenByViewer = true
+  if (selectedSubtitleId.value !== 'off') lastSubtitleId = selectedSubtitleId.value
   void selectSubtitle(trackId)
 }
 
@@ -1325,7 +1365,22 @@ function seekToPercent(percent: number) {
 }
 
 function handleProgressInput(event: Event) {
-  seekToPercent(Number((event.target as HTMLInputElement).value))
+  scrubPercent.value = Number((event.target as HTMLInputElement).value)
+  bumpControls(true)
+}
+
+function commitProgress(event: Event) {
+  const percent = Number((event.target as HTMLInputElement).value)
+  scrubPercent.value = null
+  seekToPercent(percent)
+  bumpControls()
+}
+
+function handleTimelineHover(event: PointerEvent) {
+  if (event.pointerType !== 'mouse') return
+  const rect = (event.currentTarget as HTMLElement).getBoundingClientRect()
+  if (rect.width <= 0) return
+  hoverPercent.value = Math.min(100, Math.max(0, (event.clientX - rect.left) / rect.width * 100))
 }
 
 function skip(seconds: number) {
@@ -1515,14 +1570,67 @@ function handleKeydown(event: KeyboardEvent) {
     toggleMute()
   } else if (event.key.toLowerCase() === 'f') {
     void toggleFullscreen()
+  } else if (event.key.toLowerCase() === 'c' && subtitleOptions.value.length) {
+    chooseSubtitle(selectedSubtitleId.value === 'off' ? (lastSubtitleId || subtitleOptions.value[0]!.id) : 'off')
   }
+  bumpControls()
+}
+
+// Touch: a tap only shows/hides the controls (the first tap used to pause the
+// film the viewer only wanted to see the clock of); double-tap on a side skips.
+let surfacePointerType = ''
+let controlsVisibleAtPointerDown = false
+let lastTouchTapAt = 0
+let touchTapTimer: ReturnType<typeof setTimeout> | undefined
+const skipFlash = ref<{ forward: boolean, key: number } | null>(null)
+let skipFlashTimer: ReturnType<typeof setTimeout> | undefined
+
+function handleSurfacePointerDown(event: PointerEvent) {
+  surfacePointerType = event.pointerType
+  controlsVisibleAtPointerDown = showControls.value
   bumpControls()
 }
 
 function handleSurfaceClick(event: MouseEvent) {
   if ((event.target as HTMLElement).closest('[data-player-ui]')) return
   root.value?.focus({ preventScroll: true })
+  if (surfacePointerType === 'touch') {
+    handleSurfaceTap(event)
+    return
+  }
   void togglePlayback()
+}
+
+function handleSurfaceTap(event: MouseEvent) {
+  const rect = root.value?.getBoundingClientRect()
+  const side = rect && rect.width > 0 ? (event.clientX - rect.left) / rect.width : 0.5
+  const now = Date.now()
+  if (now - lastTouchTapAt < 320 && (side < 0.38 || side > 0.62)) {
+    clearTimeout(touchTapTimer)
+    lastTouchTapAt = 0
+    const forward = side > 0.5
+    skip(forward ? 10 : -10)
+    skipFlash.value = { forward, key: now }
+    clearTimeout(skipFlashTimer)
+    skipFlashTimer = setTimeout(() => { skipFlash.value = null }, 650)
+    return
+  }
+  lastTouchTapAt = now
+  const wasVisible = controlsVisibleAtPointerDown
+  clearTimeout(touchTapTimer)
+  touchTapTimer = setTimeout(() => {
+    if (wasVisible && isPlaying.value && !showSettings.value) {
+      cancelControlsTimer()
+      showControls.value = false
+    }
+  }, 320)
+}
+
+function handleSurfaceDoubleClick(event: MouseEvent) {
+  // Double-tap is skip on touch, and a fast double press on a control button
+  // is two presses of that button — neither may toggle fullscreen.
+  if (surfacePointerType === 'touch' || (event.target as HTMLElement).closest('[data-player-ui]')) return
+  void toggleFullscreen()
 }
 
 onMounted(() => {
@@ -1558,6 +1666,8 @@ onBeforeUnmount(() => {
   if (subtitleSyncTimer) reportSubtitleSyncFeedback()
   destroyPlayer()
   cancelControlsTimer()
+  clearTimeout(touchTapTimer)
+  clearTimeout(skipFlashTimer)
   document.removeEventListener('fullscreenchange', handleFullscreenChange)
   document.removeEventListener('webkitfullscreenchange', handleFullscreenChange)
   window.removeEventListener('keydown', handleKeydown)
@@ -1570,9 +1680,9 @@ onBeforeUnmount(() => {
   <div
     ref="root"
     data-video-player
-    class="revayato-player group relative isolate overflow-hidden bg-black text-white shadow-2xl ring-1 ring-white/10 outline-none"
+    class="revayato-player group relative isolate overflow-hidden bg-black text-white ring-1 ring-white/10 outline-none"
     :class="[
-      fill ? 'h-full w-full' : 'aspect-video rounded-xl sm:rounded-2xl',
+ fill ? 'h-full w-full' : 'aspect-video rounded-xl sm:rounded-2xl',
       fullscreenActive && 'revayato-player--fullscreen',
       showControls && 'is-controls-visible',
     ]"
@@ -1582,10 +1692,10 @@ onBeforeUnmount(() => {
     role="region"
     dir="rtl"
     @mousemove="bumpControls()"
-    @pointerdown="bumpControls()"
+    @pointerdown="handleSurfacePointerDown"
     @mouseleave="bumpControls()"
     @click="handleSurfaceClick"
-    @dblclick.stop="toggleFullscreen"
+    @dblclick.stop="handleSurfaceDoubleClick"
   >
     <video
       ref="video"
@@ -1618,7 +1728,7 @@ onBeforeUnmount(() => {
     <div
       v-if="partySync"
       data-player-ui
-      class="absolute end-3 top-3 z-20 inline-flex items-center gap-2 rounded-full bg-black/65 px-3 py-1.5 text-[11px] font-black text-white/80 ring-1 ring-white/15 backdrop-blur-md sm:end-4 sm:top-4 sm:text-xs"
+      class="absolute end-3 top-3 z-20 inline-flex items-center gap-2 rounded-full bg-black/65 px-3 py-1.5 text-[11px] font-black text-white/80 ring-1 ring-white/15 sm:end-4 sm:top-4 sm:text-xs"
     >
       <span class="size-1.5 animate-pulse rounded-full bg-success" />
       {{ locked ? 'هماهنگ با میزبان' : 'میزبان اتاق' }}
@@ -1629,12 +1739,23 @@ onBeforeUnmount(() => {
         v-if="controls && showControls && !loading && !errorMessage"
         data-player-ui
         type="button"
-        class="revayato-player__center-play absolute left-1/2 top-1/2 z-10 grid size-16 -translate-x-1/2 -translate-y-1/2 place-items-center rounded-full bg-black/45 text-white ring-1 ring-white/25 backdrop-blur-sm transition hover:scale-105 hover:bg-primary-500 hover:text-night-950 sm:size-20"
+        class="revayato-player__center-play absolute left-1/2 top-1/2 z-10 grid size-16 -translate-x-1/2 -translate-y-1/2 place-items-center rounded-full bg-black/45 text-white ring-1 ring-white/25 transition hover:scale-105 hover:bg-primary-500 hover:text-night-950 sm:size-20"
         :aria-label="isPlaying ? 'توقف پخش' : 'شروع پخش'"
         @click.stop="togglePlayback"
       >
         <CinematicIcon :name="isPlaying ? 'pause' : 'play'" class="size-7 sm:size-9" />
       </button>
+    </Transition>
+
+    <Transition name="player-fade">
+      <div
+        v-if="skipFlash"
+        :key="skipFlash.key"
+        class="pointer-events-none absolute top-1/2 z-20 -translate-y-1/2 rounded-full bg-black/55 px-4 py-2 text-sm font-black text-white ring-1 ring-white/15"
+        :class="skipFlash.forward ? 'right-[12%]' : 'left-[12%]'"
+      >
+        {{ skipFlash.forward ? '۱۰ ثانیه جلو' : '۱۰ ثانیه عقب' }}
+      </div>
     </Transition>
 
     <div
@@ -1650,7 +1771,7 @@ onBeforeUnmount(() => {
 
     <Transition name="player-fade">
       <div v-if="loading && !errorMessage" class="pointer-events-none absolute inset-0 z-20 grid place-items-center bg-black/35">
-        <div class="rounded-2xl bg-black/55 px-5 py-4 text-center ring-1 ring-white/10 backdrop-blur-md" style="--spinner-color: #fff;">
+        <div class="rounded-2xl bg-black/55 px-5 py-4 text-center ring-1 ring-white/10" style="--spinner-color: #fff;">
           <LoadingSpinnerA size="large" class="!text-white/85">در حال آماده‌سازی پخش…</LoadingSpinnerA>
         </div>
       </div>
@@ -1676,25 +1797,43 @@ onBeforeUnmount(() => {
         class="revayato-player__controls absolute inset-x-0 bottom-0 z-20 px-3 pb-3 pt-16 sm:px-5 sm:pb-4 sm:pt-24"
         @click.stop
       >
-        <div class="revayato-player__timeline relative mb-2.5 flex h-5 items-center sm:mb-3">
-          <div class="pointer-events-none absolute inset-x-0 h-1.5 overflow-hidden rounded-full bg-white/20">
+        <!-- Film time runs left→right like every video timeline: the whole bar is
+             LTR so the fill, the buffer and the native thumb share one direction
+             (inside the RTL player the fill used to grow from the right while the
+             thumb moved from the left). -->
+        <div
+          class="revayato-player__timeline relative mb-2 flex h-6 items-center sm:mb-2.5"
+          :class="scrubPercent !== null && 'is-scrubbing'"
+          dir="ltr"
+          @pointermove="handleTimelineHover"
+          @pointerleave="hoverPercent = null"
+        >
+          <div class="revayato-player__track pointer-events-none absolute inset-x-0 overflow-hidden rounded-full bg-white/20">
             <span
-              class="absolute inset-y-0 bg-white/25"
-              :style="{ insetInlineStart: `${windowStartPercent}%`, width: `${Math.max(0, bufferedPercent - windowStartPercent)}%` }"
+              class="absolute inset-y-0 bg-white/30"
+              :style="{ left: `${windowStartPercent}%`, width: `${Math.max(0, bufferedPercent - windowStartPercent)}%` }"
             />
-            <span class="absolute inset-y-0 start-0 bg-primary-500" :style="{ width: `${progressPercent}%` }" />
+            <span class="revayato-player__fill absolute inset-y-0 left-0" :style="{ width: `${shownProgressPercent}%` }" />
           </div>
+          <span
+            v-if="previewPercent !== null && filmDuration > 0"
+            class="revayato-player__preview pointer-events-none absolute bottom-full mb-1.5 -translate-x-1/2 rounded-md bg-black/85 px-2 py-0.5 font-latin text-[11px] font-bold tabular-nums text-white ring-1 ring-white/15"
+            :style="{ left: `clamp(1.75rem, ${previewPercent}%, calc(100% - 1.75rem))` }"
+          >
+            {{ formatTime(previewSeconds) }}
+          </span>
           <input
             class="revayato-player__range relative z-10 w-full cursor-pointer"
             type="range"
             min="0"
             max="100"
             step="0.05"
-            :value="progressPercent"
-            :disabled="locked || !duration"
+            :value="shownProgressPercent"
+            :disabled="locked || !filmDuration"
             aria-label="موقعیت پخش"
-            dir="ltr"
+            :aria-valuetext="`${formatTime(scrubPercent !== null ? previewSeconds : filmCurrentTime)} از ${formatTime(filmDuration)}`"
             @input="handleProgressInput"
+            @change="commitProgress"
           >
         </div>
 
@@ -1726,8 +1865,9 @@ onBeforeUnmount(() => {
             >
           </div>
 
-          <span class="ms-1 shrink-0 font-latin text-[11px] font-bold tabular-nums text-white/65 sm:text-xs">
-            {{ formatTime(filmCurrentTime) }} <span class="hidden sm:inline">/ {{ formatTime(filmDuration) }}</span>
+          <span class="ms-1 shrink-0 font-latin text-[11px] font-bold tabular-nums text-white/65 sm:text-xs" dir="ltr">
+            <span class="text-white/90">{{ formatTime(scrubPercent !== null ? previewSeconds : filmCurrentTime) }}</span>
+            <span class="hidden sm:inline"> / {{ formatTime(filmDuration) }}</span>
           </span>
 
           <div class="min-w-0 flex-1" />
@@ -1764,7 +1904,7 @@ onBeforeUnmount(() => {
     <Transition name="player-settings">
       <div v-if="showSettings" data-player-ui class="revayato-player__settings-layer absolute inset-0 z-[28]" @click.stop>
         <button type="button" class="absolute inset-0 bg-black/40" aria-label="بستن تنظیمات" @click="showSettings = false" />
-        <section class="revayato-player__settings absolute bottom-3 end-3 start-3 max-h-[74%] overflow-hidden rounded-2xl bg-slate-950/95 text-white shadow-2xl ring-1 ring-white/15 backdrop-blur-xl sm:bottom-20 sm:end-5 sm:start-auto sm:w-[25rem]">
+        <section class="revayato-player__settings absolute bottom-3 end-3 start-3 max-h-[74%] overflow-hidden rounded-2xl bg-slate-950/95 text-white ring-1 ring-white/15 sm:bottom-20 sm:end-5 sm:start-auto sm:w-[25rem]">
           <header class="flex items-center justify-between border-b border-white/10 px-4 py-3">
             <div class="min-w-0">
               <p class="text-sm font-black">تنظیمات پخش</p>
@@ -1906,7 +2046,7 @@ onBeforeUnmount(() => {
     <Transition name="player-settings">
       <div v-if="showReport" data-player-ui class="revayato-player__settings-layer absolute inset-0 z-[29]" @click.stop>
         <button type="button" class="absolute inset-0 bg-black/40" aria-label="بستن گزارش خطا" @click="showReport = false" />
-        <section class="revayato-player__settings absolute bottom-3 end-3 start-3 max-h-[80%] overflow-hidden rounded-2xl bg-slate-950/95 text-white shadow-2xl ring-1 ring-white/15 backdrop-blur-xl sm:bottom-20 sm:end-5 sm:start-auto sm:w-[26rem]">
+        <section class="revayato-player__settings absolute bottom-3 end-3 start-3 max-h-[80%] overflow-hidden rounded-2xl bg-slate-950/95 text-white ring-1 ring-white/15 sm:bottom-20 sm:end-5 sm:start-auto sm:w-[26rem]">
           <header class="flex items-center justify-between border-b border-white/10 px-4 py-3">
             <div class="flex min-w-0 items-center gap-2.5">
               <span class="grid size-9 shrink-0 place-items-center rounded-xl bg-amber-400/15 text-amber-300 ring-1 ring-amber-300/25">
@@ -1983,7 +2123,7 @@ onBeforeUnmount(() => {
 
 <style scoped>
 .revayato-player {
-  --player-accent: #e4ff3f;
+  --player-accent: #b0e4cc;
   min-height: 0;
   user-select: none;
   -webkit-tap-highlight-color: transparent;
@@ -2059,6 +2199,10 @@ onBeforeUnmount(() => {
   background: transparent;
 }
 
+.revayato-player__track { height: .25rem; transition: height 120ms ease; }
+.revayato-player__fill { background: var(--player-accent); }
+.revayato-player__timeline:hover .revayato-player__track,
+.revayato-player__timeline.is-scrubbing .revayato-player__track { height: .4rem; }
 .revayato-player__range::-webkit-slider-runnable-track { height: .35rem; background: transparent; }
 .revayato-player__range::-moz-range-track { height: .35rem; background: transparent; }
 .revayato-player__range::-webkit-slider-thumb {
@@ -2069,7 +2213,6 @@ onBeforeUnmount(() => {
   border: 2px solid #0a0a0a;
   border-radius: 999px;
   background: var(--player-accent);
-  box-shadow: 0 0 0 3px rgb(228 255 63 / 18%);
 }
 .revayato-player__range::-moz-range-thumb {
   width: .8rem;
@@ -2094,8 +2237,9 @@ onBeforeUnmount(() => {
 .revayato-player__captions {
   bottom: var(--caption-bottom, 9%);
   max-width: min(58rem, calc(100% - 2rem));
+  font-family: "Revayato Subtitle", "Mikhak", sans-serif;
   font-size: calc(clamp(1rem, 2.1vw, 1.75rem) * var(--caption-scale, 1));
-  font-weight: 800;
+  font-weight: 700;
   line-height: 1.85;
   text-shadow: 0 2px 3px #000, 0 0 8px #000;
   transition: bottom 160ms ease;
@@ -2124,8 +2268,8 @@ onBeforeUnmount(() => {
 
 .revayato-player__tab.is-active,
 .revayato-player__chip.is-active {
-  border-color: rgb(228 255 63 / 22%);
-  background: rgb(228 255 63 / 10%);
+  border-color: rgb(176 228 204 / 22%);
+  background: rgb(176 228 204 / 10%);
   color: var(--player-accent);
 }
 
@@ -2166,7 +2310,7 @@ onBeforeUnmount(() => {
 }
 
 .revayato-player__tile small { font-size: 0.75rem; color: rgb(255 255 255 / 35%); }
-.revayato-player__tile.is-active { border-color: rgb(228 255 63 / 28%); background: rgb(228 255 63 / 10%); color: var(--player-accent); }
+.revayato-player__tile.is-active { border-color: rgb(176 228 204 / 28%); background: rgb(176 228 204 / 10%); color: var(--player-accent); }
 .revayato-player__tile:disabled { cursor: not-allowed; opacity: .5; }
 
 .player-controls-enter-active,
@@ -2184,7 +2328,7 @@ onBeforeUnmount(() => {
 
 @media (max-width: 639px) {
   .revayato-player__captions { bottom: var(--caption-bottom, 9%); font-size: calc(clamp(.9rem, 4vw, 1.15rem) * var(--caption-scale, 1)); line-height: 1.75; }
-  .revayato-player__center-play { display: none; }
+  .revayato-player__center-play { width: 3.5rem; height: 3.5rem; }
   .revayato-player__btn { width: 2.25rem; height: 2.25rem; }
 }
 

@@ -38,6 +38,7 @@ import com.revayato.app.data.model.RegisterRequest
 import com.revayato.app.data.model.RoomDto
 import com.revayato.app.data.model.SearchResponseDto
 import com.revayato.app.data.model.SeriesDetailDto
+import com.revayato.app.data.model.SliderResponse
 import com.revayato.app.data.model.SupportReplyRequest
 import com.revayato.app.data.model.SupportTicketDetailDto
 import com.revayato.app.data.model.SupportTicketDto
@@ -146,11 +147,27 @@ interface ApiService {
     ): PlaybackSubtitleResult
 
     // ---- Structured content issue report (auto-remediated) ----
-    // Player «گزارش خطا»; the backend engine auto-fixes based on problem_type.
+    // Player «گزارش خطا»; the backend engine auto-fixes based on problemType.
     @POST("api/catalog/report-issue/")
     suspend fun reportContentIssue(
         @Body body: ContentIssueReportRequest,
     ): ContentIssueReportResult
+
+    // ---- Automatic playback-failure intake (same repair path, classified) ----
+    // Called the moment ExoPlayer fails — not after the viewer finds the report
+    // button. The server classifies the error onto the exact problem_type a
+    // manual report would have used, runs the same crawler repair, and returns
+    // a fixed URL + Persian notice for an immediate retry.
+    @POST("api/catalog/playback-failure/")
+    suspend fun reportPlaybackFailure(
+        @Body body: PlaybackFailureRequest,
+    ): PlaybackFailureResult
+
+    // Player poll: has a filed report been auto-fixed yet? Pure status read.
+    @GET("api/catalog/report-issue/status/")
+    suspend fun contentIssueStatus(
+        @Query("report_id") reportId: Int,
+    ): ContentIssueStatusResult
 
     // Mixed movies+series, newest first. Returns a paginated envelope, not a bare list.
     @GET("api/catalog/recent/")
@@ -163,6 +180,11 @@ interface ApiService {
     // IMDb Top 250 in chart order; ?type=movie|series, ?available=1 for playable positions only.
     @GET("api/catalog/top250/")
     suspend fun top250(@QueryMap query: Map<String, String>): PagedResponse<CatalogCardDto>
+
+    // Admin-curated home slider (?platform=web|app, ?limit); content_type says
+    // outright what each card is, so movies and series share one ordered list.
+    @GET("api/home/slider/")
+    suspend fun homeSlider(@QueryMap query: Map<String, String>): SliderResponse
 
     @GET("api/recommendations/")
     suspend fun recommendations(): List<CatalogCardDto>

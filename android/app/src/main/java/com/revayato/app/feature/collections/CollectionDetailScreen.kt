@@ -1,5 +1,6 @@
 package com.revayato.app.feature.collections
 
+import com.revayato.app.ui.components.FlatSnackbar
 import android.content.Intent
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -91,7 +92,7 @@ fun CollectionDetailScreen(
         modifier = modifier.fillMaxSize(),
         containerColor = MaterialTheme.colorScheme.background,
         topBar = { BackTopBar(title = "کالکشن", onBack = onBack) },
-        snackbarHost = { SnackbarHost(snackbar) },
+        snackbarHost = { SnackbarHost(snackbar) { FlatSnackbar(it) } },
     ) { padding ->
         Box(Modifier.fillMaxSize().padding(padding)) {
             when (val s = state.content) {

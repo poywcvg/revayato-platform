@@ -110,8 +110,8 @@ async function patchMovie(movie: AdminMovie, payload: Record<string, unknown>, o
     notify.success('انجام شد', okMsg)
     await refresh()
   }
-  catch {
-    notify.error('خطا', 'عملیات ناموفق بود')
+  catch (err) {
+    notify.error('انجام نشد', adminErrorMessage(err))
   }
   finally {
     busy.value = { ...busy.value, [movie.id]: false }
@@ -133,7 +133,7 @@ async function archiveMovie(movie: AdminMovie) {
     notify.success('انجام شد', 'بایگانی شد')
     await refresh()
   }
-  catch { notify.error('خطا', 'عملیات ناموفق بود') }
+  catch (err) { notify.error('انجام نشد', adminErrorMessage(err)) }
   finally { busy.value = { ...busy.value, [movie.id]: false } }
 }
 </script>

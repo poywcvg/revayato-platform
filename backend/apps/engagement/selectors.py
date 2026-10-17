@@ -106,10 +106,12 @@ def get_support_ticket_for_user(user, tracking_code):
     ).prefetch_related('messages__author').first()
 
 
-def get_admin_support_tickets(*, status=None, category=None, unread_only=False, q=''):
+def get_admin_support_tickets(*, status=None, category=None, unread_only=False, q='', hide_resolved=False):
     qs = SupportTicket.objects.select_related('user').prefetch_related('messages')
     if status:
         qs = qs.filter(status=status)
+    elif hide_resolved:
+        qs = qs.exclude(status__in=[SupportTicket.Status.RESOLVED, SupportTicket.Status.CLOSED])
     if category:
         qs = qs.filter(category=category)
     if unread_only:

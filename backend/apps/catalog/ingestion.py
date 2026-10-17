@@ -4,6 +4,7 @@ import urllib.error
 import urllib.request
 from decimal import Decimal, InvalidOperation
 from datetime import date, timedelta
+from io import BytesIO
 from pathlib import Path
 
 from django.conf import settings
@@ -676,6 +677,36 @@ def _download_tmdb_image(path, *, size='w500', basename='image'):
     return ContentFile(payload, name=f'{basename}{extension}')
 
 
+# The detail hero spans the full width of a desktop screen: a 1280 still
+# stretched to 1920 reads as blurred. TMDB's `original` is up to 4K, so it is
+# fetched and scaled down to this width once, at import.
+HERO_BACKDROP_WIDTH = 1920
+
+
+def download_hero_backdrop(path, *, basename='backdrop'):
+    """TMDB backdrop sharp enough for a full-width hero (1920 wide WebP).
+
+    Falls back to the w1280 still when the original can't be fetched or decoded.
+    """
+    original = _download_tmdb_image(path, size='original', basename=basename)
+    if original is None:
+        return _download_tmdb_image(path, size='w1280', basename=basename)
+    try:
+        from PIL import Image
+
+        with Image.open(BytesIO(original.read())) as image:
+            image = image.convert('RGB')
+            if image.width > HERO_BACKDROP_WIDTH:
+                height = round(image.height * HERO_BACKDROP_WIDTH / image.width)
+                image = image.resize((HERO_BACKDROP_WIDTH, height), Image.Resampling.LANCZOS)
+            buffer = BytesIO()
+            image.save(buffer, format='WEBP', quality=84, method=4)
+    except Exception as exc:  # noqa: BLE001 — undecodable payload: keep the plain still
+        logger.warning('hero_backdrop_resize_failed path=%s error=%s', path, exc.__class__.__name__)
+        return _download_tmdb_image(path, size='w1280', basename=basename)
+    return ContentFile(buffer.getvalue(), name=f'{basename}.webp')
+
+
 def _should_replace_image(field_file, *, force):
     if force:
         return True
@@ -736,11 +767,14 @@ def attach_tmdb_artwork(instance, details, *, force=False, prefix='item', allow_
         # Poster fallbacks stay at w780; real backdrops use the wide still.
         size = 'w780' if backdrop_source == 'poster_fallback' else 'w1280'
         external = _tmdb_image_url(backdrop_path, size)
-        content = _download_tmdb_image(
-            backdrop_path,
-            size=size,
-            basename=f'tmdb-{tmdb_id}-{prefix}-backdrop',
-        )
+        if backdrop_source == 'poster_fallback':
+            content = _download_tmdb_image(
+                backdrop_path,
+                size=size,
+                basename=f'tmdb-{tmdb_id}-{prefix}-backdrop',
+            )
+        else:
+            content = download_hero_backdrop(backdrop_path, basename=f'tmdb-{tmdb_id}-{prefix}-backdrop')
         if content is not None:
             instance.backdrop.save(content.name, content, save=False)
             changed.append('backdrop')

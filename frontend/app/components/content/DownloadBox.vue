@@ -138,6 +138,10 @@ const isSeriesDownload = computed(() => {
   ))
 })
 
+// Some mirrors (myf2m's abrtech/mehracdn) only answer Iranian connections and
+// hand everyone else a «turn your VPN off» page — say so before the click.
+const hasIranOnlyLinks = computed(() => enrichedLinks.value.some(link => link.iran_only))
+
 const boxTitle = computed(() => (
   props.mode === 'play' ? 'نسخه‌های پخش آنلاین' : 'لینک‌های دانلود'
 ))
@@ -340,6 +344,9 @@ function playRequest(link: EnrichedLink): DownloadPlayRequest {
         </h3>
         <p class="mt-0.5 text-xs leading-5 text-muted">
           {{ boxHint }}
+        </p>
+        <p v-if="hasIranOnlyLinks" class="mt-1 text-xs leading-5 text-secondary">
+          بعضی لینک‌ها فقط با اینترنت ایران باز می‌شوند؛ اگر به‌جای فایل صفحهٔ «فیلترشکن را خاموش کنید» آمد، فیلترشکن را خاموش کنید.
         </p>
       </div>
       <span class="download-box__count">
@@ -777,13 +784,13 @@ function playRequest(link: EnrichedLink): DownloadPlayRequest {
 .download-box__action--play {
   color: #04140f;
   background: linear-gradient(145deg, #5ef0c0 0%, #2dd4a8 55%, #1bb88f 100%);
-  box-shadow: 0 8px 20px rgb(45 212 168 / 30%);
+  box-shadow: none;
 }
 
 .download-box__action--dl {
   color: #1a0d00;
   background: linear-gradient(145deg, #ffc14d 0%, #f59e0b 52%, #e07800 100%);
-  box-shadow: 0 8px 20px rgb(245 158 11 / 30%);
+  box-shadow: none;
 }
 
 .download-box__action:focus-visible,

@@ -135,6 +135,7 @@ const familyAnimation = computed(() => {
 })
 const { recommendations: recommended, isPersonalized, personalizationLevel } = usePersonalizedRecommendations(railLimit)
 const { continueWatching: progressItems } = useWatchProgress()
+const communityChat = useCommunityChat()
 const recommendationEyebrow = computed(() => ({
   cold_start: 'برای شروع',
   learning: 'در حال شکل‌گیری',
@@ -147,10 +148,10 @@ const activeCategory = ref('all')
 const { trackFilterApply } = useAnalyticsEvent()
 
 const categoryOptions = [
-  { label: 'منتخب‌ها', value: 'all', icon: 'sparkles' as const, mobile: true },
+  { label: 'منتخب‌ها', value: 'all', icon: 'featured' as const, mobile: true },
   { label: 'فیلم', value: 'movie', icon: 'movie' as const, mobile: true },
   { label: 'سریال', value: 'series', icon: 'series' as const, mobile: true },
-  { label: 'انیمیشن', value: 'animation', icon: 'animation' as const, mobile: true },
+  { label: 'انیمیشن', value: 'animation', icon: 'cartoon' as const, mobile: true },
   { label: 'دوبله', value: 'dubbed', icon: 'audio' as const, mobile: true },
 ]
 
@@ -165,7 +166,7 @@ const categoryItems = computed(() => {
 })
 
 const activeCategoryLabel = computed(() => categoryOptions.find(option => option.value === activeCategory.value)?.label || 'منتخب‌ها')
-const activeCategoryIcon = computed(() => categoryOptions.find(option => option.value === activeCategory.value)?.icon || 'sparkles')
+const activeCategoryIcon = computed(() => categoryOptions.find(option => option.value === activeCategory.value)?.icon || 'featured')
 const activeCategoryHref = computed(() => {
   if (activeCategory.value === 'series') return '/series?sort=popular'
   if (activeCategory.value === 'movie') return '/movies?sort=featured'
@@ -276,11 +277,13 @@ async function loadRemoteDiscovery() {
         eyebrow?: Record<string, string>
       }
       featured?: ApiCatalogItem[]
-      hero?: ApiCatalogItem[]
+      hero?: (ApiCatalogItem & { content_type?: ContentType })[]
       dubbed?: ApiCatalogItem[]
       popular_series?: ApiCatalogItem[]
     }>('/home/rails/', {
-      query: { limit: railLimit },
+      // The admin-curated slider, website slice (series included since the
+      // slider now covers both). content_type picks the adapter per item.
+      query: { limit: railLimit, platform: 'web' },
     }),
   ])
 
@@ -293,7 +296,10 @@ async function loadRemoteDiscovery() {
   if (railsResult.status === 'fulfilled') {
     const payload = railsResult.value
     railMeta.value = payload.meta || {}
-    remoteHero.value = adaptMovies(payload.hero)
+    remoteHero.value = (payload.hero || []).map((item) => {
+      const type: ContentType = item.content_type === 'series' ? 'series' : 'movie'
+      return adaptApiCatalogListItem(item, type, mediaBase)
+    })
     remoteFeatured.value = adaptMovies(payload.featured)
     remoteDubbed.value = adaptMovies(payload.dubbed).filter(item => item.is_dubbed)
     remotePopularSeries.value = adaptSeries(payload.popular_series)
@@ -344,8 +350,18 @@ onMounted(() => {
   void revealRequestedSection(route.query.section)
   void loadFromApi(false, 'home')
   void loadRemoteDiscovery()
-  void loadTop250Rails()
-  void loadAnimeRails()
+  // Below-the-fold rails only: their sections render inside DeferredContent on
+  // visibility, so fetching their data on idle keeps first paint + TTI fast
+  // and halves the homepage's mount-time API storm on a busy backend.
+  const loadBelowFold = () => {
+    void loadTop250Rails()
+    void loadAnimeRails()
+  }
+  if (typeof requestIdleCallback === 'function') {
+    requestIdleCallback(loadBelowFold, { timeout: 2500 })
+  } else {
+    setTimeout(loadBelowFold, 1200)
+  }
 })
 // The home page answers the broadest searches («دانلود فیلم», «سریال دوبله»…),
 // so its title names the offer, not the page ("خانه" ranked for nothing).
@@ -394,14 +410,19 @@ useSeoMeta({
       dark
     />
 
+    <!-- جدول پخش: this week's real air dates + whether each release is on the site yet. -->
+    <ClientOnly>
+      <HomeSchedule />
+    </ClientOnly>
+
     <!-- Below-fold: client-only to keep SSR HTML lean (was ~600KB+ with every rail). -->
     <ClientOnly>
       <DeferredContent v-if="hasContinue" class="home-landing__deferred" min-height="14rem">
         <section id="continue" class="content-section">
-          <SectionHeader title="ادامه تماشا" eyebrow="از همان‌جا ادامه بده" href="/profile#continue" icon="resume" dark />
-          <div class="hide-scrollbar rail-bleed flex snap-x gap-2.5 overflow-x-auto pb-2 sm:gap-3 sm:pb-3 lg:grid lg:grid-cols-3 lg:gap-4 lg:overflow-visible xl:grid-cols-4 2xl:grid-cols-7">
+          <SectionHeader title="ادامه تماشا" eyebrow="از همان‌جا ادامه بده" href="/profile#continue" icon="continue" dark />
+          <ScrollStrip track-class="rail-bleed flex snap-x gap-2.5 pb-2 sm:gap-3 sm:pb-3 lg:grid lg:grid-cols-3 lg:gap-4 xl:grid-cols-4 2xl:grid-cols-[repeat(var(--rail-columns),minmax(0,1fr))]" role="group" label="ادامه تماشا">
             <ContinueWatchingCard v-for="item in continueWatching" :key="item.id" :item="item" class="w-[min(82%,16.5rem)] shrink-0 snap-start lg:w-auto" />
-          </div>
+          </ScrollStrip>
         </section>
       </DeferredContent>
 
@@ -415,7 +436,7 @@ useSeoMeta({
           :items="remoteTop250Movies"
           href="/top250"
           link-label="هر ۲۵۰ فیلم"
-          icon="trophy"
+          icon="top250"
           dark
         />
       </DeferredContent>
@@ -429,7 +450,7 @@ useSeoMeta({
           :items="remoteTop250Series"
           href="/top250?type=series"
           link-label="هر ۲۵۰ سریال"
-          icon="trophy"
+          icon="top250"
           dark
         />
       </DeferredContent>
@@ -441,7 +462,7 @@ useSeoMeta({
         >
           <div class="flex min-w-0 items-start gap-3">
             <span class="grid size-11 shrink-0 place-items-center rounded-xl bg-primary-500/15 text-brand">
-              <CinematicIcon name="users" class="size-5" />
+              <CinematicIcon name="party" class="size-5" />
             </span>
             <div class="min-w-0">
               <p class="text-xs font-black text-brand">با دوستان</p>
@@ -454,6 +475,47 @@ useSeoMeta({
             <CinematicIcon name="arrow-left" class="size-3.5" />
           </span>
         </NuxtLink>
+      </section>
+
+      <section class="content-section" aria-labelledby="home-lounge-title">
+        <div class="relative overflow-hidden rounded-2xl bg-gradient-to-l from-primary-500/15 via-elevated/80 to-elevated/80 px-4 py-4 ring-1 ring-primary-500/25 sm:px-5">
+          <div class="flex flex-wrap items-center justify-between gap-4">
+            <div class="flex min-w-0 items-start gap-3">
+              <span class="relative grid size-11 shrink-0 place-items-center rounded-xl bg-primary-500 text-night-950">
+                <CinematicIcon name="comments" class="size-5" />
+                <span class="absolute -left-1 -top-1 flex items-center gap-1 rounded-full bg-[#07140f] px-1.5 py-0.5 text-[10px] font-black text-emerald-300 ring-1 ring-emerald-400/30">
+                  <span class="size-1.5 animate-pulse rounded-full bg-emerald-400" aria-hidden="true" />زنده
+                </span>
+              </span>
+              <div class="min-w-0">
+                <p class="text-xs font-black text-brand">گفتگوی جمعی فیلم‌بازها</p>
+                <h2 id="home-lounge-title" class="mt-0.5 text-base font-black text-ink sm:text-lg">بچه‌ها اینجان؛ تو هم بیا!</h2>
+                <p class="mt-1 text-xs leading-6 text-secondary">
+                  درباره فیلمی که دیشب دیدی حرف بزن، پیشنهاد بگیر و رفیق پیدا کن.
+                  {{ authStore.isAuthenticated ? 'همین حالا بنویس.' : 'خواندن آزاد است؛ برای نوشتن وارد حسابت شو.' }}
+                </p>
+              </div>
+            </div>
+            <div class="flex flex-wrap items-center gap-2">
+              <button
+                type="button"
+                class="inline-flex min-h-11 items-center gap-1.5 rounded-xl bg-primary-500 px-4 text-xs font-black text-night-950 transition hover:bg-primary-400"
+                @click="communityChat.open()"
+              >
+                <CinematicIcon name="comments" class="size-4" />
+                ورود به گفتگو
+              </button>
+              <NuxtLink
+                v-if="!authStore.isAuthenticated"
+                :to="`/auth/login?redirect=${encodeURIComponent('/')}`"
+                class="inline-flex min-h-11 items-center gap-1.5 rounded-xl border border-line px-4 text-xs font-black text-secondary transition hover:text-ink"
+              >
+                <CinematicIcon name="login" class="size-4" />
+                ورود به حساب
+              </NuxtLink>
+            </div>
+          </div>
+        </div>
       </section>
 
       <DeferredContent v-if="authStore.isAuthenticated && recommended.length" class="home-landing__deferred">
@@ -478,7 +540,7 @@ useSeoMeta({
           eyebrow="داغ‌ترین‌های امروز"
           :items="trending"
           href="/movies?sort=trending"
-          icon="trend"
+          icon="hot"
           dark
         />
       </DeferredContent>
@@ -491,7 +553,7 @@ useSeoMeta({
             eyebrow="مرور دسته‌بندی‌ها"
             :href="activeCategoryHref"
             link-label="مشاهده همه"
-            icon="sliders"
+            icon="discover"
             dark
           />
           <CategoryChips v-model="activeCategory" :items="categoryOptions" />
@@ -540,7 +602,7 @@ useSeoMeta({
           :items="remoteAnimeNew"
           href="/movies?genre=anime"
           link-label="همه انیمه‌ها"
-          icon="animation"
+          icon="cartoon"
           dark
         />
       </DeferredContent>

@@ -11,6 +11,7 @@ import json
 import logging
 import time
 from pathlib import Path
+from types import SimpleNamespace
 
 from django.conf import settings
 from django.db import transaction
@@ -63,6 +64,24 @@ def _stamp_page_path(links, page_path: str) -> list[dict]:
             row.setdefault('source', 'dornatv')
             stamped.append(row)
     return stamped
+
+
+class _DonePaths(dict):
+    """Detail pages already handled, oldest first.
+
+    The checkpoint used to keep ``sorted(paths)[-5000:]``: the 5,000
+    alphabetically *last* paths, not the most recent. Once the movie set passed
+    5,000 every tick dropped a different alphabetical slice, and the dropped
+    pages were crawled again the next time the walk met them, then dropped
+    again: an endless re-crawl that spent the provider's rate budget on titles
+    already handled. Insertion order keeps the cap about age instead.
+    """
+
+    def add(self, path: str) -> None:
+        self[path] = None
+
+    def recent(self, cap: int) -> list[str]:
+        return list(self)[-cap:] if cap > 0 else list(self)
 
 
 def _load_checkpoint(path: Path) -> dict:
@@ -149,7 +168,7 @@ def run_dornatv_missing_import(
     series_limit: int | None = None,
     checkpoint_path: str | None = None,
     budget_seconds: float | None = None,
-    delay: float = 0.35,
+    delay: float = 0.2,
     dry_run: bool = False,
     queue_softsub: bool = True,
     year_start: int | None = None,
@@ -196,8 +215,9 @@ def run_dornatv_missing_import(
     year_hi, year_lo = _year_window(year_start=year_start, year_end=year_end)
     checkpoint = Path(checkpoint_path or getattr(settings, 'DORNATV_IMPORT_CHECKPOINT', '/app/media/dornatv_import_checkpoint.json'))
     state = _load_checkpoint(checkpoint)
-    done_movie_paths = set(state.get('done_movie_paths') or [])
-    done_series_paths = set(state.get('done_series_paths') or [])
+    done_movie_paths = _DonePaths.fromkeys(state.get('done_movie_paths') or [])
+    done_series_paths = _DonePaths.fromkeys(state.get('done_series_paths') or [])
+    done_cap = int(getattr(settings, 'DORNATV_IMPORT_DONE_PATHS_CAP', 50000))
     movie_page = max(1, int(state.get('movie_page') or 1))
     series_page = max(1, int(state.get('series_page') or 1))
 
@@ -266,6 +286,7 @@ def run_dornatv_missing_import(
         'iranian': 0,
         'errors': 0,
         'softsub_queued': 0,
+        'merged_existing': 0,
         'movie_page': movie_page,
         'series_page': series_page,
         'movie_year': movie_year,
@@ -276,8 +297,8 @@ def run_dornatv_missing_import(
 
     def persist():
         _save_checkpoint(checkpoint, {
-            'done_movie_paths': sorted(done_movie_paths)[-5000:],
-            'done_series_paths': sorted(done_series_paths)[-5000:],
+            'done_movie_paths': done_movie_paths.recent(done_cap),
+            'done_series_paths': done_series_paths.recent(done_cap),
             'movie_page': movie_page,
             'series_page': series_page,
             'movie_year': movie_year,
@@ -293,8 +314,61 @@ def run_dornatv_missing_import(
             'updated_at': time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime()),
         })
 
+    merge_budget = int(getattr(settings, 'DORNATV_IMPORT_MERGE_PER_TICK', 8))
+
+    def _existing_obj(content_type: str, *, imdb_id: str = '', tmdb_id=None):
+        model = Movie if content_type == 'movie' else Series
+        if imdb_id:
+            return model.objects.filter(imdb_id=imdb_id).first()
+        if tmdb_id:
+            return model.objects.filter(tmdb_id=tmdb_id).first()
+        return None
+
+    def _lacks_dornatv(obj) -> bool:
+        from apps.catalog.provider_import.source_fill import providers_present
+
+        return obj is not None and 'dornatv' not in providers_present(obj.download_links)
+
+    def merge_into_existing(obj, crawled: dict, available, page_path: str) -> bool:
+        """Add this page's links to a title the catalog already has from elsewhere.
+
+        The walk used to crawl the page, see that the title existed, and throw the
+        links away, so a title first imported from Film2Media never gained its
+        Dornatv qualities. Merge only (existing links are kept), through the same
+        identity check and guarded apply path the per-title crawl uses.
+        """
+        if dry_run or merge_budget <= stats['merged_existing'] or not _lacks_dornatv(obj):
+            return False
+        from apps.catalog.provider_import.dornatv_sync import _validate_dornatv_identity
+        from apps.catalog.provider_import.link_apply import apply_provider_download_links
+
+        try:
+            _validate_dornatv_identity(obj, crawled)
+            apply_provider_download_links(
+                obj,
+                _stamp_page_path(available, crawled.get('page_path') or page_path),
+                replace=False,
+                queue_softsub_extract=False,
+                empty_code='dornatv_links_empty',
+                empty_message='No usable Dornatv download links after normalization.',
+            )
+        except ProviderImportError as exc:
+            logger.info('dornatv merge into existing %s skipped: %s', obj.pk, exc)
+            return False
+        except Exception:
+            logger.exception('dornatv merge into existing %s failed', obj.pk)
+            return False
+        stats['merged_existing'] += 1
+        return True
+
+    # Detail pages fetched so far. The per-item politeness delay belongs to a
+    # request, not to a listing row: most rows hit the done-set or the catalog
+    # without touching the network, and sleeping after each of those turned a
+    # 50-row page of already-handled titles into ~18 s of idling per page.
+    fetches = 0
+
     def import_one(*, content_type: str, item: dict, expected_year: int, enforce_year: bool = True) -> str:
-        nonlocal stats
+        nonlocal stats, fetches
         if should_cancel():
             return 'cancelled'
         parsed = parse_wp_rest_item(item, content_type=content_type)
@@ -306,9 +380,16 @@ def run_dornatv_missing_import(
             return 'checkpoint'
         list_imdb = (parsed.get('imdb_id') or '').strip().lower()
         if list_imdb and list_imdb in existing_imdb:
-            stats['skipped_existing'] += 1
-            done.add(page_path)
-            return 'existing'
+            # Crawl it anyway when the catalog title has no Dornatv links yet, so
+            # they can be merged below; otherwise there is nothing to do here.
+            if dry_run or not _lacks_dornatv(_existing_obj(content_type, imdb_id=list_imdb)):
+                stats['skipped_existing'] += 1
+                done.add(page_path)
+                return 'existing'
+            if stats['merged_existing'] >= merge_budget:
+                # Not checkpointed: the next pass that meets it can still merge.
+                stats['skipped_existing'] += 1
+                return 'existing'
 
         # A strict one-year run can reject taxonomy/modified-list rows before
         # downloading their much larger detail pages. TMDB is still verified
@@ -323,6 +404,7 @@ def run_dornatv_missing_import(
             done.add(page_path)
             return 'wrong_year'
 
+        fetches += 1
         try:
             crawled = connector.crawl_download_links(page_path, content_type=content_type)
         except ProviderRateLimited:
@@ -355,6 +437,7 @@ def run_dornatv_missing_import(
         imdb_id = (crawled.get('imdb_id') or list_imdb or '').strip().lower()
         if imdb_id and imdb_id in existing_imdb:
             stats['skipped_existing'] += 1
+            merge_into_existing(_existing_obj(content_type, imdb_id=imdb_id), crawled, available, page_path)
             done.add(page_path)
             return 'existing'
 
@@ -386,6 +469,7 @@ def run_dornatv_missing_import(
         tmdb_id = int(tmdb_summary['id'])
         if tmdb_id in existing_tmdb:
             stats['skipped_existing'] += 1
+            merge_into_existing(_existing_obj(content_type, tmdb_id=tmdb_id), crawled, available, page_path)
             done.add(page_path)
             return 'existing'
 
@@ -434,6 +518,7 @@ def run_dornatv_missing_import(
         if not created:
             stats['skipped_existing'] += 1
             existing_tmdb.add(tmdb_id)
+            merge_into_existing(obj, crawled, available, page_path)
             done.add(page_path)
             return 'existing'
 
@@ -589,11 +674,12 @@ def run_dornatv_missing_import(
                     return 'budget'
                 if stats[kept_key] >= limit:
                     break
+                fetched_before = fetches
                 result = import_one(content_type=content_type, item=item, expected_year=year)
                 if result == 'rate_limited':
                     persist()
                     return 'rate_limited'
-                if delay:
+                if delay and fetches != fetched_before:
                     time.sleep(delay)
             pages_scanned += 1
             total_pages = int(meta.get('total_pages') or 0)
@@ -675,6 +761,7 @@ def run_dornatv_missing_import(
                 if mod and (not page_oldest_mod or mod < page_oldest_mod):
                     page_oldest_mod = mod
                 ctype = parse_wp_rest_item(item).get('content_type', '')
+                fetched_before = fetches
                 if ctype == 'movie':
                     result = import_one(
                         content_type='movie', item=item,
@@ -690,7 +777,7 @@ def run_dornatv_missing_import(
                 if result == 'rate_limited':
                     persist()
                     return 'rate_limited'
-                if delay:
+                if delay and fetches != fetched_before:
                     time.sleep(delay)
             # Informational high-water mark: oldest row we've actually processed.
             if page_oldest_mod and (not modified_cursor or page_oldest_mod < modified_cursor):
@@ -735,57 +822,63 @@ def run_dornatv_missing_import(
         # Pick the stalest published rows that are actually sourced from dornatv
         # (a row carries source='dornatv' and the detail page_path). Sorted by
         # updated_at so the most-expired links refresh first.
-        dornatv_movies = [
-            m for m in (
-                Movie.objects.filter(is_published=True, updated_at__lt=cutoff)
-                .order_by('updated_at')[:200]
-            )
-            if _has_dornatv_row(m)
-        ]
-        for movie in dornatv_movies[:budget]:
-            try:
-                # crawl_dornatv_downloads_for_* manage their own connector (and
-                # page cache) — no need to open one here.
-                result = crawl_dornatv_downloads_for_movie(
-                    movie=movie,
-                    provider_item_id=_dornatv_path_for(movie),
-                    replace=True,
-                    queue_softsub_extract=False,
-                )
-                if result.get('code') in ('ok', 'dornatv_links_empty'):
-                    done += 1
-                    stats['refreshed'] = stats.get('refreshed', 0) + 1
-            except Exception as exc:
-                stats['errors'] += 1
-                logger.info('dornatv refresh movie %s failed: %s', movie.pk, exc)
-            if done >= budget:
-                break
+        #
+        # A row whose refresh fails keeps its old ``updated_at``, so it stays the
+        # stalest candidate forever. Eight such rows (pages Dornatv removed) used
+        # to take every slot of every tick and nothing else was ever refreshed.
+        # A failed row now sits out a cooldown, and the window is wide enough to
+        # reach past any cluster of them.
+        from django.core.cache import cache as _cache
 
-        # Series: same but with Series rows.
-        dornatv_series = [
-            s for s in (
-                Series.objects.filter(is_published=True, updated_at__lt=cutoff)
-                .order_by('updated_at')[:200]
+        cooldown = int(getattr(settings, 'DORNATV_REFRESH_FAIL_COOLDOWN_SECONDS', 24 * 60 * 60))
+        window = int(getattr(settings, 'DORNATV_REFRESH_SCAN_WINDOW', 1000))
+
+        def _cooling_key(model, pk) -> str:
+            return f'dornatv:refresh:fail:{model._meta.model_name}:{pk}'
+
+        def _refresh(model, crawl, kwarg: str) -> None:
+            nonlocal done
+            rows = (
+                model.objects.filter(is_published=True, updated_at__lt=cutoff)
+                .order_by('updated_at').values_list('pk', 'download_links')[:window]
             )
-            if _has_dornatv_row(s)
-        ]
-        for series in dornatv_series[:budget]:
-            try:
-                result = crawl_dornatv_downloads_for_series(
-                    series=series,
-                    provider_item_id=_dornatv_path_for(series),
-                    replace=True,
-                    queue_softsub_extract=False,
-                )
-                if result.get('code') in ('ok', 'dornatv_links_empty'):
-                    done += 1
-                    stats['refreshed'] = stats.get('refreshed', 0) + 1
-            except Exception as exc:
-                stats['errors'] += 1
-                logger.info('dornatv refresh series %s failed: %s', series.pk, exc)
-            if done >= budget:
-                break
-        return done
+            pks = [pk for pk, links in rows if _has_dornatv_row(SimpleNamespace(download_links=links))]
+            cooling = _cache.get_many([_cooling_key(model, pk) for pk in pks])
+            attempts = 0
+            for pk in pks:
+                if done >= budget or attempts >= budget * 2 or out_of_time():
+                    return
+                if _cooling_key(model, pk) in cooling:
+                    continue
+                obj = model.objects.filter(pk=pk).first()
+                if obj is None:
+                    continue
+                attempts += 1
+                try:
+                    # crawl_dornatv_downloads_for_* manage their own connector (and
+                    # page cache) — no need to open one here.
+                    result = crawl(
+                        **{kwarg: obj},
+                        provider_item_id=_dornatv_path_for(obj),
+                        replace=True,
+                        queue_softsub_extract=False,
+                    )
+                    if result.get('code') in ('ok', 'dornatv_links_empty'):
+                        done += 1
+                        stats['refreshed'] = stats.get('refreshed', 0) + 1
+                except Exception as exc:
+                    stats['errors'] += 1
+                    stats['refresh_cooled'] = stats.get('refresh_cooled', 0) + 1
+                    _cache.set(_cooling_key(model, pk), 1, cooldown)
+                    logger.info('dornatv refresh %s %s failed: %s', kwarg, pk, exc)
+
+        # Each kind gets its own share of the budget: series links expire on the
+        # same clock, and used to be refreshed only when movies left slots over.
+        _refresh(Movie, crawl_dornatv_downloads_for_movie, 'movie')
+        total = done
+        done = 0
+        _refresh(Series, crawl_dornatv_downloads_for_series, 'series')
+        return total + done
 
     def _has_dornatv_row(obj) -> bool:
         for item in (getattr(obj, 'download_links', None) or []):

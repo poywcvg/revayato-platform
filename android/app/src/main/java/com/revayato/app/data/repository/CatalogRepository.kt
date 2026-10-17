@@ -7,6 +7,9 @@ import com.revayato.app.data.model.SearchResponseDto
 import com.revayato.app.data.model.CollectionDto
 import com.revayato.app.data.model.ContentIssueReportRequest
 import com.revayato.app.data.model.ContentIssueReportResult
+import com.revayato.app.data.model.ContentIssueStatusResult
+import com.revayato.app.data.model.PlaybackFailureRequest
+import com.revayato.app.data.model.PlaybackFailureResult
 import com.revayato.app.data.model.CountryDto
 import com.revayato.app.data.model.GenreDto
 import com.revayato.app.data.model.MovieDetailDto
@@ -118,7 +121,10 @@ class CatalogRepository @Inject constructor(
     /**
      * File a structured content problem report from the player. The backend
      * auto-remediation engine dispatches the fix based on [problemType]
-     * (subtitle / wrong_title / wrong_episode / playback / audio / other).
+     * (the 12-value server catalogue shared with the web player: playback,
+     * buffering, audio_silent, audio_desync, subtitle_missing, subtitle_sync,
+     * subtitle_garbled, wrong_title, wrong_episode, quality, download_dead,
+     * other).
      */
     suspend fun reportContentIssue(
         contentType: String,
@@ -159,6 +165,25 @@ class CatalogRepository @Inject constructor(
                 reportId?.let { put("report_id", it.toString()) }
             },
         )
+    }
+
+    /**
+     * Automatic playback-failure intake: call the moment ExoPlayer fails.
+     * The server classifies the error onto the exact problem_type a manual
+     * report would have used and runs the same crawler repair, returning a
+     * fixed URL + Persian notice when one is already servable.
+     */
+    suspend fun reportPlaybackFailure(
+        request: PlaybackFailureRequest,
+    ): ApiResult<PlaybackFailureResult> = safeApiCall {
+        api.reportPlaybackFailure(request)
+    }
+
+    /** Poll a filed report until the catalog serves a URL different from the failed one. */
+    suspend fun contentIssueStatus(
+        reportId: Int,
+    ): ApiResult<ContentIssueStatusResult> = safeApiCall {
+        api.contentIssueStatus(reportId)
     }
 
     suspend fun recent(limit: Int = 24, type: String? = null): ApiResult<List<CatalogCardDto>> =
@@ -213,4 +238,13 @@ class CatalogRepository @Inject constructor(
 
     suspend fun recommendations(): ApiResult<List<CatalogCardDto>> =
         safeApiCall { api.recommendations() }
+
+    /**
+     * Admin-curated home slider for the app slice (?platform=app). Empty when
+     * the admin has not featured anything — callers fall back to newest.
+     */
+    suspend fun homeSlider(limit: Int = 10): ApiResult<List<CatalogCardDto>> =
+        safeApiCall {
+            api.homeSlider(mapOf("platform" to "app", "limit" to limit.toString())).results
+        }
 }

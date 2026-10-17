@@ -1,5 +1,6 @@
 package com.revayato.app.feature.detail
 
+import com.revayato.app.ui.components.FlatSnackbar
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -10,10 +11,10 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.navigationBarsPadding
-import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.ArrowForward
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -26,20 +27,23 @@ import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.SnackbarResult
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.setValue
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.setValue
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import kotlinx.coroutines.launch
 import com.revayato.app.core.ui.UiState
 import com.revayato.app.data.model.GenreDto
 import com.revayato.app.data.model.MovieDetailDto
+import com.revayato.app.data.model.englishCatalogTitle
 import com.revayato.app.feature.collections.AddToCollectionSheet
 import com.revayato.app.feature.player.buildQualitiesFromLinks
 import com.revayato.app.feature.player.encodeQualities
@@ -133,7 +137,7 @@ fun MovieDetailScreen(
             modifier = Modifier
                 .align(Alignment.BottomCenter)
                 .navigationBarsPadding(),
-        )
+        ) { FlatSnackbar(it) }
     }
 
     if (state.showReportSheet) {
@@ -186,42 +190,44 @@ private fun MovieDetailBody(
     // Add the gesture/navigation-bar height to the bottom padding so the last rail
     // clears the phone's system bar (this screen has no Scaffold bottom bar).
     val navBottom = WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding()
+    val listState = rememberLazyListState()
+    val scope = rememberCoroutineScope()
+    // hero, body, [similar], ratings — the stars in the hero scroll to the last.
+    val ratingsIndex = if (state.similar.isNotEmpty()) 3 else 2
+    val heroData = remember(movie, streamUrl) {
+        DetailHeroData(
+            isSeries = false,
+            title = movie.title,
+            englishTitle = englishCatalogTitle(movie.title, movie.secondaryTitle, movie.originalTitle),
+            year = movie.releaseYear,
+            posterUrl = movie.poster,
+            backdropUrl = movie.backdrop,
+            genres = movie.genres,
+            ageRating = movie.ageRating,
+            facts = heroFacts(movie.durationMinutes, null, movie.countries.map { it.name }),
+            freshPills = freshPills(isSeries = false, links = movie.downloadLinks),
+            hasSubtitle = movie.hasSubtitle,
+            isDubbed = movie.isDubbed,
+            canPlay = streamUrl != null,
+            trailerUrl = movie.trailerUrl,
+            ratings = movie.ratings,
+            imdbRating = movie.imdbRating,
+            siteRating = movie.siteRating,
+            siteRatingCount = movie.siteRatingCount,
+            imdbRank = movie.imdbRank,
+        )
+    }
     LazyColumn(
+        state = listState,
         modifier = Modifier.fillMaxSize(),
         contentPadding = PaddingValues(bottom = 32.dp + navBottom),
     ) {
         item {
-            DetailBackdrop(
-                backdropUrl = movie.backdrop ?: movie.poster,
-                posterUrl = movie.poster,
-                title = movie.title,
-            )
-        }
-        item {
-            // Pull the content column up so the poster in PosterHeader overlaps the
-            // lower edge of the backdrop — a cinematic, layered hero.
-            Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .offset(y = (-48).dp)
-                    .padding(horizontal = 16.dp),
-                verticalArrangement = Arrangement.spacedBy(14.dp),
-            ) {
-                PosterHeader(
-                    posterUrl = movie.poster,
-                    title = movie.title,
-                    secondaryTitle = movie.secondaryTitle,
-                    year = movie.releaseYear,
-                    rating = movie.imdbRating ?: movie.ratingAverage,
-                    durationMinutes = movie.durationMinutes,
-                    ageRating = movie.ageRating,
-                )
-                GenreChips(genres = movie.genres, onGenreClick = onOpenGenre)
-                PrimaryActions(
-                    canPlay = streamUrl != null,
-                    inWatchlist = state.inWatchlist,
-                    liked = state.liked,
-                    hasDownloads = hasDownloads,
+            DetailHero(
+                data = heroData,
+                inWatchlist = state.inWatchlist,
+                liked = state.liked,
+                actions = DetailHeroActions(
                     onPlay = {
                         streamUrl?.let { url ->
                             // Offer a version/quality picker when more than one
@@ -229,14 +235,26 @@ private fun MovieDetailBody(
                             if (totalPlaybackOptions > 1) showQualitySheet = true else play(url)
                         }
                     },
+                    onPlayLatest = null,
+                    onDownload = if (hasDownloads) ({ showDownloadSheet = true }) else null,
                     onToggleWatchlist = onToggleWatchlist,
                     onToggleLike = onToggleLike,
-                    onDownload = { showDownloadSheet = true },
                     onWatchTogether = onWatchTogether,
                     onAddToCollection = {
                         if (state.isLoggedIn) showCollectionSheet = true else onRequireLogin()
                     },
-                )
+                    onGenreClick = onOpenGenre,
+                    onRate = { scope.launch { listState.animateScrollToItem(ratingsIndex) } },
+                ),
+            )
+        }
+        item {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(start = 16.dp, end = 16.dp, top = 8.dp),
+                verticalArrangement = Arrangement.spacedBy(14.dp),
+            ) {
                 movie.description?.takeIf { it.isNotBlank() }?.let {
                     SectionTitle("خلاصه داستان")
                     ExpandableText(text = it)

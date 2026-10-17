@@ -1,3 +1,5 @@
+import type { RepairRun } from '~/utils/stagedRebuild'
+
 export type MoviePublicationStatus = 'draft' | 'published' | 'archived'
 export type MovieCatalogType = 'movie' | 'documentary' | 'short'
 export type TMDBContentType = 'movie' | 'series'
@@ -79,6 +81,8 @@ export interface AdminMovie {
   directors?: Array<{ id: number; name: string; slug?: string; photo?: string | null }>
   is_featured: boolean
   is_recommended: boolean
+  featured_order: number
+  slider_platform: 'all' | 'web' | 'app'
   meta_title: string
   meta_description: string
   seo_keywords: string[]
@@ -160,6 +164,8 @@ export interface AdminSeries {
   status: 'ongoing' | 'ended' | 'upcoming' | 'cancelled' | 'on_hold'
   is_published: boolean
   is_featured: boolean
+  featured_order: number
+  slider_platform: 'all' | 'web' | 'app'
   metadata_source: 'manual' | 'tmdb' | string
   last_tmdb_sync_at: string | null
   created_at: string
@@ -183,6 +189,42 @@ export interface AdminSeriesFilters {
   ordering: string
   limit: number
   offset: number
+}
+
+export type SliderPlatform = 'all' | 'web' | 'app'
+export type SliderContentType = 'movie' | 'series'
+
+export interface AdminSliderItem {
+  id: number
+  content_type: SliderContentType
+  title: string
+  original_title?: string
+  slug: string
+  poster_url: string | null
+  backdrop_url: string | null
+  release_year?: number | null
+  start_year?: number | null
+  is_published: boolean
+  publication_status?: string
+  is_featured: boolean
+  featured_order: number
+  slider_order: number
+  slider_platform: SliderPlatform
+  updated_at: string
+}
+
+export interface AdminSliderListResponse {
+  platform: string
+  count: number
+  results: AdminSliderItem[]
+}
+
+export interface AdminSliderReorderItem {
+  content_type: SliderContentType
+  id: number
+  is_featured?: boolean
+  featured_order?: number
+  slider_platform?: SliderPlatform
 }
 
 export interface AdminMovieFilters {
@@ -978,11 +1020,60 @@ export interface MediaDesk {
   jobs: DeskJob[]
   episodes?: DeskEpisode[]
   audits: DeskAudit[]
+  completion?: DeskCompletion | null
+  /** The latest «بازسازی کامل» backup that can still be put back. */
+  rebuild_backup?: { id: number, created_at: string, links: number } | null
+}
+
+export type CompletionStepKey =
+  | 'backup' | 'metadata' | 'titles' | 'sources' | 'episodes' | 'sizes' | 'verify' | 'publish' | 'subtitles'
+  | 'stage' | 'test' | 'apply' | 'problems' | 'playback'
+
+export interface DeskCompletionStep {
+  key: CompletionStepKey
+  status: 'pending' | 'running' | 'ok' | 'skipped' | 'empty' | 'warn' | 'blocked' | 'error'
+  detail: string
+  links_before?: number
+  links_after?: number
+  /** Rebuild only: links the providers answered with, and stale ones removed. */
+  fresh?: number
+  removed?: number
+  unpublished?: number
+  blockers?: string[]
+  /** Staged rebuild only: what the shadow crawl found and how its probes went. */
+  staged_links?: number
+  live?: number
+  dead?: number
+  unknown?: number
+  verdict?: string
+  added?: number
+  /** «رفع مشکل‌ها»: health-page problem codes after the run. */
+  fixed?: string[]
+  queued?: string[]
+  left?: string[]
+}
+
+/** «جستجوی دوباره و تکمیل» / «بازسازی کامل»: one background run of every importer step. */
+export interface DeskCompletion {
+  state: 'queued' | 'running' | 'done' | 'failed'
+  mode?: 'complete' | 'rebuild' | 'staged'
+  publish: boolean
+  started_at: string
+  finished_at: string | null
+  steps: DeskCompletionStep[]
+  failed_steps?: string[]
+  links?: number
+  is_published?: boolean
+  already_running?: boolean
+  error?: string
+  /** Staged rebuild only: whether the tested set replaced the title's links, and if not why. */
+  verdict?: 'applied' | 'rejected'
+  verdict_reason?: string
 }
 
 export type DeskAction =
   | 'verify' | 'remove_link' | 'add_link' | 'prune_dead' | 'strip_contaminated'
-  | 'recrawl' | 'refresh_subtitles' | 'remove_subtitle' | 'publish' | 'unpublish'
+  | 'complete' | 'recrawl' | 'rebuild' | 'rebuild_staged' | 'rebuild_undo' | 'refresh_subtitles' | 'remove_subtitle' | 'publish' | 'unpublish'
   | 'archive' | 'sync_tmdb' | 'resolve_gaps'
 
 export interface DeskActionResponse {
@@ -996,6 +1087,8 @@ export interface BulkResultRow {
   title: string
   ok: boolean
   error: string | null
+  /** Publish-gate reasons when ``error`` is ``publish_blocked``. */
+  blockers?: string[] | null
   result: Record<string, unknown> | null
 }
 
@@ -1041,6 +1134,8 @@ export interface HealthRow {
   problem_label?: string
   status_label?: string
   detail?: string
+  /** The last repair run on this title (any mode), so the queue shows what was already tried. */
+  repair?: RepairRun
 }
 
 export interface HealthResponse {

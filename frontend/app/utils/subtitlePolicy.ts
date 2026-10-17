@@ -53,37 +53,64 @@ export function pickDefaultPlaybackVersion(versions: readonly PlaybackVersion[])
   return versions.find(version => version.kind === 'dub') || versions[0] || null
 }
 
+/** The one toast of the automatic subtitle hunt, shown once and only after
+ *  Persian cues are really in the player. */
 export function subtitleReadyNotice(hasCues: boolean) {
-  return hasCues ? 'زیرنویس فارسی فعال شد' : ''
+  return hasCues ? 'زیرنویس فارسی اضافه شد' : ''
 }
 
-export function subtitleFindingNotice() {
-  return 'زیرنویس در حال بارگذاری است…'
+/** Where the automatic subtitle hunt stands, shown in its own status card so
+ *  the viewer knows to keep watching while the server fetches Persian cues:
+ *  - searching: the ensure call is in flight
+ *  - preparing: a worker is fetching/extracting; the player polls for it
+ *  - background: this page stopped polling fast; a slow poll and the server
+ *    hunt go on, and cues that land still appear here
+ *  - missing: the server has searched every source (cooldown before retry) */
+export type SubtitleHuntPhase = 'searching' | 'preparing' | 'background' | 'missing'
+
+export interface SubtitleHuntStatus {
+  phase: SubtitleHuntPhase
+  title: string
+  detail: string
+  /** Busy phases stay up until the hunt moves on; the rest fade on their own. */
+  busy: boolean
+  durationMs: number
 }
 
-export type SoftsubBannerTone = 'finding' | 'ready' | 'retrying' | 'failed'
-
-export function softsubBannerCopy(tone: SoftsubBannerTone) {
-  if (tone === 'ready') {
-    return {
-      title: 'زیرنویس فارسی آماده شد',
-      detail: 'زیرنویس به‌صورت خودکار به پخش اضافه و روشن شد.',
-    }
-  }
-  if (tone === 'retrying') {
-    return {
-      title: 'زیرنویس هنوز در حال بارگذاری است…',
-      detail: 'پخش را ادامه دهید؛ به‌محض آماده شدن، زیرنویس خودش فعال می‌شود.',
-    }
-  }
-  if (tone === 'failed') {
-    return {
-      title: 'زیرنویس این عنوان فعلاً پیدا نشد',
-      detail: 'اگر بعداً دوباره وارد پخش شوید، دوباره به‌صورت خودکار جستجو می‌کنیم.',
-    }
-  }
-  return {
-    title: 'زیرنویس در حال بارگذاری است…',
-    detail: 'ابتدا زیرنویس داخل همین فایل پخش استخراج می‌شود؛ اگر موجود نباشد منابع زیرنویس بررسی می‌شوند. پخش را ادامه دهید.',
+export function subtitleHuntStatus(phase: SubtitleHuntPhase, isEpisode = false): SubtitleHuntStatus {
+  const subject = isEpisode ? 'این قسمت' : 'این فیلم'
+  switch (phase) {
+    case 'searching':
+      return {
+        phase,
+        title: 'در حال پیدا کردن زیرنویس فارسی…',
+        detail: 'پخش ادامه دارد؛ زیرنویس به‌محض آماده شدن خودکار اضافه می‌شود.',
+        busy: true,
+        durationMs: 0,
+      }
+    case 'preparing':
+      return {
+        phase,
+        title: 'در حال آماده‌سازی زیرنویس فارسی…',
+        detail: 'لطفاً در پلیر بمانید؛ زیرنویس بدون قطع پخش اضافه می‌شود.',
+        busy: true,
+        durationMs: 0,
+      }
+    case 'background':
+      return {
+        phase,
+        title: 'زیرنویس هنوز آماده نشده',
+        detail: 'جستجو در پس‌زمینه ادامه دارد؛ هر وقت آماده شد همین‌جا اضافه می‌شود.',
+        busy: false,
+        durationMs: 6_000,
+      }
+    case 'missing':
+      return {
+        phase,
+        title: `زیرنویس فارسی برای ${subject} پیدا نشد`,
+        detail: 'منابع زیرنویس بعداً دوباره بررسی می‌شوند.',
+        busy: false,
+        durationMs: 5_000,
+      }
   }
 }

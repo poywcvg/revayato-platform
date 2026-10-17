@@ -231,14 +231,10 @@ defineExpose({
 
     <div v-if="showControls" class="morph-slider__controls">
       <button type="button" class="morph-slider__nav" aria-label="Previous slide" @click="handlePrev">
-        <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true">
-          <path d="M15 5l-7 7 7 7" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" />
-        </svg>
+        <CinematicIcon name="chevron-left" class="size-[18px]" :stroke-width="2" />
       </button>
       <button type="button" class="morph-slider__nav" aria-label="Next slide" @click="handleNext">
-        <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true">
-          <path d="M9 5l7 7-7 7" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" />
-        </svg>
+        <CinematicIcon name="chevron-right" class="size-[18px]" :stroke-width="2" />
       </button>
     </div>
 
@@ -350,10 +346,9 @@ defineExpose({
   justify-content: center;
   border: 1px solid rgb(255 255 255 / 20%);
   border-radius: 999px;
-  background: rgb(12 12 14 / 40%);
+  background: rgb(12 12 14 / 74%);
   color: #fff;
   cursor: pointer;
-  backdrop-filter: blur(12px);
   transition: transform 200ms ease, background-color 200ms ease;
 }
 

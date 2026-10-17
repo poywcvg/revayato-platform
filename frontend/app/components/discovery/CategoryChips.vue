@@ -14,10 +14,10 @@ const emit = defineEmits<{ 'update:modelValue': [value: string] }>()
 </script>
 
 <template>
-  <div
-    class="category-chips hide-scrollbar rail-bleed flex snap-x gap-2 overflow-x-auto pb-1 sm:gap-2 sm:overflow-x-auto sm:pb-2"
+  <ScrollStrip
+    track-class="category-chips rail-bleed flex snap-x gap-2 pb-1 sm:pb-2"
     role="group"
-    aria-label="دسته‌بندی سریع"
+    label="دسته‌بندی سریع"
   >
     <button
       v-for="item in items"
@@ -42,5 +42,5 @@ const emit = defineEmits<{ 'update:modelValue': [value: string] }>()
       </span>
       <span class="category-chip__label">{{ item.label }}</span>
     </button>
-  </div>
+  </ScrollStrip>
 </template>

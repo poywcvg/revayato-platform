@@ -36,8 +36,8 @@
   width: 28%;
   height: 2px;
   border-radius: 999px;
-  background: linear-gradient(90deg, transparent, #f6d58b 45%, #e4ad49 75%, transparent);
-  box-shadow: 0 0 12px rgb(228 173 73 / 48%);
+  background: linear-gradient(90deg, transparent, var(--theme-accent-primary-hover) 45%, var(--theme-accent-primary) 75%, transparent);
+  box-shadow: none;
   transform: translate3d(0, 0, 0);
 }
 
@@ -60,25 +60,25 @@
   transform: scale(.75);
 }
 
-:global(html[data-page-navigating]) .route-motion {
+html[data-page-navigating] .route-motion {
   visibility: visible;
   opacity: 1;
   transition: opacity 30ms linear;
 }
 
-:global(html[data-page-navigating]) .route-motion__beam {
+html[data-page-navigating] .route-motion__beam {
   animation: route-beam 260ms cubic-bezier(.2, .75, .25, 1) both;
 }
 
-:global(html[data-page-navigating]) .route-motion__beam--echo {
+html[data-page-navigating] .route-motion__beam--echo {
   animation-delay: 24ms;
 }
 
-:global(html[data-page-navigating]) .route-motion__veil {
+html[data-page-navigating] .route-motion__veil {
   animation: route-veil 210ms ease-out both;
 }
 
-:global(html[data-page-navigating]) .route-motion__glow {
+html[data-page-navigating] .route-motion__glow {
   animation: route-glow 230ms cubic-bezier(.22, 1, .36, 1) both;
 }
 

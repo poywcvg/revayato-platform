@@ -43,6 +43,8 @@ export interface DownloadLink {
   episode?: string
   season_number?: number
   episode_number?: number
+  /** Served by a CDN that answers Iranian IPs only, with no CORS (backend GEO_LOCKED_CDN_HOSTS). */
+  iran_only?: boolean
 }
 
 export interface SiteActor {
@@ -174,6 +176,8 @@ export interface Movie {
   recommendation_reason?: string
   audio_languages?: string[]
   subtitle_languages?: string[]
+  /** SoftSub WebVTT tracks of a movie (series keep theirs per episode). */
+  subtitle_tracks?: import('./playback').PlaybackTextTrack[]
   playback?: PlaybackSource
   seasons_count?: number
   episodes?: Episode[]

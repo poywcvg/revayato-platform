@@ -44,7 +44,7 @@ onBeforeUnmount(() => { if (import.meta.client) document.body.style.overflow = '
 <template>
   <Teleport to="body">
     <Transition enter-active-class="transition duration-200" enter-from-class="opacity-0" leave-active-class="transition duration-150" leave-to-class="opacity-0">
-      <div v-if="open" class="fixed inset-0 z-[100] flex cursor-pointer items-end justify-center bg-[var(--theme-overlay-backdrop)] pt-4 backdrop-blur-sm sm:grid sm:place-items-center sm:p-4" role="presentation" @click.self="emit('close')">
+      <div v-if="open" class="fixed inset-0 z-[100] flex cursor-pointer items-end justify-center bg-[var(--theme-overlay-backdrop)] pt-4 sm:grid sm:place-items-center sm:p-4" role="presentation" @click.self="emit('close')">
         <section
           ref="dialog"
           tabindex="-1"
@@ -52,7 +52,7 @@ onBeforeUnmount(() => { if (import.meta.client) document.body.style.overflow = '
           aria-modal="true"
           aria-labelledby="adult-modal-title"
           aria-describedby="adult-modal-description"
-          class="max-h-[calc(100dvh_-_1rem_-_env(safe-area-inset-top)_-_env(safe-area-inset-bottom))] w-[min(100%,calc(100dvw-1rem))] max-w-md cursor-default overflow-y-auto rounded-t-3xl bg-surface pb-[env(safe-area-inset-bottom)] text-ink shadow-2xl shadow-black/40 outline-none ring-1 ring-line sm:rounded-3xl sm:pb-0"
+          class="max-h-[calc(100dvh_-_1rem_-_env(safe-area-inset-top)_-_env(safe-area-inset-bottom))] w-[min(100%,calc(100dvw-1rem))] max-w-md cursor-default overflow-y-auto rounded-t-3xl bg-surface pb-[env(safe-area-inset-bottom)] text-ink outline-none ring-1 ring-line sm:rounded-3xl sm:pb-0"
           @keydown="trapFocus"
         >
           <div class="border-b border-error/25 bg-error/[.07] p-5 sm:p-6">

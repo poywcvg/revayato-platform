@@ -532,6 +532,36 @@ def import_missing_kargadan_task(self):
 
 @shared_task(
     bind=True,
+    soft_time_limit=9 * 60,
+    time_limit=11 * 60,
+    acks_late=True,
+    reject_on_worker_lost=True,
+)
+def fill_missing_sources_task(self):
+    """Beat tick: ask the providers a published title has no links from yet.
+
+    See :mod:`apps.catalog.provider_import.source_fill`.
+    """
+    from django.conf import settings
+    from django.core.cache import cache
+
+    if not getattr(settings, 'CATALOG_SOURCE_FILL_ENABLED', True):
+        return {'status': 'disabled'}
+
+    lock = 'catalog-source-fill-lock'
+    if not cache.add(lock, self.request.id or '1', timeout=10 * 60):
+        return {'status': 'already_running'}
+    try:
+        from .source_fill import run_source_fill
+        result = run_source_fill()
+        logger.info('source fill tick: %s', result)
+        return result
+    finally:
+        cache.delete(lock)
+
+
+@shared_task(
+    bind=True,
     soft_time_limit=28 * 60,
     time_limit=30 * 60,
     acks_late=True,

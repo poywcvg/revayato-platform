@@ -40,6 +40,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import com.revayato.app.core.theme.NeutralSurface
 import com.revayato.app.core.theme.AccentYellow
 import com.revayato.app.core.theme.AccentYellowSoft
 import com.revayato.app.core.theme.BgElevated
@@ -58,7 +59,9 @@ private val OnAccentYellow = Color(0xFF241A00)
  * A distinct, amber-accented sheet for reporting a problem with a title. Kept
  * deliberately apart from the azure download sheet and the play flow so «گزارش خطا»
  * reads as its own thing. The user picks a quick reason and/or types details; the
- * report is filed as a "bug" support ticket and reaches the admin inbox.
+ * caller classifies it onto the structured 12-value catalogue and files it via
+ * `POST /api/catalog/report-issue/` so the same auto-remediation engine as the
+ * player handles it (with a legacy support-ticket fallback).
  *
  * [contentLabel] is a short noun for the title in the prompt, e.g. «این فیلم» / «این سریال».
  */
@@ -161,9 +164,9 @@ fun ReportProblemSheet(
                     )
                 },
                 colors = TextFieldDefaults.colors(
-                    focusedContainerColor = Color(0x14FFFFFF),
-                    unfocusedContainerColor = Color(0x14FFFFFF),
-                    disabledContainerColor = Color(0x0AFFFFFF),
+                    focusedContainerColor = NeutralSurface,
+                    unfocusedContainerColor = NeutralSurface,
+                    disabledContainerColor = NeutralSurface,
                     focusedIndicatorColor = AccentYellow,
                     unfocusedIndicatorColor = OutlineSoft,
                     cursorColor = AccentYellow,

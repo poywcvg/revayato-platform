@@ -613,6 +613,52 @@ class SoftSubClassifierTests(SimpleTestCase):
             sources = _ensure_reachable_softsub_sources(movie)
         self.assertEqual(sources, [])
 
+    def test_expired_soft_sources_are_an_outage_not_a_miss(self):
+        from unittest.mock import MagicMock, patch
+
+        from apps.catalog.subtitle_extract import _ensure_reachable_softsub_sources
+        from apps.catalog.subtitle_provider_health import track_provider_outages
+
+        movie = MagicMock()
+        movie.download_links = [{
+            'label': 'Soft 720',
+            'url': 'https://dl.example/Movies/x/Soft/a.mkv?md5=old&expires=1',
+            'kind': 'softsub',
+            'quality': '720p',
+        }]
+        movie.refresh_from_db = MagicMock()
+
+        with (
+            patch('apps.catalog.subtitle_extract.refresh_softsub_download_links', return_value=False),
+            patch('apps.catalog.subtitle_extract._http_url_reachable', return_value=False),
+            patch('apps.catalog.subtitle_extract._pick_live_extract_sources', return_value=[]),
+            track_provider_outages() as outages,
+        ):
+            self.assertEqual(_ensure_reachable_softsub_sources(movie), [])
+        self.assertEqual(outages, {'softsub_source'})
+
+    def test_dead_cdnhost_is_not_an_outage(self):
+        from unittest.mock import MagicMock, patch
+
+        from apps.catalog.subtitle_extract import _ensure_reachable_softsub_sources
+        from apps.catalog.subtitle_provider_health import track_provider_outages
+
+        movie = MagicMock()
+        movie.download_links = [{
+            'label': 'Soft 720',
+            'url': 'https://dl5.cdnhost.lol/Movies/x/Soft/a.mkv',
+            'kind': 'softsub',
+            'quality': '720p',
+        }]
+        movie.refresh_from_db = MagicMock()
+
+        with (
+            patch('apps.catalog.subtitle_extract.refresh_softsub_download_links', return_value=False),
+            track_provider_outages() as outages,
+        ):
+            _ensure_reachable_softsub_sources(movie)
+        self.assertEqual(outages, set())
+
     def test_extract_webvtt_skips_dead_cdnhost(self):
         from apps.catalog.subtitle_extract import extract_webvtt_from_url
 
@@ -729,3 +775,69 @@ class SlowSubtitleHostBenchTests(SimpleTestCase):
             probe.assert_not_called()
             extract_webvtt_from_url('https://fast.example/Soft/film.mkv')
             probe.assert_called()
+
+
+class FastSyncEmbeddedTests(SimpleTestCase):
+    """Open-player file-first path: hard-capped, provider-shaped, never raising."""
+
+    def test_fast_sync_needs_nothing_but_a_reachable_file(self):
+        import subprocess
+        from unittest.mock import patch
+
+        from apps.catalog.subtitle_extract import extract_webvtt_fast_sync
+
+        # No ffprobe binary: instant miss, no network, no exception.
+        with patch('apps.catalog.subtitle_extract.shutil.which', return_value=None):
+            self.assertIsNone(extract_webvtt_fast_sync('https://cdn.example/Soft/f.mkv', timeout_seconds=4))
+
+    def test_fast_sync_demuxes_top_persian_stream_within_budget(self):
+        import json
+        import subprocess
+        from pathlib import Path
+        from unittest.mock import patch
+
+        from apps.catalog.subtitle_extract import extract_webvtt_fast_sync
+
+        probe_json = json.dumps({'streams': [
+            {'index': 2, 'codec_name': 'subrip', 'tags': {'language': 'fas'}},
+            {'index': 3, 'codec_name': 'subrip', 'tags': {'language': 'eng'}},
+        ]}).encode()
+        seen_timeouts = []
+        seen_commands = []
+
+        def _fake_run(command, **kwargs):
+            seen_timeouts.append(kwargs.get('timeout'))
+            seen_commands.append(command)
+            if command[0] == 'ffprobe':
+                return subprocess.CompletedProcess(command, 0, stdout=probe_json, stderr=b'')
+            out = Path(command[-1])
+            out.write_bytes(
+                '1\n00:00:01,000 --> 00:00:02,000\nسلام دنیا، این یک زیرنویس فارسی است\n'.encode('utf-8'),
+            )
+            return subprocess.CompletedProcess(command, 0, stdout=b'', stderr=b'')
+
+        with patch('apps.catalog.subtitle_extract._source_reachable', return_value=True), patch(
+            'apps.catalog.subtitle_extract.ffmpeg_available', return_value=True,
+        ), patch('apps.catalog.subtitle_extract.shutil.which', return_value='/usr/bin/ffprobe'), patch(
+            'apps.catalog.subtitle_extract.subprocess.run', side_effect=_fake_run,
+        ):
+            payload = extract_webvtt_fast_sync('https://cdn.example/Soft/f.mkv', timeout_seconds=6)
+
+        self.assertTrue((payload or b'').startswith(b'WEBVTT'))
+        # Persian stream (index 2) wins over English; both calls fit the budget.
+        self.assertTrue(all(t <= 6 for t in seen_timeouts if t))
+        ffmpeg_calls = [c for c in seen_commands if c[0] == 'ffmpeg']
+        self.assertEqual(len(ffmpeg_calls), 1)
+        self.assertIn('0:2', ffmpeg_calls[0])
+
+    def test_pick_source_prefers_playing_file_and_skips_hardsub(self):
+        from apps.catalog.subtitle_extract import _pick_sync_embedded_source
+
+        soft = {'url': 'https://cdn.example/Soft/f.480p.mkv', 'label': 'Soft 480p', 'quality': '480p'}
+        hard = {'url': 'https://cdn.example/Hard/f.480p.mp4', 'label': 'HardSub 480p', 'quality': '480p'}
+        url, _ = _pick_sync_embedded_source([soft, hard], 'https://cdn.example/Soft/f.480p.mkv')
+        self.assertEqual(url, 'https://cdn.example/Soft/f.480p.mkv')
+        url, _ = _pick_sync_embedded_source([hard], '')
+        self.assertEqual(url, '')
+        url, _ = _pick_sync_embedded_source([], '')
+        self.assertEqual(url, '')

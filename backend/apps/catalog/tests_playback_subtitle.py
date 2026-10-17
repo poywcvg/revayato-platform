@@ -213,7 +213,9 @@ class PlaybackSubtitleEnsureTests(TestCase):
 
         with (
             patch('apps.catalog.tasks.enqueue_movie_softsub_urgent', return_value=True) as enqueue,
+            patch('apps.catalog.playback_subtitle._attach_embedded_sync_movie', return_value=False) as embedded,
             patch('apps.catalog.subtitle_extract._attach_subtitlestar_subtitle', return_value=False) as star,
+            patch('apps.catalog.subtitle_extract._attach_subdl_subtitle', return_value=False),
             patch('apps.catalog.subtitle_extract._attach_subzone_subtitle', return_value=False) as subzone,
             patch('apps.catalog.subtitle_extract.extract_webvtt_from_url') as extract,
         ):
@@ -282,6 +284,90 @@ class PlaybackSubtitleEnsureTests(TestCase):
         self.assertTrue(result.get('synced'))
         self.assertEqual(self.movie.subtitle_tracks[0].get('provider'), 'subtitlestar')
 
+    @override_settings(SOFTSUB_ALLOW_FFMPEG=True, SUBTITLESTAR_ENABLED=True, SUBZONE_ENABLED=True)
+    def test_ensure_sync_tries_file_before_providers(self):
+        """The playing file itself is attempted first; providers run only on miss."""
+        self.movie.download_links = [{
+            'url': 'https://cdn.example/Soft/movie.Soft.480p.mkv',
+            'label': 'زیرنویس فارسی · Soft 480p',
+            'quality': '480p',
+            'kind': 'softsub',
+        }]
+        self.movie.save(update_fields=['download_links'])
+        calls = []
+
+        def _fake_embedded(movie, links, *, timeout_seconds, preferred_source_url=''):
+            calls.append('embedded')
+            movie.subtitle_tracks = [{
+                'id': 'fa-embedded-1',
+                'language': 'fa',
+                'label': 'فارسی',
+                'key': 'catalog/subtitles/embedded-test.vtt',
+                'provider': 'embedded',
+            }]
+            movie.has_subtitle = True
+            movie.save(update_fields=['subtitle_tracks', 'has_subtitle'])
+            return True
+
+        def _fake_star(movie, links, *, timeout_seconds, preferred_source_url=''):
+            calls.append('providers')
+            return False
+
+        with (
+            patch('apps.catalog.tasks.enqueue_movie_softsub_urgent', return_value=True),
+            patch('apps.catalog.playback_subtitle._attach_embedded_sync_movie', side_effect=_fake_embedded),
+            patch('apps.catalog.subtitle_extract._attach_subtitlestar_subtitle', side_effect=_fake_star),
+            patch('apps.catalog.subtitle_extract._attach_subdl_subtitle', return_value=False),
+            patch('apps.catalog.subtitle_extract._attach_subzone_subtitle', return_value=False),
+        ):
+            from apps.catalog.playback_subtitle import ensure_playback_subtitles
+            result = ensure_playback_subtitles(
+                content_type='movie',
+                slug=self.movie.slug,
+                playback_source_url='https://cdn.example/Soft/movie.Soft.480p.mkv',
+                sync=True,
+                timeout_seconds=14,
+            )
+
+        self.movie.refresh_from_db()
+        self.assertEqual(calls, ['embedded'])
+        self.assertEqual(result.get('status'), 'ready')
+        self.assertEqual(result.get('message'), 'attached')
+        self.assertEqual(self.movie.subtitle_tracks[0].get('provider'), 'embedded')
+
+    @override_settings(
+        SOFTSUB_ALLOW_FFMPEG=True, SUBTITLESTAR_ENABLED=True, SUBZONE_ENABLED=True,
+        PLAYBACK_SYNC_EMBEDDED_SECONDS=0,
+    )
+    def test_ensure_sync_skips_file_when_disabled(self):
+        """PLAYBACK_SYNC_EMBEDDED_SECONDS=0 restores providers-only behaviour."""
+        self.movie.download_links = [{
+            'url': 'https://cdn.example/Soft/movie.Soft.480p.mkv',
+            'label': 'زیرنویس فارسی · Soft 480p',
+            'quality': '480p',
+            'kind': 'softsub',
+        }]
+        self.movie.save(update_fields=['download_links'])
+
+        with (
+            patch('apps.catalog.tasks.enqueue_movie_softsub_urgent', return_value=True),
+            patch('apps.catalog.playback_subtitle._attach_embedded_sync_movie') as embedded,
+            patch('apps.catalog.subtitle_extract._attach_subtitlestar_subtitle', return_value=False) as star,
+            patch('apps.catalog.subtitle_extract._attach_subdl_subtitle', return_value=False),
+            patch('apps.catalog.subtitle_extract._attach_subzone_subtitle', return_value=False),
+        ):
+            from apps.catalog.playback_subtitle import ensure_playback_subtitles
+            result = ensure_playback_subtitles(
+                content_type='movie',
+                slug=self.movie.slug,
+                sync=True,
+                timeout_seconds=14,
+            )
+
+        self.assertEqual(result.get('status'), 'queued')
+        embedded.assert_not_called()
+        star.assert_called_once()
+
     @override_settings(SUBTITLESTAR_ENABLED=True, SUBZONE_ENABLED=True)
     def test_ensure_attaches_subzone_when_star_misses(self):
         self.movie.download_links = [{
@@ -307,6 +393,7 @@ class PlaybackSubtitleEnsureTests(TestCase):
         with (
             patch('apps.catalog.tasks.enqueue_movie_softsub_urgent', return_value=True),
             patch('apps.catalog.subtitle_extract._attach_subtitlestar_subtitle', return_value=False),
+            patch('apps.catalog.subtitle_extract._attach_subdl_subtitle', return_value=False),
             patch('apps.catalog.subtitle_extract._attach_subzone_subtitle', side_effect=_fake_subzone),
         ):
             from apps.catalog.playback_subtitle import ensure_playback_subtitles

@@ -305,7 +305,7 @@ onBeforeUnmount(() => {
     <div
       v-if="mobileMenu"
       ref="mobileMenuRef"
-      class="pill-nav__mobile absolute top-[3em] right-4 left-4 z-[998] origin-top rounded-[27px] shadow-[0_8px_32px_rgba(0,0,0,0.12)] md:hidden"
+      class="pill-nav__mobile absolute top-[3em] right-4 left-4 z-[998] origin-top rounded-[27px] md:hidden"
       :style="{ ...cssVars, background: 'var(--base, #f0f0f0)' }"
     >
       <ul class="m-0 flex list-none flex-col gap-[3px] p-[3px]">

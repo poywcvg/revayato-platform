@@ -18,15 +18,40 @@ const categoryOptions: Array<{ value: SupportCategory; label: string; icon: Cine
 const category = ref<SupportCategory>('content_request')
 const subject = ref('')
 const body = ref('')
+const relatedTitle = ref('')
+const relatedYear = ref('')
+const relatedUrl = ref('')
 const submitting = ref(false)
 const created = ref<SupportTicket | null>(null)
 const copied = ref(false)
+
+// «درخواست عنوان» و «اصلاح اطلاعات» بدون نام/سال دقیق قابل خودکارسازی نیست:
+// همان فیلدهای صفحه /contact را این‌جا هم می‌گیریم تا موتور content_request
+// بتواند عنوان را در کاتالوگ پیدا و خودکار حل کند.
+const needsRelated = computed(() => category.value === 'content_request' || category.value === 'content_fix')
+
+function toEnDigits(value: string): string {
+  return (value || '')
+    .replace(/[۰-۹]/g, d => String('۰۱۲۳۴۵۶۷۸۹'.indexOf(d)))
+    .replace(/[٠-٩]/g, d => String('٠١٢٣٤٥٦٧٨٩'.indexOf(d)))
+}
+
+function parseYearOrNull(raw: string): number | null {
+  const digits = toEnDigits(raw).trim().replace(/[^0-9]/g, '')
+  if (!digits) return null
+  const year = Number(digits)
+  if (!Number.isFinite(year) || year < 1900 || year > 2100) return null
+  return year
+}
 
 watch(isOpen, (open) => {
   if (!open) return
   created.value = null
   subject.value = ''
   body.value = ''
+  relatedTitle.value = ''
+  relatedYear.value = ''
+  relatedUrl.value = ''
   copied.value = false
   const preset = categoryOptions.find(option => option.value === presetCategory.value)
   category.value = preset?.value || 'content_request'
@@ -55,15 +80,25 @@ async function submit() {
     notifications.warning('پیام ناقص است', 'موضوع و متن کامل‌تری بنویس.')
     return
   }
+  const yearRaw = relatedYear.value.trim()
+  if (yearRaw && parseYearOrNull(yearRaw) === null) {
+    notifications.warning('سال معتبر نیست', 'سال را بین ۱۹۰۰ تا ۲۱۰۰ بنویس (مثلاً 2010).')
+    return
+  }
+  const urlRaw = relatedUrl.value.trim()
+  if (urlRaw && !/^https?:\/\/.+\..+/.test(urlRaw)) {
+    notifications.warning('لینک معتبر نیست', 'لینک باید با http(s) شروع شود.')
+    return
+  }
   submitting.value = true
   try {
     created.value = await support.create({
       category: category.value,
       subject: subject.value.trim(),
       body: body.value.trim(),
-      related_title: '',
-      related_year: null,
-      related_url: '',
+      related_title: needsRelated.value ? relatedTitle.value.trim() : '',
+      related_year: needsRelated.value ? parseYearOrNull(yearRaw) : null,
+      related_url: needsRelated.value ? urlRaw : '',
     })
   } catch (cause) {
     notifications.notifyError(cause, 'ارسال پیام انجام نشد.')
@@ -95,7 +130,7 @@ async function copyCode() {
         aria-modal="true"
         aria-label="ارتباط سریع با پشتیبانی روایتو"
       >
-        <div class="absolute inset-0 bg-black/60 backdrop-blur-md" aria-hidden="true" @click="close" />
+        <div class="absolute inset-0 bg-black/60" aria-hidden="true" @click="close" />
 
         <div class="support-aurora pointer-events-none absolute inset-0 overflow-hidden" aria-hidden="true">
           <span class="support-aurora__blob support-aurora__blob--a" />
@@ -104,7 +139,7 @@ async function copyCode() {
 
         <section
           data-support-modal
-          class="relative w-full max-w-lg overflow-hidden rounded-t-3xl border border-white/12 bg-surface/92 shadow-[0_30px_80px_rgba(0,0,0,.55)] backdrop-blur-2xl sm:rounded-3xl"
+          class="relative w-full max-w-lg overflow-hidden rounded-t-3xl border border-white/12 bg-surface/92 sm:rounded-3xl"
         >
           <header class="flex items-center justify-between gap-3 border-b border-white/8 px-5 py-4">
             <div class="flex items-center gap-3">
@@ -177,6 +212,29 @@ async function copyCode() {
                 aria-label="متن پیام"
               />
 
+              <div v-if="needsRelated" class="grid gap-2 sm:grid-cols-2">
+                <input
+                  v-model="relatedTitle"
+                  class="ui-field px-4 text-sm"
+                  placeholder="نام دقیق فیلم / سریال"
+                  aria-label="نام فیلم یا سریال"
+                >
+                <input
+                  v-model="relatedYear"
+                  class="ui-field px-4 text-sm"
+                  inputmode="numeric"
+                  placeholder="سال (مثلاً 2010)"
+                  aria-label="سال انتشار"
+                >
+                <input
+                  v-model="relatedUrl"
+                  dir="ltr"
+                  class="ui-field px-4 text-left text-sm sm:col-span-2"
+                  placeholder="لینک IMDb / TMDB (اختیاری) https://…"
+                  aria-label="لینک مرتبط"
+                >
+              </div>
+
               <button type="submit" class="ui-primary-button min-h-11 w-full" :disabled="submitting">
                 {{ submitting ? 'در حال ارسال…' : 'ارسال سریع' }}
                 <CinematicIcon name="arrow-left" class="size-4" />
@@ -200,8 +258,7 @@ async function copyCode() {
   width: 22rem;
   height: 22rem;
   border-radius: 9999px;
-  filter: blur(90px);
-  opacity: .35;
+  display: none;
   animation: support-blob-drift 9s ease-in-out infinite alternate;
 }
 
@@ -229,16 +286,16 @@ async function copyCode() {
   align-items: center;
   justify-content: center;
   gap: .45rem;
-  border: 1px solid rgb(255 255 255 / 10%);
+  border: 1px solid rgb(var(--palette-ink-rgb) / 10%);
   border-radius: 1rem;
-  background: rgb(255 255 255 / 4%);
+  background: rgb(var(--palette-ink-rgb) / 4%);
   color: var(--theme-text-secondary);
   font-size: .72rem;
   font-weight: 800;
   transition: all 160ms ease;
 }
 
-.support-chip:hover { border-color: rgb(255 255 255 / 20%); color: var(--theme-text-primary); }
+.support-chip:hover { border-color: rgb(var(--palette-ink-rgb) / 20%); color: var(--theme-text-primary); }
 
 .support-chip.is-active {
   border-color: transparent;

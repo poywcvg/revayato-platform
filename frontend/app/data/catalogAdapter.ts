@@ -486,7 +486,7 @@ export function adaptApiCatalogItem(item: ApiCatalogItem, type: ContentType, med
     has_downloads: Boolean(item.has_downloads ?? downloadLinks.length),
     download_qualities: item.download_qualities?.length
       ? item.download_qualities
-      : [...new Set(downloadLinks.map(link => link.quality).filter(Boolean))],
+      : [...new Set(downloadLinks.map(link => link.quality).filter((quality): quality is string => Boolean(quality)))],
     seo_title: item.seo_title || persianTitle || englishTitle,
     seo_description: item.seo_description || '',
     seo_keywords: item.seo_keywords || [],

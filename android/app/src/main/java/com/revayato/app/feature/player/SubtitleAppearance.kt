@@ -11,22 +11,24 @@ import androidx.media3.ui.SubtitleView
 import com.revayato.app.R
 
 /**
- * User-selectable subtitle typeface. Yekan Plus (the app's Persian face) is the
- * default; the rest are Android system families whose Noto fallbacks also render
- * Persian, giving the viewer a real choice of shape without bundling more fonts.
+ * User-selectable subtitle typeface. Vazirmatn Bold is the default: a heavy,
+ * open Persian face that stays legible over any picture (the UI's Yekan is too
+ * thin for captions). The rest are Android system families whose Noto fallbacks
+ * also render Persian. A saved "YEKAN" from older builds no longer matches an
+ * entry, so it falls back to the new default on its own.
  */
 enum class SubtitleFont(val title: String) {
-    YEKAN("یکان"),
+    VAZIR("وزیر"),
     SANS("ساده"),
     SERIF("سریف"),
     MONO("تک‌عرض"),
     ;
 
-    /** Resolve to a concrete [Typeface]; Yekan loads from the bundled font. */
+    /** Resolve to a concrete [Typeface]; Vazirmatn loads from the bundled font. */
     fun typeface(context: Context): Typeface = when (this) {
-        YEKAN -> runCatching { ResourcesCompat.getFont(context, R.font.yekan_plus) }
-            .getOrNull() ?: Typeface.SANS_SERIF
-        SANS -> Typeface.SANS_SERIF
+        VAZIR -> runCatching { ResourcesCompat.getFont(context, R.font.vazirmatn_bold) }
+            .getOrNull() ?: Typeface.DEFAULT_BOLD
+        SANS -> Typeface.DEFAULT_BOLD
         SERIF -> Typeface.SERIF
         MONO -> Typeface.MONOSPACE
     }
@@ -55,7 +57,7 @@ enum class SubtitleColor(val title: String, val fg: Int) {
 
 /** The viewer's chosen subtitle look, persisted across sessions. */
 data class SubtitleAppearance(
-    val font: SubtitleFont = SubtitleFont.YEKAN,
+    val font: SubtitleFont = SubtitleFont.VAZIR,
     val size: SubtitleSize = SubtitleSize.MEDIUM,
     val color: SubtitleColor = SubtitleColor.WHITE,
     // How far above the bottom edge the caption sits, as a fraction of the view
@@ -74,7 +76,7 @@ fun loadSubtitleAppearance(context: Context): SubtitleAppearance {
     val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
     val font = prefs.getString(KEY_FONT, null)
         ?.let { name -> SubtitleFont.entries.firstOrNull { it.name == name } }
-        ?: SubtitleFont.YEKAN
+        ?: SubtitleFont.VAZIR
     val size = prefs.getString(KEY_SIZE, null)
         ?.let { name -> SubtitleSize.entries.firstOrNull { it.name == name } }
         ?: SubtitleSize.MEDIUM
@@ -112,7 +114,7 @@ fun SubtitleColor.next(): SubtitleColor =
     SubtitleColor.entries[(ordinal + 1) % SubtitleColor.entries.size]
 
 /**
- * Apply an appearance to the player's [SubtitleView]: a clean white-on-shadow
+ * Apply an appearance to the player's [SubtitleView]: a clean outlined
  * caption style with the chosen typeface and a fixed size. Embedded styles are
  * turned off so the viewer's font choice always wins, even over styled soft subs.
  */
@@ -125,7 +127,8 @@ fun SubtitleView.applyAppearance(context: Context, appearance: SubtitleAppearanc
             appearance.color.fg,
             AndroidColor.TRANSPARENT,
             AndroidColor.TRANSPARENT,
-            CaptionStyleCompat.EDGE_TYPE_DROP_SHADOW,
+            // A solid black outline reads on white snow and dark night alike.
+            CaptionStyleCompat.EDGE_TYPE_OUTLINE,
             AndroidColor.BLACK,
             appearance.font.typeface(context),
         ),

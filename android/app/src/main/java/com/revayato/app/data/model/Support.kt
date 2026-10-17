@@ -66,8 +66,12 @@ data class SupportTicketDetailDto(
     @SerialName("created_at") val createdAt: String = "",
     @SerialName("updated_at") val updatedAt: String = "",
 ) {
-    /** True once the conversation is closed for new replies. */
-    val isClosed: Boolean get() = status == "resolved" || status == "closed"
+    /**
+     * True only once the conversation is closed for new replies. A `resolved`
+     * ticket still accepts a follow-up (the backend reopens it to `open`) —
+     * same rule as the web inbox, which only hides the composer on `closed`.
+     */
+    val isClosed: Boolean get() = status == "closed"
 }
 
 /** Follow-up reply into an existing ticket (POST api/support/tickets/{code}/). */

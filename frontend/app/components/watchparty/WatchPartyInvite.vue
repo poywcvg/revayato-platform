@@ -125,7 +125,7 @@ onBeforeUnmount(() => {
 
 .party-invite-btn--copy:hover {
   background: #7dd3fc;
-  box-shadow: 0 8px 20px rgb(56 189 248 / 28%);
+  box-shadow: none;
 }
 
 .party-invite-btn--copy.is-done {
@@ -143,6 +143,6 @@ onBeforeUnmount(() => {
   color: #ecfdf5;
   background: rgb(176 228 204 / 24%);
   border-color: rgb(176 228 204 / 48%);
-  box-shadow: 0 8px 20px rgb(176 228 204 / 16%);
+  box-shadow: none;
 }
 </style>

@@ -265,7 +265,7 @@ useSeoMeta({
   description: seoDescription,
   ogTitle: seoTitle,
   ogDescription: seoDescription,
-  ogImage: () => items.value.find(item => item.has_backdrop)?.backdrop_url || undefined,
+  ogImage: () => seoImage(config.public.siteUrl, items.value.find(item => item.has_backdrop)?.backdrop_url) || undefined,
   twitterCard: 'summary_large_image',
   robots: () => (total.value >= MIN_INDEXABLE_TITLES ? 'index, follow, max-image-preview:large' : 'noindex, follow'),
 })

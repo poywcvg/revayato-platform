@@ -110,9 +110,9 @@ fun QualityPickerSheet(
 
 /** Distinct accent per version so the sections read apart at a glance. */
 internal fun versionColor(kind: PlaybackVersionKind): Color = when (kind) {
-    PlaybackVersionKind.DUBBED -> Color(0xFF7BD88F)
-    PlaybackVersionKind.HARDSUB -> Color(0xFFF2B15A)
-    PlaybackVersionKind.SOFTSUB -> Color(0xFF6FB6FF)
+    PlaybackVersionKind.DUBBED -> Color(0xFFD98C84)
+    PlaybackVersionKind.HARDSUB -> Color(0xFFE8A04E)
+    PlaybackVersionKind.SOFTSUB -> Color(0xFF8FA8C7)
     PlaybackVersionKind.ORIGINAL -> Color(0xFFB8BCC6)
 }
 

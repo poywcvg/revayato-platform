@@ -17,7 +17,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import com.revayato.app.core.theme.BrandMint
+import com.revayato.app.core.theme.Brand
 import com.revayato.app.core.ui.UiState
 import com.revayato.app.ui.components.EmptyState
 import com.revayato.app.ui.components.ErrorState
@@ -53,12 +53,12 @@ fun LibraryScreen(
         TabRow(
             selectedTabIndex = tab,
             containerColor = MaterialTheme.colorScheme.background,
-            contentColor = BrandMint,
+            contentColor = Brand,
             indicator = { positions ->
                 if (tab < positions.size) {
                     TabRowDefaults.SecondaryIndicator(
                         Modifier.tabIndicatorOffset(positions[tab]),
-                        color = BrandMint,
+                        color = Brand,
                     )
                 }
             },
@@ -71,7 +71,7 @@ fun LibraryScreen(
                         if (index == 2) onOpenDownloads()
                     },
                     text = { Text(title, style = MaterialTheme.typography.labelLarge) },
-                    selectedContentColor = BrandMint,
+                    selectedContentColor = Brand,
                     unselectedContentColor = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }

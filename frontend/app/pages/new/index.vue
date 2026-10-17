@@ -118,7 +118,7 @@ useSeoMeta({
       :count="total"
       count-label="عنوان"
     >
-      <div class="hide-scrollbar flex gap-2 overflow-x-auto pb-1">
+      <ScrollStrip track-class="flex gap-2 pb-1" role="group" label="نوع محتوا">
         <button
           v-for="option in kindOptions"
           :key="option.value"
@@ -137,7 +137,7 @@ useSeoMeta({
           />
           {{ option.label }}
         </button>
-      </div>
+      </ScrollStrip>
     </PageHero>
 
     <CatalogSourceNotice

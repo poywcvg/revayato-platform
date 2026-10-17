@@ -23,7 +23,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import com.revayato.app.core.theme.BrandMint
+import com.revayato.app.core.theme.Brand
 import com.revayato.app.feature.collection.BackTopBar
 import com.revayato.app.ui.components.EmptyState
 import com.revayato.app.ui.components.ErrorState
@@ -84,7 +84,7 @@ fun PeopleListScreen(
                 if (state.loadingMore) {
                     item(span = { GridItemSpan(3) }) {
                         Box(Modifier.fillMaxWidth().padding(16.dp), contentAlignment = Alignment.Center) {
-                            CircularProgressIndicator(color = BrandMint, strokeWidth = 2.dp)
+                            CircularProgressIndicator(color = Brand, strokeWidth = 2.dp)
                         }
                     }
                 }

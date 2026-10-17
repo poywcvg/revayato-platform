@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import copy
 import gzip
+import hashlib
 import io
 import json
 import logging
+import re
 import time
 import urllib.error
 import urllib.request
@@ -25,6 +28,53 @@ class TMDBError(Exception):
         super().__init__(message)
         self.status_code = status_code
         self.retryable = retryable
+
+
+# Exact detail endpoints (no sub-path): stable for days, re-fetched every round
+# by the import/refresh/metadata lanes for the same ids.
+_TMDB_DETAIL_RE = re.compile(r'^(?:movie|tv)/\d+$')
+
+
+def _tmdb_response_cache_ttl(path: str) -> int:
+    """Cache TTL for a TMDB API path; 0 means always hit the network.
+
+    IMDb→TMDB mappings and title searches barely change; details are
+    re-read for weeks by --stale-days rotation. Lists (popular/top_rated/
+    discover/trending/changes) and sub-resources stay live.
+    """
+    try:
+        if not bool(getattr(settings, 'TMDB_RESP_CACHE_ENABLED', True)):
+            return 0
+    except Exception:
+        pass
+    clean = str(path or '').strip().strip('/')
+    if clean.startswith('find/'):
+        try:
+            return max(0, int(getattr(settings, 'TMDB_FIND_CACHE_SECONDS', 7 * 86400)))
+        except (TypeError, ValueError):
+            return 7 * 86400
+    if clean.startswith('search/'):
+        try:
+            return max(0, int(getattr(settings, 'TMDB_SEARCH_CACHE_SECONDS', 86400)))
+        except (TypeError, ValueError):
+            return 86400
+    if _TMDB_DETAIL_RE.match(clean):
+        try:
+            return max(0, int(getattr(settings, 'TMDB_DETAILS_CACHE_SECONDS', 6 * 3600)))
+        except (TypeError, ValueError):
+            return 6 * 3600
+    return 0
+
+
+def _tmdb_response_cache_key(url: str) -> str:
+    digest = hashlib.sha1(url.encode('utf-8', 'replace')).hexdigest()
+    return f'tmdb:resp:{digest}'
+
+
+# Titled posters carry a language tag; null is textless art (kept for
+# backdrops). The original languages most of the catalog comes from are listed
+# so a title's own release poster is on hand when TMDB has no English one.
+POSTER_IMAGE_LANGUAGES = 'en,null,fa,ko,ja,tr,hi,es,fr,de,it,zh,ru,pt'
 
 
 class TMDBClient:
@@ -101,6 +151,27 @@ class TMDBClient:
         if self.token:
             headers['Authorization'] = f'Bearer {self.token}'
 
+        # Short-TTL response cache: the import/refresh/metadata lanes re-ask
+        # TMDB for the same searches, IMDb mappings and details every round.
+        # A hit saves the whole fa→en fallback chain. Failures are never
+        # cached; a cache outage falls through to the network.
+        cache_key = ''
+        cache_ttl = 0
+        try:
+            cache_ttl = _tmdb_response_cache_ttl(path)
+        except Exception:
+            cache_ttl = 0
+        if cache_ttl > 0:
+            cache_key = _tmdb_response_cache_key(url)
+            try:
+                from django.core.cache import cache as django_cache
+
+                blob = django_cache.get(cache_key)
+                if isinstance(blob, dict):
+                    return copy.deepcopy(blob)
+            except Exception:
+                pass
+
         last_error = None
         for attempt in range(1, self.max_retries + 1):
             request = urllib.request.Request(url, headers=headers)
@@ -119,6 +190,13 @@ class TMDBClient:
                     attempt,
                     self.uses_proxy,
                 )
+                if cache_key and cache_ttl > 0:
+                    try:
+                        from django.core.cache import cache as django_cache
+
+                        django_cache.set(cache_key, copy.deepcopy(payload), timeout=cache_ttl)
+                    except Exception:
+                        pass
                 return payload
             except urllib.error.HTTPError as exc:
                 retryable = exc.code in {408, 429, 500, 502, 503, 504}
@@ -455,11 +533,18 @@ class TMDBClient:
 
     @staticmethod
     def _details_params(append: str) -> dict:
-        # null = original theatrical artwork; en/fa keep localized stills available.
         return {
             'append_to_response': append,
-            'include_image_language': 'null,en,fa',
+            'include_image_language': POSTER_IMAGE_LANGUAGES,
         }
+
+    def title_images(self, kind, tmdb_id):
+        """Poster/backdrop lists of one movie (``kind='movie'``) or series (``'tv'``)."""
+        return self._request(
+            f'{kind}/{int(tmdb_id)}/images',
+            {'include_image_language': POSTER_IMAGE_LANGUAGES},
+            language='en',
+        )
 
     def movie_details(self, movie_id, *, language=None, append='credits,videos,images,release_dates,external_ids,translations'):
         params = self._details_params(append)
