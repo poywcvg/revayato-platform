@@ -1,25 +1,34 @@
 package com.revayato.app.feature.detail
 
 import com.revayato.app.ui.components.FlatSnackbar
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.asPaddingValues
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.ArrowForward
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.SnackbarDuration
 import androidx.compose.material3.SnackbarHost
@@ -35,11 +44,15 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import kotlinx.coroutines.launch
+import com.revayato.app.core.theme.Brand
 import com.revayato.app.core.ui.UiState
 import com.revayato.app.data.model.GenreDto
 import com.revayato.app.data.model.MovieDetailDto
@@ -256,7 +269,7 @@ private fun MovieDetailBody(
                 verticalArrangement = Arrangement.spacedBy(14.dp),
             ) {
                 movie.description?.takeIf { it.isNotBlank() }?.let {
-                    SectionTitle("خلاصه داستان")
+                    SectionTitle("درباره فیلم")
                     ExpandableText(text = it)
                 }
                 if (movie.cast.isNotEmpty()) {
@@ -283,7 +296,7 @@ private fun MovieDetailBody(
         if (state.similar.isNotEmpty()) {
             item {
                 MediaRail(
-                    title = "مشابه این فیلم",
+                    title = "بیشتر شبیه این",
                     items = state.similar,
                     onItemClick = { onOpenTitle(it.contentType, it.slug) },
                 )
@@ -330,25 +343,47 @@ private fun MovieDetailBody(
 
 @Composable
 fun SectionTitle(text: String, modifier: Modifier = Modifier) {
-    Text(
-        text = text,
-        style = MaterialTheme.typography.titleMedium,
-        fontWeight = FontWeight.Bold,
-        color = MaterialTheme.colorScheme.onSurface,
-        modifier = modifier.padding(top = 8.dp),
-    )
+    Row(
+        modifier = modifier
+            .fillMaxWidth()
+            .padding(top = 12.dp, bottom = 2.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Box(
+            Modifier
+                .size(width = 4.dp, height = 18.dp)
+                .clip(RoundedCornerShape(2.dp))
+                .background(Brand),
+        )
+        Spacer(Modifier.width(8.dp))
+        Text(
+            text = text,
+            style = MaterialTheme.typography.titleMedium,
+            fontWeight = FontWeight.Bold,
+            color = MaterialTheme.colorScheme.onSurface,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+        )
+    }
 }
 
 @Composable
 fun BackButton(onBack: () -> Unit, modifier: Modifier = Modifier) {
-    IconButton(
-        onClick = onBack,
-        modifier = modifier.padding(8.dp),
+    Box(
+        modifier = modifier
+            .padding(12.dp)
+            .size(42.dp)
+            .clip(CircleShape)
+            .background(Color.Black.copy(alpha = 0.38f))
+            .border(1.dp, Color.White.copy(alpha = 0.18f), CircleShape)
+            .clickable(onClick = onBack),
+        contentAlignment = Alignment.Center,
     ) {
         Icon(
             imageVector = Icons.AutoMirrored.Rounded.ArrowForward,
             contentDescription = "بازگشت",
-            tint = MaterialTheme.colorScheme.onSurface,
+            tint = Color.White,
+            modifier = Modifier.size(22.dp),
         )
     }
 }

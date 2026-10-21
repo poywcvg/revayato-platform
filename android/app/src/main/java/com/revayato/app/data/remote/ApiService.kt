@@ -15,6 +15,7 @@ import com.revayato.app.data.model.CollectionItemRequest
 import com.revayato.app.data.model.CollectionPickRowDto
 import com.revayato.app.data.model.ContentIssueReportRequest
 import com.revayato.app.data.model.ContentIssueReportResult
+import com.revayato.app.data.model.ContentIssueStatusResult
 import com.revayato.app.data.model.CountryDto
 import com.revayato.app.data.model.CreateRoomRequest
 import com.revayato.app.data.model.EngagementEventRequest
@@ -26,6 +27,8 @@ import com.revayato.app.data.model.PagedResponse
 import com.revayato.app.data.model.PasswordResetRequest
 import com.revayato.app.data.model.PersonDetailDto
 import com.revayato.app.data.model.PersonListItemDto
+import com.revayato.app.data.model.PlaybackFailureRequest
+import com.revayato.app.data.model.PlaybackFailureResult
 import com.revayato.app.data.model.PlaybackSubtitleEnsureRequest
 import com.revayato.app.data.model.PlaybackSubtitleResult
 import com.revayato.app.data.model.PublicProfileDto

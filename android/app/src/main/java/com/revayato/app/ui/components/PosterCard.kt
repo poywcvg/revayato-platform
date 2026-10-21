@@ -4,6 +4,7 @@ import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
@@ -56,6 +57,8 @@ import com.revayato.app.core.theme.BgElevated
 import com.revayato.app.core.theme.OutlineSoft
 import com.revayato.app.core.theme.TextMuted
 import com.revayato.app.core.theme.TextPrimary
+import com.revayato.app.core.theme.motionScale
+import com.revayato.app.core.theme.rememberedPressScale
 import com.revayato.app.data.model.CatalogCardDto
 import java.util.Locale
 
@@ -72,12 +75,19 @@ fun PosterCard(
     showTitle: Boolean = true,
 ) {
     val title = item.englishTitle
+    val interaction = remember { MutableInteractionSource() }
+    val pressScale = rememberedPressScale(interaction)
     Column(
         modifier = modifier
+            .motionScale(pressScale)
             .clip(RoundedCornerShape(14.dp))
             .background(BgElevated)
             .border(1.dp, OutlineSoft.copy(alpha = 0.7f), RoundedCornerShape(14.dp))
-            .clickable(onClick = onClick)
+            .clickable(
+                interactionSource = interaction,
+                indication = null,
+                onClick = onClick,
+            )
             .padding(start = 6.dp, end = 6.dp, top = 6.dp, bottom = if (showTitle) 8.dp else 6.dp),
         verticalArrangement = Arrangement.spacedBy(7.dp),
     ) {

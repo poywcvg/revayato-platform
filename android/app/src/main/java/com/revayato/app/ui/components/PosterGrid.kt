@@ -23,6 +23,7 @@ fun PosterGrid(
     columns: Int = posterGridColumns(),
     state: LazyGridState = rememberLazyGridState(),
     header: (@Composable () -> Unit)? = null,
+    featured: (@Composable () -> Unit)? = null,
 ) {
     LazyVerticalGrid(
         columns = GridCells.Fixed(columns),
@@ -35,6 +36,11 @@ fun PosterGrid(
         if (header != null) {
             item(span = { androidx.compose.foundation.lazy.grid.GridItemSpan(columns) }) {
                 header()
+            }
+        }
+        if (featured != null) {
+            item(span = { androidx.compose.foundation.lazy.grid.GridItemSpan(columns) }) {
+                featured()
             }
         }
         items(items, key = { "${it.contentType}-${it.id}" }) { item ->

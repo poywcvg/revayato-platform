@@ -3,14 +3,15 @@ package com.revayato.app.navigation
 import com.revayato.app.core.theme.BgMain
 import com.revayato.app.core.theme.NeutralSurface
 import com.revayato.app.core.theme.OnBrand
+import com.revayato.app.core.theme.RevayatoMotion
 import com.revayato.app.core.theme.RevayatoTheme
 import com.revayato.app.ui.components.ThemeToggle
 
 import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
+import androidx.compose.animation.scaleIn
 import androidx.compose.animation.slideInHorizontally
 import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutHorizontally
@@ -96,8 +97,87 @@ import androidx.compose.foundation.layout.Column
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.launch
 
-/** Duration of the fast page-slide motion between screens. */
-private const val FAST_MOTION_MS = 220
+/*
+ * Motion is deliberately declared once, here. Detail pages share a gentle
+ * push/settle, tabs cross-fade instead of sliding (a tab is a lateral sibling,
+ * not a child), search rises from the top, and the two cinema routes fade from
+ * black. This is what keeps every navigation feeling like the same product.
+ */
+private fun pageEnter() =
+    slideInHorizontally(
+        animationSpec = tween(RevayatoMotion.Standard, easing = RevayatoMotion.Emphasized),
+    ) { it / 7 } +
+        fadeIn(tween(220, easing = RevayatoMotion.Decelerate)) +
+        scaleIn(
+            animationSpec = tween(RevayatoMotion.Standard, easing = RevayatoMotion.Emphasized),
+            initialScale = 0.985f,
+        )
+
+private fun pageExit() =
+    slideOutHorizontally(
+        animationSpec = tween(RevayatoMotion.Standard, easing = RevayatoMotion.Emphasized),
+    ) { -it / 14 } +
+        fadeOut(tween(RevayatoMotion.Fast))
+
+private fun popPageEnter() =
+    slideInHorizontally(
+        animationSpec = tween(RevayatoMotion.Standard, easing = RevayatoMotion.Emphasized),
+    ) { -it / 10 } +
+        fadeIn(tween(220, easing = RevayatoMotion.Decelerate)) +
+        scaleIn(
+            animationSpec = tween(RevayatoMotion.Standard, easing = RevayatoMotion.Emphasized),
+            initialScale = 0.99f,
+        )
+
+private fun popPageExit() =
+    slideOutHorizontally(
+        animationSpec = tween(RevayatoMotion.Standard, easing = RevayatoMotion.Emphasized),
+    ) { it / 8 } +
+        fadeOut(tween(RevayatoMotion.Fast))
+
+private fun tabEnter() =
+    fadeIn(tween(RevayatoMotion.Fast, easing = RevayatoMotion.Decelerate)) +
+        scaleIn(
+            animationSpec = tween(260, easing = RevayatoMotion.Decelerate),
+            initialScale = 0.992f,
+        )
+
+private fun tabExit() = fadeOut(tween(150))
+
+private fun searchEnter() =
+    slideInVertically(
+        animationSpec = tween(RevayatoMotion.Standard, easing = RevayatoMotion.Decelerate),
+    ) { -it / 18 } +
+        fadeIn(tween(200, easing = RevayatoMotion.Decelerate))
+
+private fun authEnter() =
+    slideInVertically(
+        animationSpec = tween(RevayatoMotion.Standard, easing = RevayatoMotion.Emphasized),
+    ) { it / 10 } +
+        fadeIn(tween(220, easing = RevayatoMotion.Decelerate))
+
+private fun playerEnter() =
+    fadeIn(tween(260, easing = RevayatoMotion.Decelerate)) +
+        scaleIn(
+            animationSpec = tween(340, easing = RevayatoMotion.Decelerate),
+            initialScale = 0.96f,
+        )
+
+private fun roomEnter() =
+    fadeIn(tween(240, easing = RevayatoMotion.Decelerate)) +
+        scaleIn(
+            animationSpec = tween(320, easing = RevayatoMotion.Decelerate),
+            initialScale = 0.975f,
+        )
+
+private fun cinemaExit() = fadeOut(tween(180, easing = RevayatoMotion.StandardEasing))
+
+private fun settleEnter() =
+    fadeIn(tween(240, easing = RevayatoMotion.Decelerate)) +
+        scaleIn(
+            animationSpec = tween(300, easing = RevayatoMotion.Decelerate),
+            initialScale = 0.985f,
+        )
 
 @Composable
 fun RevayatoRoot(
@@ -121,6 +201,7 @@ fun RevayatoRoot(
     val backStackEntry by navController.currentBackStackEntryAsState()
     val currentRoute = backStackEntry?.destination?.route
     val chromeRoutes = remember { TopLevelDestination.entries.map { it.route }.toSet() + Routes.HOME }
+    val authRoutes = remember { setOf(Routes.LOGIN, Routes.REGISTER, Routes.FORGOT_PASSWORD) }
     val showChrome = currentRoute in chromeRoutes
 
     // The drawer belongs only to the top-level chrome screens. While we are on ANY
@@ -211,20 +292,48 @@ fun RevayatoRoot(
                 startDestination = Routes.HOME,
                 modifier = Modifier.fillMaxSize(),
                 enterTransition = {
-                    slideInHorizontally(tween(FAST_MOTION_MS, easing = FastOutSlowInEasing)) { it } +
-                        fadeIn(tween(FAST_MOTION_MS))
+                    val from = initialState.destination.route
+                    val to = targetState.destination.route
+                    when {
+                        to == Routes.PLAYER -> playerEnter()
+                        to == Routes.WATCH_PARTY_ROOM -> roomEnter()
+                        to == Routes.SEARCH -> searchEnter()
+                        from == Routes.PLAYER -> settleEnter()
+                        to in chromeRoutes && from in chromeRoutes -> tabEnter()
+                        to in authRoutes || from in authRoutes -> authEnter()
+                        else -> pageEnter()
+                    }
                 },
                 exitTransition = {
-                    slideOutHorizontally(tween(FAST_MOTION_MS, easing = FastOutSlowInEasing)) { -it / 4 } +
-                        fadeOut(tween(FAST_MOTION_MS))
+                    val from = initialState.destination.route
+                    val to = targetState.destination.route
+                    when {
+                        from == Routes.PLAYER -> cinemaExit()
+                        to == Routes.PLAYER -> cinemaExit()
+                        to == Routes.SEARCH || from == Routes.SEARCH -> fadeOut(tween(160))
+                        from in chromeRoutes && to in chromeRoutes -> tabExit()
+                        else -> pageExit()
+                    }
                 },
                 popEnterTransition = {
-                    slideInHorizontally(tween(FAST_MOTION_MS, easing = FastOutSlowInEasing)) { -it / 4 } +
-                        fadeIn(tween(FAST_MOTION_MS))
+                    val from = initialState.destination.route
+                    val to = targetState.destination.route
+                    when {
+                        to == Routes.PLAYER -> playerEnter()
+                        from == Routes.PLAYER -> settleEnter()
+                        from in chromeRoutes && to in chromeRoutes -> tabEnter()
+                        else -> popPageEnter()
+                    }
                 },
                 popExitTransition = {
-                    slideOutHorizontally(tween(FAST_MOTION_MS, easing = FastOutSlowInEasing)) { it } +
-                        fadeOut(tween(FAST_MOTION_MS))
+                    val from = initialState.destination.route
+                    val to = targetState.destination.route
+                    when {
+                        from == Routes.PLAYER -> cinemaExit()
+                        to == Routes.PLAYER -> cinemaExit()
+                        from in chromeRoutes && to in chromeRoutes -> tabExit()
+                        else -> popPageExit()
+                    }
                 },
             ) {
                 // ---- Home (start) ----

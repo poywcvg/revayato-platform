@@ -5,6 +5,7 @@ import androidx.lifecycle.viewModelScope
 import com.revayato.app.core.network.ApiResult
 import com.revayato.app.core.network.orNull
 import com.revayato.app.core.search.SearchHistoryStore
+import com.revayato.app.core.search.SearchRanker
 import com.revayato.app.data.model.CatalogCardDto
 import com.revayato.app.data.model.PersonDto
 import com.revayato.app.data.model.SearchResponseDto
@@ -150,16 +151,21 @@ class SearchViewModel @Inject constructor(
     }
 
     private fun applyResult(term: String, data: SearchResponseDto, record: Boolean) {
+        // The backend chooses the candidate set; the client guarantees the
+        // nearest result is actually nearest. This runs on every payload,
+        // including cached ones, so order never depends on response timing.
+        val rankedTitles = SearchRanker.rankTitles(term, data.combined)
+        val rankedPeople = SearchRanker.rankPeople(term, data.actors)
         _state.value = _state.value.copy(
             loading = false,
             hasSearched = true,
-            results = data.combined,
-            people = data.actors,
+            results = rankedTitles,
+            people = rankedPeople,
             error = null,
         )
         // Only remember terms that actually found something, so the history stays
         // useful instead of filling with typos.
-        if (record && (data.combined.isNotEmpty() || data.actors.isNotEmpty())) {
+        if (record && (rankedTitles.isNotEmpty() || rankedPeople.isNotEmpty())) {
             viewModelScope.launch { searchHistoryStore.record(term) }
         }
     }
