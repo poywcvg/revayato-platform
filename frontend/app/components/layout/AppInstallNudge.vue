@@ -7,10 +7,32 @@ const DISMISS_KEY = 'revayato:app-nudge-dismissed-until'
 const VISITS_KEY = 'revayato:app-nudge-visits'
 const visible = ref(false)
 const { trackAppInstall } = useAnalyticsEvent()
+const route = useRoute()
 
-// Mirrors the numbers surfaced on /app so the nudge never drifts from the real build.
-const APP_VERSION = '1.0.22'
-const APP_SIZE = '۳ مگابایت'
+interface AppRelease {
+  available?: boolean
+  version_name?: string
+  size_bytes?: number
+}
+
+// Mirrors the numbers surfaced on /app from the same `/api/app/version/`
+// source (it only ever names an APK that is on disk); the constants are the
+// floor before the call answers and if it never does.
+const APP_VERSION_FALLBACK = '1.0.28'
+const APP_SIZE_FALLBACK = '۳٫۴ مگابایت'
+const { api } = useApi()
+const release = ref<AppRelease | null>(null)
+const APP_VERSION = computed(() => {
+  const named = release.value?.available ? (release.value.version_name || '').trim() : ''
+  return named || APP_VERSION_FALLBACK
+})
+const APP_SIZE = computed(() => {
+  const bytes = release.value?.available ? Number(release.value.size_bytes || 0) : 0
+  if (!bytes) return APP_SIZE_FALLBACK
+  const mb = bytes / (1024 * 1024)
+  const shown = mb < 10 ? Math.round(mb * 10) / 10 : Math.round(mb)
+  return `${shown.toLocaleString('fa-IR')} مگابایت`
+})
 
 function dismissed() {
   try { return Number(localStorage.getItem(DISMISS_KEY) || 0) > Date.now() } catch { return false }
@@ -31,7 +53,10 @@ onMounted(() => {
   const agent = navigator.userAgent || ''
   // Android only: desktop/iOS users never get an irrelevant prompt. A short
   // delay and a three-page threshold keep the first visit uninterrupted.
-  if (!/Android/i.test(agent) || /; wv\)/i.test(agent) || dismissed()) return
+  if (!/Android/i.test(agent) || /; wv\)/i.test(agent) || dismissed() || route.path.startsWith('/app')) return
+  // Android gets the real version/size the moment the decision to show is
+  // made; the 18s window below is ample for this one call.
+  void api<AppRelease>('/app/version/').then((value) => { release.value = value }).catch(() => {})
   let visits = 0
   try {
     visits = Math.min(9, Number(sessionStorage.getItem(VISITS_KEY) || 0) + 1)
@@ -44,6 +69,10 @@ onMounted(() => {
       trackAppInstall('prompt')
     }
   }, 18_000)
+})
+
+watch(() => route.path, (path) => {
+  if (path.startsWith('/app')) visible.value = false
 })
 </script>
 
