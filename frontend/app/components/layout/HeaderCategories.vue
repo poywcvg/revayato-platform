@@ -37,6 +37,7 @@ const browseLinks = [
   { label: 'جدول پخش', href: '/schedule', icon: 'schedule' as const },
   { label: 'کشورها', href: '/countries', icon: 'countries' as const },
   { label: 'تماشای گروهی', href: '/watch-party', icon: 'users' as const },
+  { label: 'اپلیکیشن اندروید', href: '/app', icon: 'smartphone' as const },
 ]
 
 const sortedGenres = computed(() => {
