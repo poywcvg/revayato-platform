@@ -4,6 +4,7 @@ import androidx.compose.animation.animateContentSize
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.spring
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsPressedAsState
@@ -11,8 +12,10 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -20,6 +23,20 @@ import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.rounded.CalendarMonth
+import androidx.compose.material.icons.rounded.FormatListNumbered
+import androidx.compose.material.icons.rounded.HighQuality
+import androidx.compose.material.icons.rounded.Info
+import androidx.compose.material.icons.rounded.LiveTv
+import androidx.compose.material.icons.rounded.Movie
+import androidx.compose.material.icons.rounded.Public
+import androidx.compose.material.icons.rounded.Schedule
+import androidx.compose.material.icons.rounded.Star
+import androidx.compose.material.icons.rounded.Subtitles
+import androidx.compose.material.icons.rounded.Translate
+import androidx.compose.material.icons.rounded.Visibility
+import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -30,10 +47,15 @@ import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import com.revayato.app.core.theme.AccentBlue
+import com.revayato.app.core.theme.AccentRed
+import com.revayato.app.core.theme.AccentYellow
 import com.revayato.app.core.theme.Brand
 import com.revayato.app.core.theme.NeutralSurface
 import com.revayato.app.core.theme.OutlineSoft
@@ -224,9 +246,10 @@ fun PeoplePills(
 }
 
 /**
- * A quiet «مشخصات» facts card: label→value rows (country, language, format,
- * IMDb id, view count …). Only non-empty rows are passed in, so the card never
- * shows blanks.
+ * The «مشخصات» section as a compact, icon-led grid. Each fact gets a small
+ * tinted glyph and its own tile, so the section reads as a quick at-a-glance
+ * sheet rather than a spreadsheet. Only non-empty rows are passed in, so the
+ * grid never shows blanks.
  */
 @Composable
 fun DetailFacts(
@@ -235,41 +258,104 @@ fun DetailFacts(
 ) {
     if (facts.isEmpty()) return
     Column(
-        modifier = modifier
-            .fillMaxWidth()
-            .clip(RoundedCornerShape(16.dp))
-            .background(NeutralSurface)
-            .padding(horizontal = 16.dp, vertical = 4.dp),
+        modifier = modifier.fillMaxWidth(),
+        verticalArrangement = Arrangement.spacedBy(8.dp),
     ) {
-        facts.forEachIndexed { index, (label, value) ->
+        facts.chunked(2).forEach { rowFacts ->
             Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(vertical = 12.dp),
-                horizontalArrangement = Arrangement.spacedBy(16.dp),
-                verticalAlignment = Alignment.Top,
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
             ) {
-                Text(
-                    text = label,
-                    style = MaterialTheme.typography.labelMedium,
-                    color = TextMuted,
-                    modifier = Modifier.width(88.dp),
-                )
-                Text(
-                    text = value,
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = TextPrimary,
-                    modifier = Modifier.weight(1f),
-                )
-            }
-            if (index != facts.lastIndex) {
-                Box(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .height(1.dp)
-                        .background(OutlineSoft.copy(alpha = 0.5f)),
-                )
+                rowFacts.forEach { (label, value) ->
+                    FactTile(
+                        label = label,
+                        value = value,
+                        visual = factVisual(label),
+                        modifier = Modifier.weight(1f),
+                    )
+                }
+                if (rowFacts.size == 1) Spacer(Modifier.weight(1f))
             }
         }
+    }
+}
+
+private data class FactVisual(val icon: ImageVector, val tint: Color)
+
+/** Pick a recognisable glyph and a restrained accent for each known fact. */
+@Composable
+private fun factVisual(label: String): FactVisual {
+    val lower = label.lowercase()
+    return when {
+        label.contains("کشور") -> FactVisual(Icons.Rounded.Public, AccentBlue)
+        label.contains("زبان") -> FactVisual(Icons.Rounded.Translate, Brand)
+        label.contains("فرمت") -> FactVisual(Icons.Rounded.Movie, AccentYellow)
+        label.contains("کیفیت") -> FactVisual(Icons.Rounded.HighQuality, Brand)
+        label.contains("امکانات") || lower.contains("زیرنویس") ->
+            FactVisual(Icons.Rounded.Subtitles, AccentYellow)
+        label.contains("IMDb") || label.contains("امتیاز") ->
+            FactVisual(Icons.Rounded.Star, AccentYellow)
+        label.contains("سال") || label.contains("تاریخ") ->
+            FactVisual(Icons.Rounded.CalendarMonth, AccentBlue)
+        label.contains("فصل") -> FactVisual(Icons.Rounded.LiveTv, AccentRed)
+        label.contains("قسمت") -> FactVisual(Icons.Rounded.FormatListNumbered, AccentRed)
+        label.contains("مدت") || label.contains("زمان") ->
+            FactVisual(Icons.Rounded.Schedule, AccentBlue)
+        label.contains("بازدید") || label.contains("تماشا") ->
+            FactVisual(Icons.Rounded.Visibility, Brand)
+        else -> FactVisual(Icons.Rounded.Info, TextSecondary)
+    }
+}
+
+@Composable
+private fun FactTile(
+    label: String,
+    value: String,
+    visual: FactVisual,
+    modifier: Modifier = Modifier,
+) {
+    Column(
+        modifier = modifier
+            .heightIn(min = 86.dp)
+            .clip(RoundedCornerShape(14.dp))
+            .background(NeutralSurface)
+            .border(1.dp, OutlineSoft.copy(alpha = 0.62f), RoundedCornerShape(14.dp))
+            .padding(horizontal = 12.dp, vertical = 11.dp),
+        verticalArrangement = Arrangement.spacedBy(7.dp),
+    ) {
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(7.dp),
+        ) {
+            Box(
+                modifier = Modifier
+                    .size(28.dp)
+                    .clip(CircleShape)
+                    .background(visual.tint.copy(alpha = 0.15f)),
+                contentAlignment = Alignment.Center,
+            ) {
+                Icon(
+                    imageVector = visual.icon,
+                    contentDescription = null,
+                    tint = visual.tint,
+                    modifier = Modifier.size(16.dp),
+                )
+            }
+            Text(
+                text = label,
+                style = MaterialTheme.typography.labelSmall,
+                color = TextMuted,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+        }
+        Text(
+            text = value,
+            style = MaterialTheme.typography.bodyMedium,
+            color = TextPrimary,
+            fontWeight = FontWeight.Medium,
+            maxLines = 3,
+            overflow = TextOverflow.Ellipsis,
+        )
     }
 }

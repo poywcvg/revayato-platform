@@ -12,10 +12,12 @@ import com.revayato.app.data.repository.CatalogQuery
 import com.revayato.app.data.repository.CatalogRepository
 import com.revayato.app.navigation.Routes
 import dagger.hilt.android.lifecycle.HiltViewModel
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.async
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
@@ -56,13 +58,40 @@ class HomeViewModel @Inject constructor(
             }
         }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), UiState.Loading)
 
+    private val _refreshing = MutableStateFlow(false)
+
+    /** True only for a pull-to-refresh, so the existing feed stays on screen. */
+    val refreshing: StateFlow<Boolean> = _refreshing.asStateFlow()
+
+    private var loadJob: Job? = null
+    private var loadGeneration = 0
+
     init {
         load()
     }
 
-    fun load() {
-        _catalog.value = UiState.Loading
-        viewModelScope.launch {
+    /** Initial load / retry: clears the screen and shows the full-page loader. */
+    fun load() = startLoad(clear = true)
+
+    /**
+     * Pull-to-refresh: keeps the current feed visible while the shelves are
+     * fetched again, then swaps in the new snapshot in one frame.
+     */
+    fun refresh() {
+        if (_refreshing.value) return
+        _refreshing.value = true
+        startLoad(clear = false)
+    }
+
+    private fun startLoad(clear: Boolean) {
+        val generation = ++loadGeneration
+        val publishProgress = clear
+        loadJob?.cancel()
+        if (clear || _catalog.value !is UiState.Success) {
+            _catalog.value = UiState.Loading
+        }
+        loadJob = viewModelScope.launch {
+            try {
             // Every shelf is fetched in parallel; the backend caches each list, so a
             // dozen concurrent reads is cheap. Each rail below carries a `seeAllRoute`
             // whose server-side sort/filter reproduces the same ordering full-screen.
@@ -93,7 +122,10 @@ class HomeViewModel @Inject constructor(
             var genres: List<GenreDto> = emptyList()
             var newest: List<CatalogCardDto> = emptyList()
 
-            fun publish() {
+            fun publish(force: Boolean = false) {
+                // During pull-to-refresh the previous snapshot stays on screen;
+                // the freshly built one is published once, in a single swap.
+                if (!publishProgress && !force) return
                 if (hero.isEmpty() && rails.isEmpty()) return
                 val ordered = rails.values.sortedBy { rail ->
                     RAIL_ORDER.indexOf(rail.key).let { if (it < 0) RAIL_ORDER.size else it }
@@ -184,9 +216,15 @@ class HomeViewModel @Inject constructor(
             }
             stage { genres = genresDef.await().orNull().orEmpty() }
 
-            // Nothing came back from any shelf → surface the empty state.
-            if (_catalog.value is UiState.Loading) {
+            publish(force = true)
+
+            // Nothing came back from any shelf → surface the empty state. A
+            // failed refresh keeps the last good snapshot instead of blanking it.
+            if (hero.isEmpty() && rails.isEmpty() && _catalog.value !is UiState.Success) {
                 _catalog.value = UiState.Error("محتوایی برای نمایش پیدا نشد")
+            }
+            } finally {
+                if (generation == loadGeneration) _refreshing.value = false
             }
         }
     }

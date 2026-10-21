@@ -1,94 +1,85 @@
 package com.revayato.app.feature.detail
 
-import androidx.compose.foundation.Image
+import androidx.compose.animation.core.animateDpAsState
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.ExperimentalLayoutApi
-import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.rounded.Bookmark
-import androidx.compose.material.icons.rounded.BookmarkBorder
+import androidx.compose.material.icons.rounded.Add
+import androidx.compose.material.icons.rounded.Check
+import androidx.compose.material.icons.rounded.ClosedCaption
 import androidx.compose.material.icons.rounded.Download
-import androidx.compose.material.icons.rounded.EmojiEvents
 import androidx.compose.material.icons.rounded.Favorite
 import androidx.compose.material.icons.rounded.FavoriteBorder
-import androidx.compose.material.icons.rounded.Groups
-import androidx.compose.material.icons.rounded.LibraryAdd
-import androidx.compose.material.icons.rounded.Movie
+import androidx.compose.material.icons.rounded.Mic
+import androidx.compose.material.icons.rounded.People
 import androidx.compose.material.icons.rounded.PlayArrow
-import androidx.compose.material.icons.rounded.Refresh
+import androidx.compose.material.icons.rounded.PlayCircle
+import androidx.compose.material.icons.rounded.PlaylistAdd
 import androidx.compose.material.icons.rounded.SkipNext
 import androidx.compose.material.icons.rounded.Star
-import androidx.compose.material.icons.rounded.StarOutline
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.Immutable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
-import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.platform.LocalUriHandler
-import androidx.compose.ui.res.painterResource
-import androidx.compose.ui.semantics.contentDescription
-import androidx.compose.ui.semantics.semantics
-import androidx.compose.ui.text.SpanStyle
-import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
-import androidx.compose.ui.text.withStyle
-import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import com.revayato.app.R
 import com.revayato.app.core.theme.BgElevated
 import com.revayato.app.core.theme.BgMain
 import com.revayato.app.core.theme.Brand
-import com.revayato.app.core.theme.NeutralSurface
-import com.revayato.app.core.theme.NeutralSurfaceActive
+import com.revayato.app.core.theme.DownloadAccent
 import com.revayato.app.core.theme.OnBrand
-import com.revayato.app.core.theme.OutlineSoft
-import com.revayato.app.core.theme.StarGold
-import com.revayato.app.core.theme.TextMuted
+import com.revayato.app.core.theme.OnDownloadAccent
+import com.revayato.app.core.theme.RevayatoMotion
 import com.revayato.app.core.theme.TextPrimary
-import com.revayato.app.core.theme.TextSecondary
+import com.revayato.app.core.theme.motionScale
+import com.revayato.app.core.theme.rememberedPressScale
 import com.revayato.app.data.model.DownloadLinkDto
 import com.revayato.app.data.model.GenreDto
 import com.revayato.app.data.model.RatingSourceDto
-import com.revayato.app.feature.support.toFaDigits
 import com.revayato.app.ui.components.NetworkImage
-import com.revayato.app.ui.components.PosterMarks
 import java.util.Locale
+import kotlin.math.roundToInt
 
-/*
- * The movie / series hero, laid out like the website's: a sharp backdrop, the
- * titled poster with its subtitle/dub/play marks and a play button on it,
- * «دانلود فیلم Inception» over «تلقین (2010)», a «ژانر:» line and facts, the
- * «… اضافه شد» freshness pills, one amber play button plus square tools, and
- * the ratings cluster (IMDb, روایتو, a 10-star row, the Top 250 place).
- */
-
-/** Everything the hero shows, built once per title by the screen. */
+/** Everything the detail hero needs, independent of movie/series response types. */
+@Immutable
 data class DetailHeroData(
     val isSeries: Boolean,
     val title: String,
@@ -114,41 +105,44 @@ data class DetailHeroData(
     val hasEnglish: Boolean get() = englishTitle.isNotBlank() && englishTitle != title
 }
 
-/** The hero's buttons, wired by the movie and series screens. */
+/** User actions shown as a scrollable row of circular controls. */
 class DetailHeroActions(
     val onPlay: () -> Unit,
     val onPlayLatest: (() -> Unit)?,
     val onDownload: (() -> Unit)?,
     val onToggleWatchlist: () -> Unit,
     val onToggleLike: () -> Unit,
-    val onWatchTogether: () -> Unit,
+    val onWatchTogether: (() -> Unit)?,
     val onAddToCollection: () -> Unit,
     val onGenreClick: (GenreDto) -> Unit,
     val onRate: () -> Unit,
 )
 
-/** A sharp, still backdrop that only darkens at its lower edge, where the poster overlaps it. */
+/**
+ * A full-bleed backdrop, not a poster floating in a card. Kept as a public
+ * composable because the detail screens use it as their own fallback canvas.
+ */
 @Composable
 fun DetailBackdrop(
     backdropUrl: String?,
     title: String,
     modifier: Modifier = Modifier,
 ) {
-    Box(modifier = modifier.fillMaxWidth().aspectRatio(16f / 9f)) {
+    Box(modifier = modifier.background(BgElevated)) {
         NetworkImage(
             url = backdropUrl,
-            contentDescription = "تصویر زمینه $title",
+            contentDescription = title,
             fallbackText = title,
             modifier = Modifier.fillMaxSize(),
         )
         Box(
-            modifier = Modifier
+            Modifier
                 .fillMaxSize()
                 .background(
                     Brush.verticalGradient(
-                        0.0f to Color.Black.copy(alpha = 0.25f),
-                        0.3f to Color.Transparent,
-                        0.62f to Color.Transparent,
+                        0f to Color.Black.copy(alpha = 0.34f),
+                        0.46f to Color.Transparent,
+                        0.74f to BgMain.copy(alpha = 0.68f),
                         1f to BgMain,
                     ),
                 ),
@@ -156,6 +150,12 @@ fun DetailBackdrop(
     }
 }
 
+/**
+ * Netflix-style RTL hero: the artwork owns the top of the page, the title and
+ * actions sit on the bottom scrim, and everything below is quiet. The backdrop
+ * breathes in slowly once per title; content rises a few pixels after it, so
+ * opening a detail page feels like a reveal rather than a route swap.
+ */
 @Composable
 fun DetailHero(
     data: DetailHeroData,
@@ -166,443 +166,588 @@ fun DetailHero(
 ) {
     val uriHandler = LocalUriHandler.current
     val openTrailer: (() -> Unit)? = data.trailerUrl
-        ?.takeIf { it.startsWith("http") }
+        ?.takeIf { it.isNotBlank() }
         ?.let { url -> { runCatching { uriHandler.openUri(url) } } }
 
-    // The content column starts 56dp above the backdrop's bottom edge so the
-    // poster overlaps it — padding, not offset, so no gap is left underneath.
-    BoxWithConstraints(modifier.fillMaxWidth()) {
-        DetailBackdrop(backdropUrl = data.backdropUrl ?: data.posterUrl, title = data.title)
-        Column(
+    var revealed by remember(data.title) { mutableStateOf(false) }
+    LaunchedEffect(data.title) { revealed = true }
+    val backdropScale by animateFloatAsState(
+        targetValue = if (revealed) 1f else 1.065f,
+        animationSpec = tween(durationMillis = 1_350, easing = RevayatoMotion.Decelerate),
+        label = "heroBackdropScale",
+    )
+    val contentAlpha by animateFloatAsState(
+        targetValue = if (revealed) 1f else 0f,
+        animationSpec = tween(durationMillis = 560, delayMillis = 90, easing = RevayatoMotion.Decelerate),
+        label = "heroContentAlpha",
+    )
+    val contentLift by animateDpAsState(
+        targetValue = if (revealed) 0.dp else 24.dp,
+        animationSpec = tween(durationMillis = 620, delayMillis = 70, easing = RevayatoMotion.Decelerate),
+        label = "heroContentLift",
+    )
+
+    BoxWithConstraints(modifier = modifier.fillMaxWidth()) {
+        val heroHeight = (maxWidth * 1.30f).coerceIn(486.dp, 600.dp)
+
+        Box(
             Modifier
                 .fillMaxWidth()
-                .padding(top = maxWidth * 9f / 16f - 56.dp)
-                .padding(horizontal = 16.dp),
-            verticalArrangement = Arrangement.spacedBy(16.dp),
+                .height(heroHeight)
+                .background(BgElevated),
         ) {
-            Row(horizontalArrangement = Arrangement.spacedBy(14.dp), verticalAlignment = Alignment.Bottom) {
-                HeroPoster(
-                    data = data,
-                    onPlay = if (data.canPlay) actions.onPlay else openTrailer,
-                    playLabel = if (data.canPlay) "پخش آنلاین" else "پخش تریلر",
-                )
-                HeroHeading(data = data, onGenreClick = actions.onGenreClick, modifier = Modifier.weight(1f))
-            }
-
-            if (data.freshPills.isNotEmpty()) FreshPills(data.freshPills)
-
-            HeroActions(
-                canPlay = data.canPlay,
-                inWatchlist = inWatchlist,
-                liked = liked,
-                actions = actions,
-                onTrailer = openTrailer,
+            DetailBackdrop(
+                backdropUrl = data.backdropUrl ?: data.posterUrl,
+                title = data.title,
+                modifier = Modifier
+                    .fillMaxSize()
+                    .graphicsLayer {
+                        scaleX = backdropScale
+                        scaleY = backdropScale
+                    },
             )
-
-            HeroRatings(data = data, onRate = actions.onRate)
-        }
-    }
-}
-
-@Composable
-private fun HeroPoster(data: DetailHeroData, onPlay: (() -> Unit)?, playLabel: String) {
-    Box(
-        Modifier
-            .width(118.dp)
-            .aspectRatio(2f / 3f)
-            .clip(RoundedCornerShape(12.dp))
-            .border(1.dp, OutlineSoft, RoundedCornerShape(12.dp)),
-    ) {
-        NetworkImage(
-            url = data.posterUrl,
-            contentDescription = "پوستر ${data.title}",
-            fallbackText = data.title,
-            modifier = Modifier.fillMaxSize(),
-        )
-        PosterMarks(
-            subtitle = data.hasSubtitle,
-            dubbed = data.isDubbed,
-            playable = data.canPlay,
-            modifier = Modifier.align(Alignment.TopEnd).padding(6.dp),
-        )
-        if (onPlay != null) {
+            // Small extra top scrim so status bar icons and the floating back /
+            // report buttons always have contrast on bright stills.
             Box(
                 Modifier
-                    .align(Alignment.Center)
-                    .size(46.dp)
-                    .clip(CircleShape)
-                    .background(Color.Black.copy(alpha = 0.6f))
-                    .border(1.5.dp, Color.White.copy(alpha = 0.85f), CircleShape)
-                    .clickable(onClick = onPlay)
-                    .semantics { contentDescription = playLabel },
-                contentAlignment = Alignment.Center,
-            ) {
-                Icon(Icons.Rounded.PlayArrow, contentDescription = null, tint = Color.White, modifier = Modifier.size(28.dp))
-            }
-        }
-    }
-}
+                    .fillMaxWidth()
+                    .height(96.dp)
+                    .background(
+                        Brush.verticalGradient(
+                            0f to Color.Black.copy(alpha = 0.52f),
+                            1f to Color.Transparent,
+                        ),
+                    ),
+            )
 
-@OptIn(ExperimentalLayoutApi::class)
-@Composable
-private fun HeroHeading(data: DetailHeroData, onGenreClick: (GenreDto) -> Unit, modifier: Modifier = Modifier) {
-    Column(modifier.padding(bottom = 2.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-        // «دانلود فیلم Inception» — both names, as people search for either.
-        Text(
-            text = buildAnnotatedString {
-                withStyle(SpanStyle(color = TextSecondary, fontWeight = FontWeight.Medium, fontSize = 14.sp)) {
-                    append("دانلود ${data.kindWord} ")
+            Column(
+                modifier = Modifier
+                    .align(Alignment.BottomStart)
+                    .fillMaxWidth()
+                    .padding(horizontal = 20.dp)
+                    .padding(bottom = 18.dp)
+                    .graphicsLayer {
+                        alpha = contentAlpha
+                        translationY = contentLift.toPx()
+                    },
+                verticalArrangement = Arrangement.spacedBy(10.dp),
+            ) {
+                if (data.freshPills.isNotEmpty()) {
+                    FreshPill(data.freshPills.first())
                 }
-                // LRI … PDI keeps the Latin title's own order inside the RTL line.
-                append(if (data.hasEnglish) "⁦${data.englishTitle}⁩" else data.title)
-            },
-            style = MaterialTheme.typography.titleLarge,
-            fontWeight = FontWeight.Bold,
-            color = TextPrimary,
-            maxLines = 3,
-            overflow = TextOverflow.Ellipsis,
-        )
-        val subtitle = listOfNotNull(
-            data.title.takeIf { data.hasEnglish },
-            data.year?.let { "⁦($it)⁩" },
-        ).joinToString(" ")
-        if (subtitle.isNotBlank()) {
-            Text(subtitle, style = MaterialTheme.typography.bodyMedium, color = TextMuted, maxLines = 2)
-        }
-        if (data.genres.isNotEmpty()) {
-            FlowRow(verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                Text("ژانر: ", style = MaterialTheme.typography.labelLarge, color = TextMuted)
-                val shown = data.genres.take(4)
-                shown.forEachIndexed { index, genre ->
+
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
                     Text(
-                        text = genre.title + if (index < shown.lastIndex) "، " else "",
+                        text = data.kindWord,
+                        style = MaterialTheme.typography.labelMedium,
+                        fontWeight = FontWeight.Bold,
+                        color = Color.White.copy(alpha = 0.92f),
+                    )
+                    data.year?.let {
+                        MetaDot()
+                        Text(
+                            text = toFaDigits(it.toString()),
+                            style = MaterialTheme.typography.labelMedium,
+                            color = Color.White.copy(alpha = 0.82f),
+                        )
+                    }
+                    data.ageRating?.takeIf { it.isNotBlank() }?.let {
+                        Text(
+                            text = it,
+                            style = MaterialTheme.typography.labelSmall,
+                            fontWeight = FontWeight.SemiBold,
+                            color = Color.White,
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(4.dp))
+                                .border(1.dp, Color.White.copy(alpha = 0.42f), RoundedCornerShape(4.dp))
+                                .padding(horizontal = 6.dp, vertical = 2.dp),
+                        )
+                    }
+                    if (data.hasSubtitle) {
+                        Icon(
+                            imageVector = Icons.Rounded.ClosedCaption,
+                            contentDescription = "زیرنویس فارسی",
+                            tint = Color.White.copy(alpha = 0.82f),
+                            modifier = Modifier.size(16.dp),
+                        )
+                    }
+                    if (data.isDubbed) {
+                        Icon(
+                            imageVector = Icons.Rounded.Mic,
+                            contentDescription = "دوبله فارسی",
+                            tint = Color.White.copy(alpha = 0.82f),
+                            modifier = Modifier.size(16.dp),
+                        )
+                    }
+                    if (data.facts.isNotEmpty()) {
+                        MetaDot()
+                        Text(
+                            text = data.facts.take(3).joinToString(" · "),
+                            style = MaterialTheme.typography.labelMedium,
+                            color = Color.White.copy(alpha = 0.82f),
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                    }
+                }
+
+                Text(
+                    text = data.title.ifBlank { data.englishTitle },
+                    style = MaterialTheme.typography.headlineMedium.copy(
+                        fontSize = 30.sp,
+                        lineHeight = 38.sp,
+                    ),
+                    fontWeight = FontWeight.Bold,
+                    color = Color.White,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                if (data.hasEnglish) {
+                    Text(
+                        text = data.englishTitle,
                         style = MaterialTheme.typography.labelLarge,
-                        color = TextPrimary,
-                        modifier = Modifier.clickable { onGenreClick(genre) },
+                        color = Color.White.copy(alpha = 0.68f),
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
                     )
                 }
-            }
-        }
-        val age = data.ageRating?.takeIf { it.isNotBlank() }
-        if (age != null || data.facts.isNotEmpty()) {
-            FlowRow(
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                verticalArrangement = Arrangement.spacedBy(4.dp),
-            ) {
-                age?.let {
-                    Box(
-                        Modifier
-                            .clip(RoundedCornerShape(4.dp))
-                            .border(1.dp, OutlineSoft, RoundedCornerShape(4.dp))
-                            .padding(horizontal = 5.dp, vertical = 1.dp),
-                    ) { Text(it, style = MaterialTheme.typography.labelSmall, color = TextSecondary) }
+
+                if (data.genres.isNotEmpty()) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .horizontalScroll(rememberScrollState()),
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    ) {
+                        data.genres.take(5).forEach { genre ->
+                            GenrePill(genre = genre, onClick = { actions.onGenreClick(genre) })
+                        }
+                    }
                 }
-                data.facts.forEach { fact ->
-                    Text(fact, style = MaterialTheme.typography.labelMedium, color = TextSecondary)
-                }
+
+                HeroRatings(data = data, onRate = actions.onRate)
+
+                Spacer(Modifier.height(1.dp))
+                HeroPrimaryButton(
+                    data = data,
+                    onPlay = {
+                        when {
+                            data.canPlay -> actions.onPlay()
+                            openTrailer != null -> openTrailer.invoke()
+                        }
+                    },
+                )
+                HeroSecondaryActions(actions = actions)
+                HeroActionRow(
+                    data = data,
+                    inWatchlist = inWatchlist,
+                    liked = liked,
+                    actions = actions,
+                    onTrailer = openTrailer,
+                )
             }
         }
     }
 }
 
-@OptIn(ExperimentalLayoutApi::class)
 @Composable
-private fun FreshPills(pills: List<String>) {
-    FlowRow(
-        horizontalArrangement = Arrangement.spacedBy(8.dp),
-        verticalArrangement = Arrangement.spacedBy(8.dp),
+private fun FreshPill(text: String) {
+    Row(
+        modifier = Modifier
+            .clip(RoundedCornerShape(999.dp))
+            .background(Color.Black.copy(alpha = 0.34f))
+            .border(1.dp, Brand.copy(alpha = 0.48f), RoundedCornerShape(999.dp))
+            .padding(horizontal = 10.dp, vertical = 5.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(6.dp),
     ) {
-        pills.forEach { pill ->
-            Row(
-                Modifier
-                    .clip(RoundedCornerShape(999.dp))
-                    .background(Brand.copy(alpha = 0.12f))
-                    .padding(horizontal = 10.dp, vertical = 5.dp),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(5.dp),
-            ) {
-                Icon(Icons.Rounded.Refresh, contentDescription = null, tint = Brand, modifier = Modifier.size(14.dp))
-                Text(pill, style = MaterialTheme.typography.labelMedium, color = TextPrimary)
+        Box(
+            Modifier
+                .size(6.dp)
+                .clip(CircleShape)
+                .background(Brand),
+        )
+        Text(
+            text = text,
+            style = MaterialTheme.typography.labelSmall,
+            fontWeight = FontWeight.SemiBold,
+            color = Color.White.copy(alpha = 0.92f),
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+        )
+    }
+}
+
+@Composable
+private fun MetaDot() {
+    Box(
+        Modifier
+            .size(3.dp)
+            .clip(CircleShape)
+            .background(Color.White.copy(alpha = 0.48f)),
+    )
+}
+
+@Composable
+private fun GenrePill(genre: GenreDto, onClick: () -> Unit) {
+    val interaction = remember { MutableInteractionSource() }
+    val scale = rememberedPressScale(interaction, pressedScale = 0.94f)
+    Box(
+        modifier = Modifier
+            .motionScale(scale)
+            .clip(RoundedCornerShape(999.dp))
+            .background(Color.White.copy(alpha = 0.12f))
+            .border(1.dp, Color.White.copy(alpha = 0.17f), RoundedCornerShape(999.dp))
+            .clickable(interactionSource = interaction, indication = null, onClick = onClick)
+            .padding(horizontal = 9.dp, vertical = 4.dp),
+    ) {
+        Text(
+            text = genre.title,
+            style = MaterialTheme.typography.labelSmall,
+            color = Color.White.copy(alpha = 0.88f),
+            maxLines = 1,
+        )
+    }
+}
+
+@Composable
+private fun HeroRatings(data: DetailHeroData, onRate: () -> Unit) {
+    val imdb = data.imdbRating?.takeIf { it > 0 }
+    val site = data.siteRating?.takeIf { it > 0 }
+    val rank = data.imdbRank?.takeIf { it in 1..250 }
+    if (imdb == null && site == null && rank == null) return
+
+    Row(
+        modifier = Modifier
+            .clip(RoundedCornerShape(9.dp))
+            .clickable(onClick = onRate)
+            .padding(vertical = 2.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(10.dp),
+    ) {
+        imdb?.let {
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(5.dp)) {
+                ImdbBadge()
+                Text(
+                    text = formatScore(it),
+                    style = MaterialTheme.typography.labelMedium,
+                    fontWeight = FontWeight.Bold,
+                    color = Color.White,
+                )
             }
+        }
+        if (site != null) {
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                Icon(
+                    Icons.Rounded.Star,
+                    contentDescription = null,
+                    tint = Color(0xFFFFC857),
+                    modifier = Modifier.size(15.dp),
+                )
+                Text(
+                    text = "${formatScore(site)} از ۵",
+                    style = MaterialTheme.typography.labelMedium,
+                    fontWeight = FontWeight.SemiBold,
+                    color = Color.White.copy(alpha = 0.88f),
+                )
+            }
+        }
+        if (rank != null) {
+            Text(
+                text = "Top ${toFaDigits(rank.toString())}",
+                style = MaterialTheme.typography.labelSmall,
+                fontWeight = FontWeight.Bold,
+                color = Color(0xFFFFC857),
+                modifier = Modifier
+                    .clip(RoundedCornerShape(4.dp))
+                    .background(Color.Black.copy(alpha = 0.28f))
+                    .padding(horizontal = 5.dp, vertical = 2.dp),
+            )
         }
     }
 }
 
 @Composable
-private fun HeroActions(
-    canPlay: Boolean,
+private fun ImdbBadge() {
+    Text(
+        text = "IMDb",
+        fontSize = 10.sp,
+        fontWeight = FontWeight.Black,
+        color = Color(0xFF0B0B0C),
+        modifier = Modifier
+            .clip(RoundedCornerShape(3.dp))
+            .background(Color(0xFFF5C518))
+            .padding(horizontal = 4.dp, vertical = 2.dp),
+    )
+}
+
+@Composable
+private fun HeroPrimaryButton(data: DetailHeroData, onPlay: () -> Unit) {
+    val enabled = data.canPlay || !data.trailerUrl.isNullOrBlank()
+    val interaction = remember { MutableInteractionSource() }
+    val scale = rememberedPressScale(interaction, pressedScale = 0.975f)
+    val label = when {
+        data.canPlay -> "پخش آنلاین"
+        !data.trailerUrl.isNullOrBlank() -> "تماشای تریلر"
+        else -> "به‌زودی"
+    }
+    val tag = when {
+        data.canPlay && data.hasSubtitle -> "زیرنویس"
+        data.canPlay && data.isDubbed -> "دوبله"
+        data.canPlay -> "آنلاین"
+        !data.trailerUrl.isNullOrBlank() -> "تریلر"
+        else -> null
+    }
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .height(52.dp)
+            .motionScale(scale)
+            .clip(RoundedCornerShape(13.dp))
+            .background(if (enabled) Brand else Color.White.copy(alpha = 0.13f))
+            .clickable(
+                interactionSource = interaction,
+                indication = null,
+                enabled = enabled,
+                onClick = onPlay,
+            ),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.Center,
+    ) {
+        Icon(
+            imageVector = Icons.Rounded.PlayArrow,
+            contentDescription = null,
+            tint = if (enabled) OnBrand else Color.White.copy(alpha = 0.55f),
+            modifier = Modifier.size(25.dp),
+        )
+        Spacer(Modifier.width(6.dp))
+        Text(
+            text = label,
+            style = MaterialTheme.typography.titleMedium,
+            fontWeight = FontWeight.Bold,
+            color = if (enabled) OnBrand else Color.White.copy(alpha = 0.55f),
+        )
+        tag?.let {
+            Spacer(Modifier.width(8.dp))
+            HeroTag(text = it, enabled = enabled)
+        }
+    }
+}
+
+/** Small, high-contrast capability tag used inside the hero CTAs. */
+@Composable
+private fun HeroTag(text: String, enabled: Boolean) {
+    Text(
+        text = text,
+        style = MaterialTheme.typography.labelSmall,
+        fontWeight = FontWeight.Bold,
+        color = if (enabled) OnBrand.copy(alpha = 0.9f) else Color.White.copy(alpha = 0.45f),
+        modifier = Modifier
+            .clip(RoundedCornerShape(999.dp))
+            .background(
+                if (enabled) OnBrand.copy(alpha = 0.14f) else Color.White.copy(alpha = 0.07f),
+            )
+            .padding(horizontal = 7.dp, vertical = 2.dp),
+    )
+}
+
+/**
+ * Download and watch-party used to be two anonymous circles in the action row.
+ * They are the page's two big secondary jobs, so they get a full-width tagged
+ * pair directly under the primary play button.
+ */
+@Composable
+private fun HeroSecondaryActions(actions: DetailHeroActions) {
+    val download = actions.onDownload
+    val party = actions.onWatchTogether
+    if (download == null && party == null) return
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        download?.let {
+            HeroSecondaryButton(
+                label = "دانلود",
+                tag = "تماشای آفلاین",
+                icon = Icons.Rounded.Download,
+                container = DownloadAccent,
+                content = OnDownloadAccent,
+                borderColor = OnDownloadAccent.copy(alpha = 0.12f),
+                onClick = it,
+                modifier = Modifier.weight(1f),
+            )
+        }
+        party?.let {
+            HeroSecondaryButton(
+                label = "تماشای گروهی",
+                tag = "هم‌زمان با دوستان",
+                icon = Icons.Rounded.People,
+                container = Color.Black.copy(alpha = 0.38f),
+                content = Color.White,
+                borderColor = Color.White.copy(alpha = 0.22f),
+                onClick = it,
+                modifier = Modifier.weight(1f),
+            )
+        }
+    }
+}
+
+@Composable
+private fun HeroSecondaryButton(
+    label: String,
+    tag: String,
+    icon: ImageVector,
+    container: Color,
+    content: Color,
+    borderColor: Color,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val interaction = remember { MutableInteractionSource() }
+    val scale = rememberedPressScale(interaction, pressedScale = 0.96f)
+    Row(
+        modifier = modifier
+            .height(54.dp)
+            .motionScale(scale)
+            .clip(RoundedCornerShape(13.dp))
+            .background(container)
+            .border(1.dp, borderColor, RoundedCornerShape(13.dp))
+            .clickable(interactionSource = interaction, indication = null, onClick = onClick)
+            .padding(horizontal = 11.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        Icon(
+            imageVector = icon,
+            contentDescription = null,
+            tint = content,
+            modifier = Modifier.size(20.dp),
+        )
+        Column(
+            modifier = Modifier.weight(1f),
+            verticalArrangement = Arrangement.spacedBy(1.dp),
+        ) {
+            Text(
+                text = label,
+                style = MaterialTheme.typography.titleSmall,
+                fontWeight = FontWeight.Bold,
+                color = content,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+            Text(
+                text = tag,
+                style = MaterialTheme.typography.labelSmall,
+                color = content.copy(alpha = 0.74f),
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+        }
+    }
+}
+
+@Composable
+private fun HeroActionRow(
+    data: DetailHeroData,
     inWatchlist: Boolean,
     liked: Boolean,
     actions: DetailHeroActions,
     onTrailer: (() -> Unit)?,
 ) {
-    Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-        Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-            // The one filled button: flat brand amber, no gradient, no sheen.
-            Row(
-                Modifier
-                    .weight(1f)
-                    .height(50.dp)
-                    .clip(RoundedCornerShape(14.dp))
-                    .background(if (canPlay) Brand else NeutralSurface)
-                    .clickable(enabled = canPlay, onClick = actions.onPlay)
-                    .padding(horizontal = 14.dp),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.Center,
-            ) {
-                Icon(Icons.Rounded.PlayArrow, contentDescription = null, tint = if (canPlay) OnBrand else TextMuted)
-                Spacer(Modifier.width(6.dp))
-                Text(
-                    if (canPlay) "تماشای آنلاین" else "لینک پخش موجود نیست",
-                    color = if (canPlay) OnBrand else TextMuted,
-                    fontWeight = FontWeight.Bold,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                )
-            }
-            actions.onPlayLatest?.let { onLatest ->
-                Row(
-                    Modifier
-                        .weight(1f)
-                        .height(50.dp)
-                        .clip(RoundedCornerShape(14.dp))
-                        .background(NeutralSurface)
-                        .border(1.dp, OutlineSoft, RoundedCornerShape(14.dp))
-                        .clickable(onClick = onLatest)
-                        .padding(horizontal = 12.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.Center,
-                ) {
-                    Icon(Icons.Rounded.SkipNext, contentDescription = null, tint = TextPrimary)
-                    Spacer(Modifier.width(6.dp))
-                    Text(
-                        "تماشای آخرین قسمت",
-                        color = TextPrimary,
-                        fontWeight = FontWeight.SemiBold,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                    )
-                }
-            }
+    val items = buildList<HeroActionButtonModel> {
+        actions.onPlayLatest?.let {
+            add(HeroActionButtonModel("آخرین قسمت", Icons.Rounded.SkipNext, false, it))
         }
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            actions.onDownload?.let { ToolButton(Icons.Rounded.Download, "دانلود", false, it, Modifier.weight(1f)) }
-            ToolButton(
-                if (inWatchlist) Icons.Rounded.Bookmark else Icons.Rounded.BookmarkBorder,
-                "لیست من", inWatchlist, actions.onToggleWatchlist, Modifier.weight(1f),
-            )
-            ToolButton(
-                if (liked) Icons.Rounded.Favorite else Icons.Rounded.FavoriteBorder,
-                "پسندیدن", liked, actions.onToggleLike, Modifier.weight(1f),
-            )
-            onTrailer?.let { ToolButton(Icons.Rounded.Movie, "تریلر", false, it, Modifier.weight(1f)) }
-            ToolButton(Icons.Rounded.Groups, "گروهی", false, actions.onWatchTogether, Modifier.weight(1f))
-            ToolButton(Icons.Rounded.LibraryAdd, "کالکشن", false, actions.onAddToCollection, Modifier.weight(1f))
+        add(
+            HeroActionButtonModel(
+                label = "لیست من",
+                icon = if (inWatchlist) Icons.Rounded.Check else Icons.Rounded.Add,
+                active = inWatchlist,
+                onClick = actions.onToggleWatchlist,
+            ),
+        )
+        add(
+            HeroActionButtonModel(
+                label = "پسندیدم",
+                icon = if (liked) Icons.Rounded.Favorite else Icons.Rounded.FavoriteBorder,
+                active = liked,
+                onClick = actions.onToggleLike,
+            ),
+        )
+        add(HeroActionButtonModel("کالکشن", Icons.Rounded.PlaylistAdd, false, actions.onAddToCollection))
+        if (onTrailer != null) {
+            add(HeroActionButtonModel("تریلر", Icons.Rounded.PlayCircle, false, onTrailer))
+        }
+    }
+
+    LazyRow(horizontalArrangement = Arrangement.spacedBy(16.dp)) {
+        items(items, key = { it.label }) { action ->
+            HeroActionButton(action)
         }
     }
 }
 
-/** A square neutral tool button with its name under the icon. */
 @Composable
-private fun ToolButton(
-    icon: ImageVector,
-    label: String,
-    active: Boolean,
-    onClick: () -> Unit,
-    modifier: Modifier = Modifier,
-) {
+private fun HeroActionButton(action: HeroActionButtonModel) {
+    val interaction = remember { MutableInteractionSource() }
+    val scale = rememberedPressScale(interaction, pressedScale = 0.92f)
     Column(
-        modifier
-            .clip(RoundedCornerShape(12.dp))
-            .clickable(onClick = onClick)
-            .padding(vertical = 4.dp),
+        modifier = Modifier
+            .width(72.dp)
+            .motionScale(scale)
+            .clip(RoundedCornerShape(14.dp))
+            .clickable(interactionSource = interaction, indication = null, onClick = action.onClick)
+            .padding(vertical = 2.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.spacedBy(5.dp),
     ) {
         Box(
-            Modifier
+            modifier = Modifier
                 .size(46.dp)
-                .clip(RoundedCornerShape(12.dp))
-                .background(if (active) NeutralSurfaceActive else NeutralSurface)
-                .border(1.dp, if (active) Brand.copy(alpha = 0.5f) else OutlineSoft, RoundedCornerShape(12.dp)),
+                .clip(CircleShape)
+                .background(if (action.active) Brand else Color.Black.copy(alpha = 0.36f))
+                .border(
+                    width = 1.dp,
+                    color = if (action.active) Brand else Color.White.copy(alpha = 0.18f),
+                    shape = CircleShape,
+                ),
             contentAlignment = Alignment.Center,
         ) {
-            Icon(icon, contentDescription = null, tint = if (active) Brand else TextPrimary, modifier = Modifier.size(22.dp))
-        }
-        Text(label, style = MaterialTheme.typography.labelSmall, color = TextSecondary, maxLines = 1)
-    }
-}
-
-/**
- * IMDb and روایتو side by side (score + votes), the other sources small under
- * them, the community average as a 10-star row (tap → rate it below) and the
- * IMDb Top 250 place when the title has one.
- */
-@OptIn(ExperimentalLayoutApi::class)
-@Composable
-private fun HeroRatings(data: DetailHeroData, onRate: () -> Unit) {
-    val external = data.ratings.filter { it.source != "site" && it.value != null }
-    val imdb = external.firstOrNull { it.source == "imdb" }
-    val imdbValue = imdb?.value ?: data.imdbRating?.takeIf { it > 0 }
-    val minor = external.filter { it.source != "imdb" }.take(3)
-    val site = data.siteRating?.takeIf { it > 0 && data.siteRatingCount > 0 }
-    val filledStars = site?.let { Math.round(it).toInt() } ?: 0
-    val rank = data.imdbRank?.takeIf { it in 1..250 }
-
-    Column(
-        Modifier
-            .fillMaxWidth()
-            .clip(RoundedCornerShape(16.dp))
-            .background(BgElevated)
-            .border(1.dp, OutlineSoft.copy(alpha = 0.7f), RoundedCornerShape(16.dp))
-            .padding(14.dp),
-        verticalArrangement = Arrangement.spacedBy(12.dp),
-    ) {
-        Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-            if (imdbValue != null) {
-                RateBlock(
-                    logo = { ImdbLogo() },
-                    score = imdbValue,
-                    caption = imdb?.voteCount?.takeIf { it > 0 }?.let { "${toFaDigits("%,d".format(Locale.US, it))} رأی" } ?: "IMDb",
-                    modifier = Modifier.weight(1f),
-                )
-            }
-            RateBlock(
-                logo = {
-                    Image(
-                        painter = painterResource(R.drawable.brand_logo),
-                        contentDescription = null,
-                        modifier = Modifier.size(width = 26.dp, height = 32.dp),
-                    )
-                },
-                score = site,
-                caption = if (site != null) "${toFaDigits(data.siteRatingCount.toString())} رأی" else "هنوز رأیی نیست",
-                onClick = onRate,
-                modifier = Modifier.weight(1f),
+            Icon(
+                imageVector = action.icon,
+                contentDescription = action.label,
+                tint = if (action.active) OnBrand else Color.White.copy(alpha = 0.94f),
+                modifier = Modifier.size(22.dp),
             )
         }
-
-        if (minor.isNotEmpty()) {
-            FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                minor.forEach { rating ->
-                    Row(
-                        Modifier
-                            .clip(RoundedCornerShape(8.dp))
-                            .background(NeutralSurface)
-                            .padding(horizontal = 8.dp, vertical = 4.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(6.dp),
-                    ) {
-                        Text(sourceLabel(rating.source), style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.Bold, color = TextMuted)
-                        Text(
-                            rating.displayValue.ifBlank { formatScore(rating.value ?: 0.0) },
-                            style = MaterialTheme.typography.labelMedium,
-                            color = TextPrimary,
-                        )
-                    }
-                }
-            }
-        }
-
-        // Stars run left-to-right like the score they picture.
-        CompositionLocalProvider(LocalLayoutDirection provides LayoutDirection.Ltr) {
-            Row(
-                Modifier
-                    .clip(RoundedCornerShape(8.dp))
-                    .clickable(onClick = onRate)
-                    .semantics { contentDescription = "امتیاز بدهید — میانگین کاربران ${toFaDigits(filledStars.toString())} از ۱۰" }
-                    .padding(vertical = 2.dp),
-                horizontalArrangement = Arrangement.spacedBy(2.dp),
-            ) {
-                repeat(10) { index ->
-                    val on = index < filledStars
-                    Icon(
-                        if (on) Icons.Rounded.Star else Icons.Rounded.StarOutline,
-                        contentDescription = null,
-                        tint = if (on) StarGold else TextMuted.copy(alpha = 0.6f),
-                        modifier = Modifier.size(20.dp),
-                    )
-                }
-            }
-        }
-
-        rank?.let {
-            Row(
-                Modifier
-                    .clip(RoundedCornerShape(999.dp))
-                    .background(StarGold.copy(alpha = 0.12f))
-                    .padding(horizontal = 10.dp, vertical = 5.dp),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(6.dp),
-            ) {
-                Icon(Icons.Rounded.EmojiEvents, contentDescription = null, tint = StarGold, modifier = Modifier.size(16.dp))
-                Text(
-                    buildAnnotatedString {
-                        withStyle(SpanStyle(fontWeight = FontWeight.Black)) { append(toFaDigits(it.toString())) }
-                        append(" جزو ۲۵۰ ${data.kindWord} برتر")
-                    },
-                    style = MaterialTheme.typography.labelMedium,
-                    color = TextPrimary,
-                )
-            }
-        }
+        Text(
+            text = action.label,
+            style = MaterialTheme.typography.labelSmall,
+            color = Color.White.copy(alpha = 0.86f),
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+        )
     }
 }
 
-@Composable
-private fun RateBlock(
-    logo: @Composable () -> Unit,
-    score: Double?,
-    caption: String,
-    modifier: Modifier = Modifier,
-    onClick: (() -> Unit)? = null,
-) {
-    Row(
-        modifier
-            .clip(RoundedCornerShape(12.dp))
-            .background(NeutralSurface)
-            .then(if (onClick != null) Modifier.clickable(onClick = onClick) else Modifier)
-            .padding(horizontal = 10.dp, vertical = 8.dp),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(10.dp),
-    ) {
-        logo()
-        Column {
-            Text(
-                text = if (score == null) buildAnnotatedString { append("—") } else buildAnnotatedString {
-                    withStyle(SpanStyle(fontWeight = FontWeight.Black, color = TextPrimary)) { append(formatScore(score)) }
-                    withStyle(SpanStyle(color = TextMuted, fontSize = 11.sp)) { append("/10") }
-                },
-                style = MaterialTheme.typography.titleMedium,
-                color = TextPrimary,
-            )
-            Text(caption, style = MaterialTheme.typography.labelSmall, color = TextMuted, maxLines = 1)
-        }
-    }
-}
-
-@Composable
-private fun ImdbLogo() {
-    Box(
-        Modifier
-            .clip(RoundedCornerShape(5.dp))
-            .background(StarGold)
-            .padding(horizontal = 5.dp, vertical = 3.dp),
-    ) {
-        Text("IMDb", fontSize = 12.sp, fontWeight = FontWeight.Black, color = Color(0xFF0B0B0C))
-    }
-}
-
-private fun sourceLabel(source: String): String = when (source) {
-    "tmdb" -> "TMDB"
-    "rotten_tomatoes", "rottentomatoes" -> "Rotten Tomatoes"
-    "metacritic" -> "Metacritic"
-    "letterboxd" -> "Letterboxd"
-    else -> source.replaceFirstChar { it.uppercase() }
-}
+private data class HeroActionButtonModel(
+    val label: String,
+    val icon: ImageVector,
+    val active: Boolean,
+    val onClick: () -> Unit,
+)
 
 private fun formatScore(value: Double): String =
     String.format(Locale.US, "%.1f", value).removeSuffix(".0")
+
+internal fun toFaDigits(value: String): String = buildString(value.length) {
+    value.forEach { ch ->
+        append(if (ch in '0'..'9') '۰' + (ch - '0') else ch)
+    }
+}
 
 // ---- Hero content builders shared by the movie and series screens ----
 

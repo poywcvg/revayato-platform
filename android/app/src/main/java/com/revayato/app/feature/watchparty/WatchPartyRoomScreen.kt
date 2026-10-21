@@ -19,6 +19,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.gestures.detectVerticalDragGestures
 import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
@@ -121,9 +122,12 @@ import com.revayato.app.core.theme.BrandDeep
 import com.revayato.app.core.theme.Brand
 import com.revayato.app.core.theme.OnBrand
 import com.revayato.app.core.theme.OutlineSoft
+import com.revayato.app.core.theme.RevayatoMotion
 import com.revayato.app.core.theme.TextMuted
 import com.revayato.app.core.theme.TextPrimary
 import com.revayato.app.core.theme.TextSecondary
+import com.revayato.app.core.theme.motionScale
+import com.revayato.app.core.theme.rememberedPressScale
 import com.revayato.app.data.model.ChatMessageDto
 import com.revayato.app.data.model.RoomMemberDto
 import com.revayato.app.feature.player.SubtitleAppearance
@@ -133,6 +137,7 @@ import com.revayato.app.feature.player.applyAppearance
 import com.revayato.app.feature.player.loadSubtitleAppearance
 import com.revayato.app.feature.player.saveSubtitleAppearance
 import com.revayato.app.ui.components.ErrorState
+import com.revayato.app.ui.components.NetworkImage
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.SharedFlow
 import kotlin.math.abs
@@ -270,6 +275,7 @@ fun WatchPartyRoomScreen(
                 onCopyInvite = copyInvite,
                 onlineCount = 0,
                 latencyMs = null,
+                isHost = state.isHost,
             )
             ErrorState(message = state.error!!, modifier = Modifier.fillMaxSize())
         }
@@ -418,7 +424,7 @@ private fun PortraitBody(
     onDraftChange: (String) -> Unit,
     onSend: () -> Unit,
 ) {
-    Column(Modifier.fillMaxSize()) {
+    Column(Modifier.fillMaxSize().background(BgSurface)) {
         RoomTopBar(
             title = state.content?.title ?: "تماشای گروهی",
             inviteCode = state.room?.inviteCode,
@@ -426,10 +432,11 @@ private fun PortraitBody(
             onCopyInvite = onCopyInvite,
             onlineCount = state.members.count { it.isOnline },
             latencyMs = state.latencyMs,
+            isHost = state.isHost,
             modifier = Modifier.statusBarsPadding(),
         )
 
-        // ---- Video with overlaid actions + floating reactions ----
+        // ---- Cinema stage: picture, presence badge, quick actions and transport ----
         Box(
             Modifier
                 .fillMaxWidth()
@@ -440,6 +447,20 @@ private fun PortraitBody(
             PartyPlayerSurface(player, subtitleAppearance, Modifier.fillMaxSize())
             ReactionOverlay(reactions, Modifier.fillMaxSize())
 
+            // Edge scrims keep chrome legible on bright frames without dimming the film.
+            Box(
+                Modifier
+                    .fillMaxSize()
+                    .background(
+                        Brush.verticalGradient(
+                            0f to Color(0x8A000000),
+                            0.30f to Color.Transparent,
+                            0.70f to Color.Transparent,
+                            1f to Color(0x99000000),
+                        ),
+                    ),
+            )
+
             if (state.buffering || state.loading) {
                 CircularProgressIndicator(color = Brand, strokeWidth = 2.dp)
             }
@@ -447,28 +468,96 @@ private fun PortraitBody(
                 PlayerErrorOverlay(message = state.playerError, onRetry = onRetry)
             }
 
-            // Top-right quick actions: subtitle + (host) speed.
-            Row(
-                Modifier.align(Alignment.TopEnd).padding(6.dp),
-                horizontalArrangement = Arrangement.spacedBy(6.dp),
-            ) {
-                if (state.subtitles.isNotEmpty()) {
-                    OverlayCircleButton(Icons.Rounded.ClosedCaption, "زیرنویس", onOpenSubtitles)
-                }
-                if (state.isHost) {
-                    OverlayCircleButton(Icons.Rounded.Speed, "سرعت پخش", onOpenSpeed)
-                }
-            }
-
-            IconButton(
-                onClick = onEnterFullscreen,
+            Column(
                 modifier = Modifier
-                    .align(Alignment.BottomEnd)
-                    .padding(6.dp)
-                    .size(38.dp)
-                    .background(Color(0x66000000), CircleShape),
+                    .fillMaxSize()
+                    .padding(horizontal = 10.dp, vertical = 9.dp),
             ) {
-                Icon(Icons.Rounded.Fullscreen, contentDescription = "تمام‌صفحه", tint = Color.White, modifier = Modifier.size(22.dp))
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    PartyBadge(text = if (state.isHost) "میزبان" else "تماشاگر", host = state.isHost)
+                    Spacer(Modifier.weight(1f))
+                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        if (state.subtitles.isNotEmpty()) {
+                            OverlayCircleButton(Icons.Rounded.ClosedCaption, "زیرنویس", onOpenSubtitles)
+                        }
+                        if (state.isHost) {
+                            OverlayCircleButton(Icons.Rounded.Speed, "سرعت پخش", onOpenSpeed)
+                        }
+                    }
+                }
+
+                Spacer(Modifier.weight(1f))
+
+                if (state.isHost) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(24.dp),
+                    ) {
+                        PartyTransportButton(
+                            icon = Icons.Rounded.Replay10,
+                            label = "۱۰ ثانیه عقب",
+                            onClick = { onSeek((state.positionMs - 10_000L).coerceAtLeast(0L)) },
+                        )
+                        PartyTransportButton(
+                            icon = if (state.playing) Icons.Rounded.Pause else Icons.Rounded.PlayArrow,
+                            label = if (state.playing) "توقف" else "پخش",
+                            size = 62.dp,
+                            filled = true,
+                            onClick = onPlayPause,
+                        )
+                        PartyTransportButton(
+                            icon = Icons.Rounded.Forward10,
+                            label = "۱۰ ثانیه جلو",
+                            onClick = {
+                                val target = state.positionMs + 10_000L
+                                onSeek(
+                                    if (state.durationMs > 0) target.coerceAtMost(state.durationMs) else target,
+                                )
+                            },
+                        )
+                    }
+                } else {
+                    Row(
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(999.dp))
+                            .background(Color.Black.copy(alpha = 0.46f))
+                            .border(1.dp, Color.White.copy(alpha = 0.14f), RoundedCornerShape(999.dp))
+                            .clickable(onClick = onResync)
+                            .padding(horizontal = 14.dp, vertical = 9.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(7.dp),
+                    ) {
+                        Icon(Icons.Rounded.Sync, contentDescription = null, tint = Brand, modifier = Modifier.size(16.dp))
+                        Text(
+                            "هماهنگ‌سازی با میزبان",
+                            color = Color.White,
+                            style = MaterialTheme.typography.labelMedium,
+                            fontWeight = FontWeight.SemiBold,
+                        )
+                    }
+                }
+
+                Spacer(Modifier.weight(1f))
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    state.content?.let { content ->
+                        Text(
+                            text = content.title,
+                            style = MaterialTheme.typography.labelSmall,
+                            color = Color.White.copy(alpha = 0.82f),
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.weight(1f),
+                        )
+                    } ?: Spacer(Modifier.weight(1f))
+                    OverlayCircleButton(Icons.Rounded.Fullscreen, "تمام‌صفحه", onEnterFullscreen)
+                }
             }
         }
 
@@ -486,6 +575,35 @@ private fun PortraitBody(
         ReactionBar(onReact = onReact, modifier = Modifier.fillMaxWidth())
 
         MembersStrip(members = state.members)
+
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(start = 16.dp, end = 16.dp, top = 8.dp, bottom = 2.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Icon(
+                Icons.Rounded.ChatBubbleOutline,
+                contentDescription = null,
+                tint = Brand,
+                modifier = Modifier.size(17.dp),
+            )
+            Spacer(Modifier.size(7.dp))
+            Text(
+                "گفتگوی زنده",
+                style = MaterialTheme.typography.titleSmall,
+                fontWeight = FontWeight.Bold,
+                color = TextPrimary,
+            )
+            Spacer(Modifier.weight(1f))
+            if (state.messages.isNotEmpty()) {
+                Text(
+                    "${state.messages.size} پیام",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = TextMuted,
+                )
+            }
+        }
 
         ChatMessages(
             messages = state.messages,
@@ -510,56 +628,94 @@ private fun RoomTopBar(
     onCopyInvite: () -> Unit,
     onlineCount: Int,
     latencyMs: Long?,
+    isHost: Boolean,
     modifier: Modifier = Modifier,
 ) {
     Row(
         modifier
             .fillMaxWidth()
-            .background(BgElevated)
-            .padding(horizontal = 8.dp, vertical = 8.dp),
+            .background(BgSurface)
+            .padding(horizontal = 10.dp, vertical = 9.dp),
         verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(6.dp),
     ) {
-        IconButton(onClick = onBack) {
-            Icon(Icons.AutoMirrored.Rounded.ArrowForward, contentDescription = "خروج از اتاق")
+        Box(
+            modifier = Modifier
+                .size(38.dp)
+                .clip(CircleShape)
+                .background(BgElevated)
+                .clickable(onClick = onBack),
+            contentAlignment = Alignment.Center,
+        ) {
+            Icon(
+                Icons.AutoMirrored.Rounded.ArrowForward,
+                contentDescription = "خروج از اتاق",
+                tint = TextPrimary,
+                modifier = Modifier.size(21.dp),
+            )
         }
-        Column(Modifier.weight(1f)) {
+        Column(Modifier.weight(1f).padding(horizontal = 4.dp)) {
             Text(
                 title,
                 style = MaterialTheme.typography.titleSmall,
                 fontWeight = FontWeight.Bold,
+                color = TextPrimary,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
             )
-            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                if (onlineCount > 0) {
-                    Box(Modifier.size(6.dp).background(BrandDeep, CircleShape))
-                    Text("$onlineCount آنلاین", style = MaterialTheme.typography.labelSmall, color = TextMuted)
-                } else {
-                    Text("تماشای گروهی", style = MaterialTheme.typography.labelSmall, color = TextMuted)
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+            ) {
+                Box(
+                    Modifier
+                        .size(6.dp)
+                        .background(if (onlineCount > 0) Brand else TextMuted, CircleShape),
+                )
+                Text(
+                    if (onlineCount > 0) "$onlineCount نفر آنلاین" else "در انتظار اعضای اتاق",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = TextMuted,
+                )
+                Text("•", style = MaterialTheme.typography.labelSmall, color = TextMuted)
+                Text(
+                    if (isHost) "میزبان" else "مهمان",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = if (isHost) Brand else TextSecondary,
+                    fontWeight = FontWeight.SemiBold,
+                )
+                if (latencyMs != null) {
+                    Text(
+                        "• ${latencyMs}ms",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = if (latencyMs < 220) TextMuted else Brand,
+                    )
                 }
             }
         }
         if (!inviteCode.isNullOrBlank()) {
             Row(
                 Modifier
-                    .clip(RoundedCornerShape(999.dp))
-                    .background(BgSurface)
+                    .clip(RoundedCornerShape(12.dp))
+                    .background(BgElevated)
                     .clickable(onClick = onCopyInvite)
-                    .padding(start = 12.dp, end = 8.dp, top = 6.dp, bottom = 6.dp),
+                    .padding(horizontal = 10.dp, vertical = 7.dp),
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(6.dp),
             ) {
-                Text(inviteCode, style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.Bold, color = Brand)
-                Icon(Icons.Rounded.ContentCopy, contentDescription = "کپی کد دعوت", tint = TextSecondary, modifier = Modifier.size(15.dp))
+                Text(
+                    inviteCode,
+                    style = MaterialTheme.typography.labelMedium,
+                    fontWeight = FontWeight.Bold,
+                    color = Brand,
+                )
+                Icon(
+                    Icons.Rounded.ContentCopy,
+                    contentDescription = "کپی کد دعوت",
+                    tint = TextSecondary,
+                    modifier = Modifier.size(15.dp),
+                )
             }
-        }
-        if (latencyMs != null) {
-            Text(
-                "${latencyMs}ms",
-                style = MaterialTheme.typography.labelSmall,
-                color = if (latencyMs < 200) BrandDeep else TextMuted,
-                modifier = Modifier.padding(horizontal = 8.dp),
-            )
         }
     }
 }
@@ -575,52 +731,67 @@ private fun PlaybackBar(
     onSeek: (Long) -> Unit,
     onResync: () -> Unit,
 ) {
-    Column(Modifier.fillMaxWidth().background(BgElevated).padding(horizontal = 12.dp, vertical = 6.dp)) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            IconButton(onClick = onToggle, enabled = isHost) {
+    Column(Modifier.fillMaxWidth().background(BgElevated).padding(horizontal = 12.dp, vertical = 4.dp)) {
+        SeekBar(
+            positionMs = positionMs,
+            durationMs = durationMs,
+            enabled = isHost,
+            onSeek = onSeek,
+            modifier = Modifier.fillMaxWidth(),
+        )
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(start = 4.dp, end = 4.dp, bottom = 3.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
+        ) {
+            if (isHost) {
                 Icon(
-                    if (playing) Icons.Rounded.Pause else Icons.Rounded.PlayArrow,
-                    contentDescription = if (playing) "توقف" else "پخش",
-                    tint = if (isHost) Brand else TextMuted,
+                    if (playing) Icons.Rounded.PlayArrow else Icons.Rounded.Pause,
+                    contentDescription = null,
+                    tint = Brand,
+                    modifier = Modifier.size(14.dp),
                 )
-            }
-            SeekBar(
-                positionMs = positionMs,
-                durationMs = durationMs,
-                enabled = isHost,
-                onSeek = onSeek,
-                modifier = Modifier.weight(1f),
-            )
-            if (speed != 1f) {
                 Text(
-                    "${formatSpeed(speed)}x",
+                    "پخش برای همه هماهنگ می‌شود",
                     style = MaterialTheme.typography.labelSmall,
-                    color = Brand,
-                    fontWeight = FontWeight.Bold,
-                    modifier = Modifier.padding(start = 6.dp),
+                    color = TextMuted,
                 )
-            }
-        }
-        if (!isHost) {
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(6.dp),
-                modifier = Modifier.padding(start = 12.dp, bottom = 4.dp),
-            ) {
-                Icon(Icons.Rounded.Lock, contentDescription = null, tint = TextMuted, modifier = Modifier.size(14.dp))
-                Text("کنترل پخش در دست میزبان است", style = MaterialTheme.typography.labelSmall, color = TextMuted)
+                Spacer(Modifier.weight(1f))
+                if (speed != 1f) {
+                    Text(
+                        "${formatSpeed(speed)}x",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = Brand,
+                        fontWeight = FontWeight.Bold,
+                    )
+                }
+            } else {
+                Icon(Icons.Rounded.Lock, contentDescription = null, tint = TextMuted, modifier = Modifier.size(13.dp))
+                Text(
+                    "کنترل پخش در دست میزبان است",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = TextMuted,
+                    maxLines = 1,
+                )
                 Spacer(Modifier.weight(1f))
                 Row(
                     Modifier
                         .clip(RoundedCornerShape(999.dp))
                         .clickable(onClick = onResync)
                         .background(BgSurface)
-                        .padding(horizontal = 10.dp, vertical = 4.dp),
+                        .padding(horizontal = 10.dp, vertical = 5.dp),
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(4.dp),
                 ) {
                     Icon(Icons.Rounded.Sync, contentDescription = null, tint = Brand, modifier = Modifier.size(13.dp))
-                    Text("هماهنگ‌سازی", style = MaterialTheme.typography.labelSmall, color = Brand)
+                    Text(
+                        "هماهنگ‌سازی",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = Brand,
+                        fontWeight = FontWeight.SemiBold,
+                    )
                 }
             }
         }
@@ -668,18 +839,72 @@ private fun SeekBar(
 
 @Composable
 private fun MembersStrip(members: List<RoomMemberDto>) {
+    val ordered = remember(members) {
+        members.sortedWith(
+            compareByDescending<RoomMemberDto> { it.isOnline }
+                .thenByDescending { it.role == "host" },
+        )
+    }
+    val online = ordered.count { it.isOnline }
     Row(
         Modifier
             .fillMaxWidth()
             .background(BgSurface)
-            .padding(horizontal = 12.dp, vertical = 8.dp),
+            .padding(horizontal = 16.dp, vertical = 8.dp),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(8.dp),
     ) {
-        val online = members.count { it.isOnline }
-        Text("$online آنلاین", style = MaterialTheme.typography.labelMedium, color = BrandDeep)
-        Spacer(Modifier.size(4.dp))
-        members.take(8).forEach { member -> MemberAvatar(member) }
+        Text(
+            "همراهان اتاق",
+            style = MaterialTheme.typography.labelMedium,
+            fontWeight = FontWeight.SemiBold,
+            color = TextSecondary,
+        )
+        Row(
+            horizontalArrangement = Arrangement.spacedBy((-7).dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            ordered.take(7).forEach { member -> MemberAvatar(member, size = 28.dp) }
+            val extra = ordered.size - 7
+            if (extra > 0) {
+                Box(
+                    Modifier
+                        .size(28.dp)
+                        .clip(CircleShape)
+                        .background(BgElevated)
+                        .border(1.5.dp, BgSurface, CircleShape),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Text(
+                        "+${toFaDigits(extra.toString())}",
+                        color = TextSecondary,
+                        fontSize = 10.sp,
+                        fontWeight = FontWeight.Bold,
+                    )
+                }
+            }
+        }
+        Spacer(Modifier.weight(1f))
+        Row(
+            modifier = Modifier
+                .clip(RoundedCornerShape(999.dp))
+                .background(BgElevated)
+                .padding(horizontal = 8.dp, vertical = 4.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(5.dp),
+        ) {
+            Box(
+                Modifier
+                    .size(6.dp)
+                    .background(if (online > 0) Brand else TextMuted, CircleShape),
+            )
+            Text(
+                "${toFaDigits(online.toString())} آنلاین",
+                style = MaterialTheme.typography.labelSmall,
+                color = if (online > 0) Brand else TextMuted,
+                fontWeight = FontWeight.SemiBold,
+            )
+        }
     }
 }
 
@@ -689,7 +914,8 @@ private fun MemberAvatar(member: RoomMemberDto, size: androidx.compose.ui.unit.D
     Box(
         Modifier
             .size(size)
-            .background(if (member.role == "host") BrandDeep else BgElevated, CircleShape)
+            .clip(CircleShape)
+            .background(if (member.role == "host") BrandDeep else BgElevated)
             .border(
                 width = 1.5.dp,
                 color = if (member.isOnline) Brand else OutlineSoft,
@@ -697,8 +923,32 @@ private fun MemberAvatar(member: RoomMemberDto, size: androidx.compose.ui.unit.D
             ),
         contentAlignment = Alignment.Center,
     ) {
-        Text(initial, color = if (member.role == "host") OnBrand else TextSecondary, fontSize = 13.sp)
+        val avatar = member.user?.avatar
+        if (!avatar.isNullOrBlank()) {
+            NetworkImage(
+                url = avatar,
+                contentDescription = member.user?.displayName,
+                fallbackText = initial,
+                modifier = Modifier.fillMaxSize().clip(CircleShape),
+            )
+        } else {
+            Text(initial, color = if (member.role == "host") OnBrand else TextSecondary, fontSize = 12.sp)
+        }
+        if (member.role == "host") {
+            Box(
+                Modifier
+                    .align(Alignment.BottomEnd)
+                    .size(9.dp)
+                    .clip(CircleShape)
+                    .background(Brand)
+                    .border(1.dp, BgSurface, CircleShape),
+            )
+        }
     }
+}
+
+private fun toFaDigits(value: String): String = buildString(value.length) {
+    value.forEach { ch -> append(if (ch in '0'..'9') '۰' + (ch - '0') else ch) }
 }
 
 /* ================================ FULLSCREEN ================================ */
@@ -904,23 +1154,28 @@ private fun FullscreenControls(
             .fillMaxSize()
             .background(
                 Brush.verticalGradient(
-                    0f to Color(0x99000000),
-                    0.25f to Color.Transparent,
-                    0.72f to Color.Transparent,
-                    1f to Color(0x99000000),
+                    0f to Color(0xA6000000),
+                    0.30f to Color.Transparent,
+                    0.68f to Color.Transparent,
+                    1f to Color(0xB3000000),
                 ),
             )
             .windowInsetsPadding(WindowInsets.safeDrawing),
     ) {
         // Top bar
         Row(
-            Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp),
+            Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 16.dp, vertical = 10.dp),
             verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(10.dp),
         ) {
-            IconButton(onClick = onExitFullscreen) {
-                Icon(Icons.Rounded.FullscreenExit, contentDescription = "خروج از تمام‌صفحه", tint = Color.White, modifier = Modifier.size(26.dp))
-            }
-            Column(Modifier.weight(1f).padding(start = 6.dp)) {
+            PartyGlassButton(
+                icon = Icons.Rounded.FullscreenExit,
+                label = "خروج از تمام‌صفحه",
+                onClick = onExitFullscreen,
+            )
+            Column(Modifier.weight(1f).padding(horizontal = 2.dp)) {
                 Text(
                     state.content?.title ?: "تماشای گروهی",
                     style = MaterialTheme.typography.titleMedium,
@@ -930,17 +1185,27 @@ private fun FullscreenControls(
                     overflow = TextOverflow.Ellipsis,
                 )
                 val online = state.members.count { it.isOnline }
-                Text("$online آنلاین", style = MaterialTheme.typography.labelSmall, color = Color(0xCCFFFFFF))
+                Text(
+                    "$online نفر آنلاین • ${if (state.isHost) "شما میزبان هستید" else "تماشای هماهنگ"}",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = Color.White.copy(alpha = 0.74f),
+                )
             }
             if (state.subtitles.isNotEmpty()) {
-                IconButton(onClick = onOpenSubtitles) {
-                    Icon(Icons.Rounded.ClosedCaption, contentDescription = "زیرنویس", tint = Color.White, modifier = Modifier.size(24.dp))
-                }
+                PartyGlassButton(
+                    icon = Icons.Rounded.ClosedCaption,
+                    label = "زیرنویس",
+                    onClick = onOpenSubtitles,
+                    active = state.activeSubtitleIndex >= 0,
+                )
             }
             if (state.isHost) {
-                IconButton(onClick = onOpenSpeed) {
-                    Icon(Icons.Rounded.Speed, contentDescription = "سرعت پخش", tint = Color.White, modifier = Modifier.size(24.dp))
-                }
+                PartyGlassButton(
+                    icon = Icons.Rounded.Speed,
+                    label = "سرعت پخش",
+                    onClick = onOpenSpeed,
+                    active = state.playbackSpeed != 1f,
+                )
             }
             ChatIconButton(unread = unread, onClick = onToggleChat)
         }
@@ -950,22 +1215,25 @@ private fun FullscreenControls(
             Row(
                 Modifier.align(Alignment.Center),
                 verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(34.dp),
+                horizontalArrangement = Arrangement.spacedBy(30.dp),
             ) {
-                CircleControl(onRewind, 50.dp) {
-                    Icon(Icons.Rounded.Replay10, contentDescription = "۱۰ ثانیه عقب", tint = Color.White, modifier = Modifier.size(32.dp))
-                }
-                CircleControl(onPlayPause, 74.dp, Color(0x33FFFFFF)) {
-                    Icon(
-                        if (state.playing) Icons.Rounded.Pause else Icons.Rounded.PlayArrow,
-                        contentDescription = "پخش/توقف",
-                        tint = Color.White,
-                        modifier = Modifier.size(46.dp),
-                    )
-                }
-                CircleControl(onForward, 50.dp) {
-                    Icon(Icons.Rounded.Forward10, contentDescription = "۱۰ ثانیه جلو", tint = Color.White, modifier = Modifier.size(32.dp))
-                }
+                PartyTransportButton(
+                    icon = Icons.Rounded.Replay10,
+                    label = "۱۰ ثانیه عقب",
+                    onClick = onRewind,
+                )
+                PartyTransportButton(
+                    icon = if (state.playing) Icons.Rounded.Pause else Icons.Rounded.PlayArrow,
+                    label = if (state.playing) "توقف" else "پخش",
+                    size = 76.dp,
+                    filled = true,
+                    onClick = onPlayPause,
+                )
+                PartyTransportButton(
+                    icon = Icons.Rounded.Forward10,
+                    label = "۱۰ ثانیه جلو",
+                    onClick = onForward,
+                )
             }
         } else {
             Row(
@@ -974,27 +1242,73 @@ private fun FullscreenControls(
                     .clip(CircleShape)
                     .clickable(onClick = onResync)
                     .background(Color(0x66000000))
-                    .padding(horizontal = 16.dp, vertical = 8.dp),
+                    .border(1.dp, Color.White.copy(alpha = 0.14f), CircleShape)
+                    .padding(horizontal = 18.dp, vertical = 10.dp),
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
             ) {
-                Icon(Icons.Rounded.Sync, contentDescription = null, tint = Color.White, modifier = Modifier.size(16.dp))
-                Text("هماهنگ‌سازی با میزبان", color = Color.White, style = MaterialTheme.typography.labelMedium)
+                Icon(Icons.Rounded.Sync, contentDescription = null, tint = Brand, modifier = Modifier.size(17.dp))
+                Text(
+                    "هماهنگ‌سازی با میزبان",
+                    color = Color.White,
+                    style = MaterialTheme.typography.labelMedium,
+                    fontWeight = FontWeight.SemiBold,
+                )
             }
         }
 
-        // Bottom seek bar
-        SeekBar(
-            positionMs = state.positionMs,
-            durationMs = state.durationMs,
-            enabled = state.isHost,
-            onSeek = onSeek,
-            light = true,
-            modifier = Modifier
+        // Bottom timeline + room-state chips
+        Column(
+            Modifier
                 .align(Alignment.BottomCenter)
                 .fillMaxWidth()
-                .padding(horizontal = 16.dp, vertical = 10.dp),
-        )
+                .padding(horizontal = 18.dp, vertical = 10.dp),
+            verticalArrangement = Arrangement.spacedBy(6.dp),
+        ) {
+            SeekBar(
+                positionMs = state.positionMs,
+                durationMs = state.durationMs,
+                enabled = state.isHost,
+                onSeek = onSeek,
+                light = true,
+                modifier = Modifier.fillMaxWidth(),
+            )
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+            ) {
+                PartyPill(
+                    icon = if (state.isHost) Icons.Rounded.PlayArrow else Icons.Rounded.Lock,
+                    text = if (state.isHost) "کنترل با شما" else "کنترل با میزبان",
+                    onClick = if (state.isHost) onPlayPause else onResync,
+                    active = state.isHost,
+                )
+                if (state.playbackSpeed != 1f) {
+                    PartyPill(
+                        icon = Icons.Rounded.Speed,
+                        text = "${formatSpeed(state.playbackSpeed)}×",
+                        onClick = onOpenSpeed,
+                        active = true,
+                    )
+                }
+                Spacer(Modifier.weight(1f))
+                if (state.subtitles.isNotEmpty()) {
+                    PartyPill(
+                        icon = Icons.Rounded.ClosedCaption,
+                        text = "زیرنویس",
+                        onClick = onOpenSubtitles,
+                        active = state.activeSubtitleIndex >= 0,
+                    )
+                }
+                PartyPill(
+                    icon = Icons.Rounded.ChatBubbleOutline,
+                    text = "گفتگو",
+                    onClick = onToggleChat,
+                    active = unread > 0,
+                )
+            }
+        }
     }
 }
 
@@ -1115,27 +1429,37 @@ private fun FloatingReaction(
     }
 }
 
-/** Portrait: an always-visible row of tappable reaction emojis. */
+/** Portrait: an always-visible shelf of tappable reactions. */
 @Composable
 private fun ReactionBar(onReact: (String) -> Unit, modifier: Modifier = Modifier) {
     Row(
         modifier
             .background(BgElevated)
             .horizontalScroll(rememberScrollState())
-            .padding(horizontal = 10.dp, vertical = 6.dp),
+            .padding(horizontal = 14.dp, vertical = 7.dp),
         horizontalArrangement = Arrangement.spacedBy(6.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
+        Text(
+            "واکنش سریع",
+            style = MaterialTheme.typography.labelSmall,
+            color = TextMuted,
+            fontWeight = FontWeight.SemiBold,
+            modifier = Modifier.padding(end = 4.dp),
+        )
         ReactionEmojis.forEach { emoji ->
+            val interaction = remember { MutableInteractionSource() }
+            val scale = rememberedPressScale(interaction, pressedScale = 0.88f)
             Box(
                 Modifier
-                    .size(38.dp)
+                    .size(36.dp)
+                    .motionScale(scale)
                     .clip(CircleShape)
                     .background(BgSurface)
-                    .clickable { onReact(emoji) },
+                    .clickable(interactionSource = interaction, indication = null) { onReact(emoji) },
                 contentAlignment = Alignment.Center,
             ) {
-                Text(emoji, fontSize = 20.sp)
+                Text(emoji, fontSize = 19.sp)
             }
         }
     }
@@ -1340,13 +1664,135 @@ private fun AppearanceChip(label: String, selected: Boolean, onClick: () -> Unit
 
 /* ============================= Small shared bits ============================= */
 @Composable
-private fun OverlayCircleButton(icon: androidx.compose.ui.graphics.vector.ImageVector, label: String, onClick: () -> Unit) {
-    IconButton(
-        onClick = onClick,
-        modifier = Modifier.size(38.dp).background(Color(0x66000000), CircleShape),
+private fun PartyBadge(text: String, host: Boolean) {
+    Row(
+        modifier = Modifier
+            .clip(RoundedCornerShape(999.dp))
+            .background(Color.Black.copy(alpha = 0.48f))
+            .border(
+                1.dp,
+                if (host) Brand.copy(alpha = 0.48f) else Color.White.copy(alpha = 0.14f),
+                RoundedCornerShape(999.dp),
+            )
+            .padding(horizontal = 10.dp, vertical = 5.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(5.dp),
     ) {
-        Icon(icon, contentDescription = label, tint = Color.White, modifier = Modifier.size(20.dp))
+        Box(
+            Modifier
+                .size(6.dp)
+                .background(if (host) Brand else Color.White.copy(alpha = 0.62f), CircleShape),
+        )
+        Text(
+            text,
+            color = if (host) Brand else Color.White.copy(alpha = 0.88f),
+            style = MaterialTheme.typography.labelSmall,
+            fontWeight = FontWeight.SemiBold,
+        )
     }
+}
+
+@Composable
+private fun PartyGlassButton(
+    icon: androidx.compose.ui.graphics.vector.ImageVector,
+    label: String,
+    onClick: () -> Unit,
+    active: Boolean = false,
+) {
+    val interaction = remember { MutableInteractionSource() }
+    val scale = rememberedPressScale(interaction, pressedScale = 0.92f)
+    Box(
+        modifier = Modifier
+            .size(42.dp)
+            .motionScale(scale)
+            .clip(CircleShape)
+            .background(Color.Black.copy(alpha = 0.38f))
+            .border(
+                1.dp,
+                if (active) Brand.copy(alpha = 0.52f) else Color.White.copy(alpha = 0.14f),
+                CircleShape,
+            )
+            .clickable(interactionSource = interaction, indication = null, onClick = onClick),
+        contentAlignment = Alignment.Center,
+    ) {
+        Icon(
+            icon,
+            contentDescription = label,
+            tint = if (active) Brand else Color.White,
+            modifier = Modifier.size(22.dp),
+        )
+    }
+}
+
+@Composable
+private fun PartyPill(
+    icon: androidx.compose.ui.graphics.vector.ImageVector,
+    text: String,
+    onClick: () -> Unit,
+    active: Boolean = false,
+) {
+    val interaction = remember { MutableInteractionSource() }
+    val scale = rememberedPressScale(interaction, pressedScale = 0.94f)
+    val tint = if (active) Brand else Color.White
+    Row(
+        modifier = Modifier
+            .motionScale(scale)
+            .clip(RoundedCornerShape(999.dp))
+            .background(Color.Black.copy(alpha = 0.40f))
+            .then(
+                if (active) Modifier.border(1.dp, Brand.copy(alpha = 0.55f), RoundedCornerShape(999.dp))
+                else Modifier,
+            )
+            .clickable(interactionSource = interaction, indication = null, onClick = onClick)
+            .padding(horizontal = 11.dp, vertical = 7.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(6.dp),
+    ) {
+        Icon(icon, contentDescription = text, tint = tint, modifier = Modifier.size(18.dp))
+        Text(
+            text = text,
+            color = tint,
+            style = MaterialTheme.typography.labelMedium,
+            fontWeight = FontWeight.SemiBold,
+        )
+    }
+}
+
+@Composable
+private fun PartyTransportButton(
+    icon: androidx.compose.ui.graphics.vector.ImageVector,
+    label: String,
+    onClick: () -> Unit,
+    size: androidx.compose.ui.unit.Dp = 52.dp,
+    filled: Boolean = false,
+) {
+    val interaction = remember { MutableInteractionSource() }
+    val scale = rememberedPressScale(interaction, pressedScale = 0.90f)
+    Box(
+        modifier = Modifier
+            .size(size)
+            .motionScale(scale)
+            .clip(CircleShape)
+            .background(if (filled) Color(0x40FFFFFF) else Color.Black.copy(alpha = 0.28f))
+            .then(
+                if (filled) Modifier.border(1.dp, Color.White.copy(alpha = 0.20f), CircleShape)
+                else Modifier,
+            )
+            .clickable(interactionSource = interaction, indication = null, onClick = onClick),
+        contentAlignment = Alignment.Center,
+    ) {
+        Icon(
+            icon,
+            contentDescription = label,
+            tint = Color.White,
+            modifier = Modifier.size(if (filled) size * 0.54f else 30.dp),
+        )
+    }
+}
+
+@Composable
+private fun OverlayCircleButton(icon: androidx.compose.ui.graphics.vector.ImageVector, label: String, onClick: () -> Unit) {
+    PartyGlassButton(icon = icon, label = label, onClick = onClick)
 }
 
 /** Slim tab clinging to the edge that opens chat without summoning full controls. */
@@ -1373,9 +1819,12 @@ private fun ChatOpenerTab(unread: Int, onClick: () -> Unit) {
 @Composable
 private fun ChatIconButton(unread: Int, onClick: () -> Unit) {
     Box(contentAlignment = Alignment.TopEnd) {
-        IconButton(onClick = onClick) {
-            Icon(Icons.Rounded.ChatBubbleOutline, contentDescription = "گفتگو", tint = Color.White, modifier = Modifier.size(24.dp))
-        }
+        PartyGlassButton(
+            icon = Icons.Rounded.ChatBubbleOutline,
+            label = "گفتگو",
+            onClick = onClick,
+            active = unread > 0,
+        )
         if (unread > 0) UnreadDot(unread)
     }
 }
@@ -1440,11 +1889,36 @@ private fun ChatMessages(
 ) {
     if (messages.isEmpty()) {
         Box(modifier, contentAlignment = Alignment.Center) {
-            Text(
-                "هنوز پیامی نیست؛ اولین نفر باش!",
-                style = MaterialTheme.typography.bodySmall,
-                color = if (translucent) Color(0x99FFFFFF) else TextMuted,
-            )
+            Column(
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.spacedBy(6.dp),
+            ) {
+                Box(
+                    Modifier
+                        .size(42.dp)
+                        .clip(CircleShape)
+                        .background(if (translucent) Color(0x22FFFFFF) else BgElevated),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Icon(
+                        Icons.Rounded.ChatBubbleOutline,
+                        contentDescription = null,
+                        tint = if (translucent) Color.White.copy(alpha = 0.72f) else TextMuted,
+                        modifier = Modifier.size(21.dp),
+                    )
+                }
+                Text(
+                    "هنوز پیامی نیست",
+                    style = MaterialTheme.typography.titleSmall,
+                    fontWeight = FontWeight.SemiBold,
+                    color = if (translucent) Color.White else TextSecondary,
+                )
+                Text(
+                    "اولین پیام این اتاق را بفرست.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = if (translucent) Color(0x99FFFFFF) else TextMuted,
+                )
+            }
         }
         return
     }
@@ -1464,24 +1938,50 @@ private fun ChatMessages(
 
 @Composable
 private fun ChatBubble(msg: ChatMessageDto, translucent: Boolean) {
-    Column {
-        Text(
-            msg.user?.displayName ?: "کاربر",
-            style = MaterialTheme.typography.labelSmall,
-            color = Brand,
-            fontWeight = FontWeight.Bold,
-        )
-        Spacer(Modifier.size(2.dp))
+    val displayName = msg.user?.displayName ?: "کاربر"
+    val initial = displayName.trim().firstOrNull()?.toString() ?: "؟"
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        verticalAlignment = Alignment.Top,
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
         Box(
             Modifier
-                .background(if (translucent) ChatBubbleOverlay else BgElevated, RoundedCornerShape(12.dp))
-                .padding(horizontal = 12.dp, vertical = 8.dp),
+                .size(28.dp)
+                .clip(CircleShape)
+                .background(if (translucent) Color(0x26FFFFFF) else BrandDeep),
+            contentAlignment = Alignment.Center,
         ) {
             Text(
-                msg.message,
-                style = MaterialTheme.typography.bodyMedium,
-                color = if (translucent) Color.White else MaterialTheme.colorScheme.onSurface,
+                initial,
+                color = if (translucent) Color.White else OnBrand,
+                fontSize = 11.sp,
+                fontWeight = FontWeight.Bold,
             )
+        }
+        Column(modifier = Modifier.weight(1f)) {
+            Text(
+                displayName,
+                style = MaterialTheme.typography.labelSmall,
+                color = Brand,
+                fontWeight = FontWeight.Bold,
+            )
+            Spacer(Modifier.size(2.dp))
+            Box(
+                Modifier
+                    .widthIn(max = 300.dp)
+                    .background(
+                        if (translucent) ChatBubbleOverlay else BgElevated,
+                        RoundedCornerShape(topStart = 4.dp, topEnd = 14.dp, bottomEnd = 14.dp, bottomStart = 14.dp),
+                    )
+                    .padding(horizontal = 12.dp, vertical = 8.dp),
+            ) {
+                Text(
+                    msg.message,
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = if (translucent) Color.White else MaterialTheme.colorScheme.onSurface,
+                )
+            }
         }
     }
 }
@@ -1498,15 +1998,23 @@ private fun ChatInput(
         modifier
             .fillMaxWidth()
             .background(if (translucent) Color(0xF21A1B1E) else BgElevated)
-            .padding(8.dp),
-        verticalAlignment = Alignment.CenterVertically,
+            .padding(horizontal = 10.dp, vertical = 8.dp),
+        verticalAlignment = Alignment.Bottom,
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
     ) {
         OutlinedTextField(
             value = draft,
             onValueChange = onDraftChange,
             modifier = Modifier.weight(1f),
-            placeholder = { Text("پیام بنویس…", color = if (translucent) Color(0x99FFFFFF) else TextMuted) },
+            placeholder = {
+                Text(
+                    "پیام به اتاق…",
+                    color = if (translucent) Color(0x99FFFFFF) else TextMuted,
+                    style = MaterialTheme.typography.bodyMedium,
+                )
+            },
             maxLines = 3,
+            shape = RoundedCornerShape(22.dp),
             keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
             keyboardActions = KeyboardActions(onSend = { onSend() }),
             colors = OutlinedTextFieldDefaults.colors(
@@ -1515,10 +2023,25 @@ private fun ChatInput(
                 focusedTextColor = if (translucent) Color.White else MaterialTheme.colorScheme.onSurface,
                 unfocusedTextColor = if (translucent) Color.White else MaterialTheme.colorScheme.onSurface,
                 unfocusedBorderColor = if (translucent) Color(0x44FFFFFF) else OutlineSoft,
+                focusedContainerColor = if (translucent) Color(0x14FFFFFF) else BgSurface,
+                unfocusedContainerColor = if (translucent) Color(0x0DFFFFFF) else BgSurface,
             ),
         )
-        IconButton(onClick = onSend) {
-            Icon(Icons.AutoMirrored.Rounded.Send, contentDescription = "ارسال", tint = Brand)
+        val canSend = draft.isNotBlank()
+        Box(
+            Modifier
+                .size(44.dp)
+                .clip(CircleShape)
+                .background(if (canSend) Brand else (if (translucent) Color(0x22FFFFFF) else BgSurface))
+                .clickable(enabled = canSend, onClick = onSend),
+            contentAlignment = Alignment.Center,
+        ) {
+            Icon(
+                Icons.AutoMirrored.Rounded.Send,
+                contentDescription = "ارسال",
+                tint = if (canSend) OnBrand else (if (translucent) Color(0x66FFFFFF) else TextMuted),
+                modifier = Modifier.size(20.dp),
+            )
         }
     }
 }

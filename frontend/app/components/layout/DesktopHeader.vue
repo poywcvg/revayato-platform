@@ -12,7 +12,7 @@ interface HeaderNavItem {
   label: string
   to: string
   match: (path: string) => boolean
-  /** Shown from 1280px up; below that it lives in the categories menu. */
+  /** Shown from 1440px up; below that it lives in the categories menu. */
   wide?: boolean
 }
 
@@ -457,9 +457,9 @@ watch(() => route.fullPath, () => nextTick(measureProgress))
 
 .rvh__skip:focus { transform: none; }
 
-/* Narrow desktops (1024–1279px): secondary links move into the
+/* Narrow desktops (1024–1439px): secondary links move into the
    categories menu, the app shortcut and username hide. */
-@media (max-width: 1279px) {
+@media (max-width: 1439px) {
   .rvh { --rvh-control: 2.35rem; }
 
   .rvh__link--wide,
@@ -480,7 +480,7 @@ watch(() => route.fullPath, () => nextTick(measureProgress))
 }
 
 /* Mid desktops: keep every link, but the username only from 1600px. */
-@media (min-width: 1280px) and (max-width: 1599px) {
+@media (min-width: 1440px) and (max-width: 1599px) {
   .rvh__me-name { display: none; }
 
   .rvh__me { padding-inline: .25rem; }

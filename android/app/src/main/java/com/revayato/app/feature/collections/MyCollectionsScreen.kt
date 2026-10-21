@@ -7,6 +7,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
@@ -47,7 +48,7 @@ fun MyCollectionsScreen(
     viewModel: CollectionsViewModel = hiltViewModel(),
 ) {
     if (!isLoggedIn) {
-        Column(modifier.fillMaxSize()) {
+        Column(modifier.fillMaxSize().navigationBarsPadding()) {
             BackTopBar(title = "کالکشن‌های من", onBack = onBack)
             EmptyState(
                 title = "کالکشن‌هایت اینجاست",

@@ -5,6 +5,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.ArrowForward
 import androidx.compose.material3.Icon
@@ -33,12 +34,13 @@ fun CollectionScreen(
     slug: String,
     onBack: () -> Unit,
     onOpenTitle: (contentType: String, slug: String) -> Unit,
+    modifier: Modifier = Modifier,
     viewModel: CollectionViewModel = hiltViewModel(),
 ) {
     LaunchedEffect(slug) { viewModel.load(slug) }
     val state by viewModel.state.collectAsStateWithLifecycle()
 
-    Column(Modifier.fillMaxSize()) {
+    Column(modifier.fillMaxSize()) {
         val title = (state as? UiState.Success)?.data?.title ?: "مجموعه"
         BackTopBar(title = title, onBack = onBack)
         when (val s = state) {
@@ -70,7 +72,10 @@ fun CollectionScreen(
 @Composable
 internal fun BackTopBar(title: String, onBack: () -> Unit) {
     Row(
-        Modifier.fillMaxWidth().padding(horizontal = 4.dp, vertical = 8.dp),
+        Modifier
+            .fillMaxWidth()
+            .statusBarsPadding()
+            .padding(horizontal = 4.dp, vertical = 8.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         IconButton(onClick = onBack) {

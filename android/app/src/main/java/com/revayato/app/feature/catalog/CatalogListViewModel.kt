@@ -21,6 +21,7 @@ private const val PAGE_SIZE = 24
 data class CatalogListState(
     val items: List<CatalogCardDto> = emptyList(),
     val loading: Boolean = true,
+    val refreshing: Boolean = false,
     val loadingMore: Boolean = false,
     val endReached: Boolean = false,
     val error: String? = null,
@@ -141,12 +142,23 @@ class CatalogListViewModel @Inject constructor(
 
     fun reload() {
         offset = 0
-        _state.update { it.copy(items = emptyList(), loading = true, endReached = false, error = null) }
+        _state.update {
+            it.copy(items = emptyList(), loading = true, refreshing = false, endReached = false, error = null)
+        }
+        fetch(reset = true)
+    }
+
+    /** Pull-to-refresh: re-fetch the first page without blanking the grid. */
+    fun refresh() {
+        val current = _state.value
+        if (inFlight || current.loading || current.refreshing) return
+        offset = 0
+        _state.update { it.copy(refreshing = true, endReached = false, error = null) }
         fetch(reset = true)
     }
 
     fun loadMore() {
-        if (inFlight || _state.value.endReached || _state.value.loading) return
+        if (inFlight || _state.value.endReached || _state.value.loading || _state.value.refreshing) return
         _state.update { it.copy(loadingMore = true) }
         fetch(reset = false)
     }
@@ -184,6 +196,7 @@ class CatalogListViewModel @Inject constructor(
                         it.copy(
                             items = if (reset) page else it.items + page,
                             loading = false,
+                            refreshing = false,
                             loadingMore = false,
                             endReached = res.data.next == null || page.isEmpty(),
                         )
@@ -192,6 +205,7 @@ class CatalogListViewModel @Inject constructor(
                 is ApiResult.Error -> _state.update {
                     it.copy(
                         loading = false,
+                        refreshing = false,
                         loadingMore = false,
                         endReached = true,
                         error = if (it.items.isEmpty()) res.message else null,

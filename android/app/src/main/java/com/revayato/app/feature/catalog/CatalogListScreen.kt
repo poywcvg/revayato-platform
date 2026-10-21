@@ -25,9 +25,11 @@ import androidx.compose.material.icons.rounded.Check
 import androidx.compose.material.icons.rounded.FilterAltOff
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
+import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
@@ -288,6 +290,7 @@ private fun ChartTypeToggle(selected: String, onSelect: (String) -> Unit) {
     }
 }
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun CatalogListScreen(
     kind: String,
@@ -342,25 +345,31 @@ fun CatalogListScreen(
             )
             else -> {
                 val columns = posterGridColumns()
-                LazyVerticalGrid(
-                    columns = GridCells.Fixed(columns),
-                    state = gridState,
+                PullToRefreshBox(
+                    isRefreshing = state.refreshing,
+                    onRefresh = viewModel::refresh,
                     modifier = Modifier.fillMaxSize(),
-                    contentPadding = PaddingValues(16.dp),
-                    horizontalArrangement = Arrangement.spacedBy(12.dp),
-                    verticalArrangement = Arrangement.spacedBy(16.dp),
                 ) {
-                    items(state.items, key = { "${it.contentType}-${it.id}" }) { item ->
-                        PosterCard(
-                            item = item,
-                            onClick = { onOpenTitle(item.contentType, item.slug) },
-                            modifier = Modifier.fillMaxWidth(),
-                        )
-                    }
-                    if (state.loadingMore) {
-                        item(span = { GridItemSpan(columns) }) {
-                            Box(Modifier.fillMaxWidth().padding(16.dp), contentAlignment = Alignment.Center) {
-                                CircularProgressIndicator(color = Brand, strokeWidth = 2.dp)
+                    LazyVerticalGrid(
+                        columns = GridCells.Fixed(columns),
+                        state = gridState,
+                        modifier = Modifier.fillMaxSize(),
+                        contentPadding = PaddingValues(16.dp),
+                        horizontalArrangement = Arrangement.spacedBy(12.dp),
+                        verticalArrangement = Arrangement.spacedBy(16.dp),
+                    ) {
+                        items(state.items, key = { "${it.contentType}-${it.id}" }) { item ->
+                            PosterCard(
+                                item = item,
+                                onClick = { onOpenTitle(item.contentType, item.slug) },
+                                modifier = Modifier.fillMaxWidth(),
+                            )
+                        }
+                        if (state.loadingMore) {
+                            item(span = { GridItemSpan(columns) }) {
+                                Box(Modifier.fillMaxWidth().padding(16.dp), contentAlignment = Alignment.Center) {
+                                    CircularProgressIndicator(color = Brand, strokeWidth = 2.dp)
+                                }
                             }
                         }
                     }

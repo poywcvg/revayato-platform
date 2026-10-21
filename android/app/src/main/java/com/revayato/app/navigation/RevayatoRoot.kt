@@ -3,14 +3,15 @@ package com.revayato.app.navigation
 import com.revayato.app.core.theme.BgMain
 import com.revayato.app.core.theme.NeutralSurface
 import com.revayato.app.core.theme.OnBrand
+import com.revayato.app.core.theme.RevayatoMotion
 import com.revayato.app.core.theme.RevayatoTheme
 import com.revayato.app.ui.components.ThemeToggle
 
 import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
+import androidx.compose.animation.scaleIn
 import androidx.compose.animation.slideInHorizontally
 import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutHorizontally
@@ -24,10 +25,13 @@ import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.asPaddingValues
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.rounded.Groups
 import com.revayato.app.ui.icons.RevIcons
 import androidx.compose.material3.DrawerValue
 import androidx.compose.material3.Icon
@@ -96,8 +100,87 @@ import androidx.compose.foundation.layout.Column
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.launch
 
-/** Duration of the fast page-slide motion between screens. */
-private const val FAST_MOTION_MS = 220
+/*
+ * Motion is deliberately declared once, here. Detail pages share a gentle
+ * push/settle, tabs cross-fade instead of sliding (a tab is a lateral sibling,
+ * not a child), search rises from the top, and the two cinema routes fade from
+ * black. This is what keeps every navigation feeling like the same product.
+ */
+private fun pageEnter() =
+    slideInHorizontally(
+        animationSpec = tween(RevayatoMotion.Standard, easing = RevayatoMotion.Emphasized),
+    ) { it / 7 } +
+        fadeIn(tween(220, easing = RevayatoMotion.Decelerate)) +
+        scaleIn(
+            animationSpec = tween(RevayatoMotion.Standard, easing = RevayatoMotion.Emphasized),
+            initialScale = 0.985f,
+        )
+
+private fun pageExit() =
+    slideOutHorizontally(
+        animationSpec = tween(RevayatoMotion.Standard, easing = RevayatoMotion.Emphasized),
+    ) { -it / 14 } +
+        fadeOut(tween(RevayatoMotion.Fast))
+
+private fun popPageEnter() =
+    slideInHorizontally(
+        animationSpec = tween(RevayatoMotion.Standard, easing = RevayatoMotion.Emphasized),
+    ) { -it / 10 } +
+        fadeIn(tween(220, easing = RevayatoMotion.Decelerate)) +
+        scaleIn(
+            animationSpec = tween(RevayatoMotion.Standard, easing = RevayatoMotion.Emphasized),
+            initialScale = 0.99f,
+        )
+
+private fun popPageExit() =
+    slideOutHorizontally(
+        animationSpec = tween(RevayatoMotion.Standard, easing = RevayatoMotion.Emphasized),
+    ) { it / 8 } +
+        fadeOut(tween(RevayatoMotion.Fast))
+
+private fun tabEnter() =
+    fadeIn(tween(RevayatoMotion.Fast, easing = RevayatoMotion.Decelerate)) +
+        scaleIn(
+            animationSpec = tween(260, easing = RevayatoMotion.Decelerate),
+            initialScale = 0.992f,
+        )
+
+private fun tabExit() = fadeOut(tween(150))
+
+private fun searchEnter() =
+    slideInVertically(
+        animationSpec = tween(RevayatoMotion.Standard, easing = RevayatoMotion.Decelerate),
+    ) { -it / 18 } +
+        fadeIn(tween(200, easing = RevayatoMotion.Decelerate))
+
+private fun authEnter() =
+    slideInVertically(
+        animationSpec = tween(RevayatoMotion.Standard, easing = RevayatoMotion.Emphasized),
+    ) { it / 10 } +
+        fadeIn(tween(220, easing = RevayatoMotion.Decelerate))
+
+private fun playerEnter() =
+    fadeIn(tween(260, easing = RevayatoMotion.Decelerate)) +
+        scaleIn(
+            animationSpec = tween(340, easing = RevayatoMotion.Decelerate),
+            initialScale = 0.96f,
+        )
+
+private fun roomEnter() =
+    fadeIn(tween(240, easing = RevayatoMotion.Decelerate)) +
+        scaleIn(
+            animationSpec = tween(320, easing = RevayatoMotion.Decelerate),
+            initialScale = 0.975f,
+        )
+
+private fun cinemaExit() = fadeOut(tween(180, easing = RevayatoMotion.StandardEasing))
+
+private fun settleEnter() =
+    fadeIn(tween(240, easing = RevayatoMotion.Decelerate)) +
+        scaleIn(
+            animationSpec = tween(300, easing = RevayatoMotion.Decelerate),
+            initialScale = 0.985f,
+        )
 
 @Composable
 fun RevayatoRoot(
@@ -121,6 +204,7 @@ fun RevayatoRoot(
     val backStackEntry by navController.currentBackStackEntryAsState()
     val currentRoute = backStackEntry?.destination?.route
     val chromeRoutes = remember { TopLevelDestination.entries.map { it.route }.toSet() + Routes.HOME }
+    val authRoutes = remember { setOf(Routes.LOGIN, Routes.REGISTER, Routes.FORGOT_PASSWORD) }
     val showChrome = currentRoute in chromeRoutes
 
     // The drawer belongs only to the top-level chrome screens. While we are on ANY
@@ -193,6 +277,13 @@ fun RevayatoRoot(
                     RevayatoTopBar(
                         onMenu = { scope.launch { drawerState.open() } },
                         onSearch = { navController.navigate(Routes.SEARCH) { launchSingleTop = true } },
+                        onWatchParty = {
+                            if (isLoggedIn) {
+                                navController.navigate(Routes.WATCH_PARTY) { launchSingleTop = true }
+                            } else {
+                                navController.navigate(Routes.LOGIN)
+                            }
+                        },
                     )
                 }
             },
@@ -211,20 +302,48 @@ fun RevayatoRoot(
                 startDestination = Routes.HOME,
                 modifier = Modifier.fillMaxSize(),
                 enterTransition = {
-                    slideInHorizontally(tween(FAST_MOTION_MS, easing = FastOutSlowInEasing)) { it } +
-                        fadeIn(tween(FAST_MOTION_MS))
+                    val from = initialState.destination.route
+                    val to = targetState.destination.route
+                    when {
+                        to == Routes.PLAYER -> playerEnter()
+                        to == Routes.WATCH_PARTY_ROOM -> roomEnter()
+                        to == Routes.SEARCH -> searchEnter()
+                        from == Routes.PLAYER -> settleEnter()
+                        to in chromeRoutes && from in chromeRoutes -> tabEnter()
+                        to in authRoutes || from in authRoutes -> authEnter()
+                        else -> pageEnter()
+                    }
                 },
                 exitTransition = {
-                    slideOutHorizontally(tween(FAST_MOTION_MS, easing = FastOutSlowInEasing)) { -it / 4 } +
-                        fadeOut(tween(FAST_MOTION_MS))
+                    val from = initialState.destination.route
+                    val to = targetState.destination.route
+                    when {
+                        from == Routes.PLAYER -> cinemaExit()
+                        to == Routes.PLAYER -> cinemaExit()
+                        to == Routes.SEARCH || from == Routes.SEARCH -> fadeOut(tween(160))
+                        from in chromeRoutes && to in chromeRoutes -> tabExit()
+                        else -> pageExit()
+                    }
                 },
                 popEnterTransition = {
-                    slideInHorizontally(tween(FAST_MOTION_MS, easing = FastOutSlowInEasing)) { -it / 4 } +
-                        fadeIn(tween(FAST_MOTION_MS))
+                    val from = initialState.destination.route
+                    val to = targetState.destination.route
+                    when {
+                        to == Routes.PLAYER -> playerEnter()
+                        from == Routes.PLAYER -> settleEnter()
+                        from in chromeRoutes && to in chromeRoutes -> tabEnter()
+                        else -> popPageEnter()
+                    }
                 },
                 popExitTransition = {
-                    slideOutHorizontally(tween(FAST_MOTION_MS, easing = FastOutSlowInEasing)) { it } +
-                        fadeOut(tween(FAST_MOTION_MS))
+                    val from = initialState.destination.route
+                    val to = targetState.destination.route
+                    when {
+                        from == Routes.PLAYER -> cinemaExit()
+                        to == Routes.PLAYER -> cinemaExit()
+                        from in chromeRoutes && to in chromeRoutes -> tabExit()
+                        else -> popPageExit()
+                    }
                 },
             ) {
                 // ---- Home (start) ----
@@ -311,7 +430,7 @@ fun RevayatoRoot(
 
                 // ---- Search ----
                 composable(Routes.SEARCH) {
-                    Column(Modifier.fillMaxSize()) {
+                    Column(Modifier.fillMaxSize().navigationBarsPadding()) {
                         BackTopBar(title = "جستجو", onBack = navController::navigateUp)
                         SearchScreen(
                             onOpenTitle = navController::openTitle,
@@ -323,10 +442,11 @@ fun RevayatoRoot(
                 // ---- Watch party landing (login-gated) ----
                 composable(Routes.WATCH_PARTY) {
                     WatchPartyLandingScreen(
-                        modifier = Modifier.padding(innerPadding),
                         isLoggedIn = isLoggedIn,
                         onEnterRoom = { navController.navigate(Routes.watchPartyRoom(it)) },
                         onRequireLogin = { navController.navigate(Routes.LOGIN) },
+                        onBack = navController::navigateUp,
+                        onBrowseTitles = { goTab(TopLevelDestination.MOVIES.route) },
                     )
                 }
 
@@ -436,13 +556,13 @@ fun RevayatoRoot(
                         slug = entry.arguments?.getString("slug").orEmpty(),
                         onBack = navController::navigateUp,
                         onOpenTitle = navController::openTitle,
+                        modifier = Modifier.navigationBarsPadding(),
                     )
                 }
 
                 // ---- User collections ("کالکشن") & public profiles ----
                 composable(Routes.MY_COLLECTIONS) {
                     MyCollectionsScreen(
-                        modifier = Modifier.padding(innerPadding),
                         isLoggedIn = isLoggedIn,
                         onBack = navController::navigateUp,
                         onOpenCollection = { slug -> navController.navigate(Routes.myCollection(slug)) },
@@ -451,7 +571,6 @@ fun RevayatoRoot(
                 }
                 composable(Routes.MY_REQUESTS) {
                     MyRequestsScreen(
-                        modifier = Modifier.padding(innerPadding),
                         isLoggedIn = isLoggedIn,
                         onBack = navController::navigateUp,
                         onOpenRequest = { code -> navController.navigate(Routes.requestDetail(code)) },
@@ -463,7 +582,6 @@ fun RevayatoRoot(
                     arguments = listOf(navArgument("code") { type = NavType.StringType }),
                 ) { entry ->
                     RequestDetailScreen(
-                        modifier = Modifier.padding(innerPadding),
                         code = entry.arguments?.getString("code").orEmpty(),
                         onBack = navController::navigateUp,
                     )
@@ -473,7 +591,6 @@ fun RevayatoRoot(
                     arguments = listOf(navArgument("slug") { type = NavType.StringType }),
                 ) { entry ->
                     CollectionDetailScreen(
-                        modifier = Modifier.padding(innerPadding),
                         source = CollectionSource.Owned(entry.arguments?.getString("slug").orEmpty()),
                         onBack = navController::navigateUp,
                         onOpenTitle = navController::openTitle,
@@ -485,7 +602,6 @@ fun RevayatoRoot(
                     arguments = listOf(navArgument("token") { type = NavType.StringType }),
                 ) { entry ->
                     CollectionDetailScreen(
-                        modifier = Modifier.padding(innerPadding),
                         source = CollectionSource.Shared(entry.arguments?.getString("token").orEmpty()),
                         onBack = navController::navigateUp,
                         onOpenTitle = navController::openTitle,
@@ -500,7 +616,6 @@ fun RevayatoRoot(
                     ),
                 ) { entry ->
                     CollectionDetailScreen(
-                        modifier = Modifier.padding(innerPadding),
                         source = CollectionSource.Public(
                             username = entry.arguments?.getString("username").orEmpty(),
                             slug = entry.arguments?.getString("slug").orEmpty(),
@@ -515,7 +630,6 @@ fun RevayatoRoot(
                     arguments = listOf(navArgument("username") { type = NavType.StringType }),
                 ) { entry ->
                     PublicProfileScreen(
-                        modifier = Modifier.padding(innerPadding),
                         username = entry.arguments?.getString("username").orEmpty(),
                         onBack = navController::navigateUp,
                         onOpenCollection = { username, slug ->
@@ -547,6 +661,7 @@ fun RevayatoRoot(
                         initialSort = args?.getString("sort").orEmpty(),
                         onBack = navController::navigateUp,
                         onOpenTitle = navController::openTitle,
+                        modifier = Modifier.navigationBarsPadding(),
                     )
                 }
 
@@ -556,6 +671,7 @@ fun RevayatoRoot(
                         kind = "actors",
                         onBack = navController::navigateUp,
                         onOpenPerson = { slug -> navController.navigate(Routes.actorDetail(slug)) },
+                        modifier = Modifier.navigationBarsPadding(),
                     )
                 }
                 composable(Routes.DIRECTORS) {
@@ -563,6 +679,7 @@ fun RevayatoRoot(
                         kind = "directors",
                         onBack = navController::navigateUp,
                         onOpenPerson = { slug -> navController.navigate(Routes.directorDetail(slug)) },
+                        modifier = Modifier.navigationBarsPadding(),
                     )
                 }
                 composable(
@@ -574,6 +691,7 @@ fun RevayatoRoot(
                         slug = entry.arguments?.getString("slug").orEmpty(),
                         onBack = navController::navigateUp,
                         onOpenTitle = navController::openTitle,
+                        modifier = Modifier.navigationBarsPadding(),
                     )
                 }
                 composable(
@@ -585,6 +703,7 @@ fun RevayatoRoot(
                         slug = entry.arguments?.getString("slug").orEmpty(),
                         onBack = navController::navigateUp,
                         onOpenTitle = navController::openTitle,
+                        modifier = Modifier.navigationBarsPadding(),
                     )
                 }
                 composable(Routes.GENRES) {
@@ -595,6 +714,7 @@ fun RevayatoRoot(
                                 Routes.catalogList("movies", genre.title, genre = genre.slug, sort = "popular"),
                             )
                         },
+                        modifier = Modifier.navigationBarsPadding(),
                     )
                 }
                 composable(Routes.COUNTRIES) {
@@ -605,6 +725,7 @@ fun RevayatoRoot(
                                 Routes.catalogList("movies", name, country = filterValue, sort = "popular"),
                             )
                         },
+                        modifier = Modifier.navigationBarsPadding(),
                     )
                 }
 
@@ -619,7 +740,7 @@ fun RevayatoRoot(
                 // ---- Staff analytics dashboard ----
                 composable(Routes.DASHBOARD) {
                     DashboardScreen(
-                        modifier = Modifier.padding(innerPadding),
+                        modifier = Modifier.navigationBarsPadding(),
                         onBack = navController::navigateUp,
                     )
                 }
@@ -665,6 +786,7 @@ fun RevayatoRoot(
 private fun RevayatoTopBar(
     onMenu: () -> Unit,
     onSearch: () -> Unit,
+    onWatchParty: () -> Unit,
 ) {
     val topInset = WindowInsets.safeDrawing.asPaddingValues().calculateTopPadding()
     Row(
@@ -685,6 +807,12 @@ private fun RevayatoTopBar(
             modifier = Modifier.weight(1f),
         )
         ThemeToggle(height = 28.dp)
+        Spacer(Modifier.size(8.dp))
+        GlassButton(
+            icon = Icons.Rounded.Groups,
+            contentDescription = "تماشای گروهی",
+            onClick = onWatchParty,
+        )
         Spacer(Modifier.size(8.dp))
         GlassButton(icon = RevIcons.Search, contentDescription = "جستجو", onClick = onSearch)
     }

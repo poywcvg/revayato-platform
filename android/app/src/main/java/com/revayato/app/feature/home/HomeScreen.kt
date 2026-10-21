@@ -29,9 +29,11 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.PlayArrow
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
+import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.ReadOnlyComposable
 import androidx.compose.runtime.LaunchedEffect
@@ -53,6 +55,7 @@ import com.revayato.app.core.theme.AccentBlue
 import com.revayato.app.core.theme.AccentRed
 import com.revayato.app.core.theme.AccentYellow
 import com.revayato.app.core.theme.Brand
+import com.revayato.app.core.theme.OnBrand
 import com.revayato.app.core.theme.PlayAccent
 import com.revayato.app.core.ui.UiState
 import com.revayato.app.data.model.CatalogCardDto
@@ -82,6 +85,7 @@ fun HomeScreen(
     viewModel: HomeViewModel = hiltViewModel(),
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
+    val refreshing by viewModel.refreshing.collectAsStateWithLifecycle()
 
     when (val s = state) {
         is UiState.Loading -> LoadingState(modifier)
@@ -93,10 +97,13 @@ fun HomeScreen(
             onSeeAllRoute = onSeeAllRoute,
             onResume = onResume,
             onOpenGenre = onOpenGenre,
+            refreshing = refreshing,
+            onRefresh = viewModel::refresh,
         )
     }
 }
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun HomeContent(
     data: HomeData,
@@ -104,10 +111,17 @@ private fun HomeContent(
     onSeeAllRoute: (String) -> Unit,
     onResume: (WatchProgressEntry) -> Unit,
     onOpenGenre: (GenreDto) -> Unit,
+    refreshing: Boolean,
+    onRefresh: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    LazyColumn(
+    PullToRefreshBox(
+        isRefreshing = refreshing,
+        onRefresh = onRefresh,
         modifier = modifier.fillMaxSize(),
+    ) {
+    LazyColumn(
+        modifier = Modifier.fillMaxSize(),
         contentPadding = PaddingValues(bottom = 24.dp),
     ) {
         if (data.hero.isNotEmpty()) {
@@ -134,6 +148,7 @@ private fun HomeContent(
                 onSeeAll = rail.seeAllRoute?.let { route -> { onSeeAllRoute(route) } },
             )
         }
+    }
     }
 }
 
@@ -397,7 +412,7 @@ private fun HeroSlide(
                 onClick = { onOpen(item.contentType, item.slug) },
                 colors = ButtonDefaults.buttonColors(
                     containerColor = Brand,
-                    contentColor = Color(0xFF0D0D0D),
+                    contentColor = OnBrand,
                 ),
                 shape = RoundedCornerShape(12.dp),
             ) {

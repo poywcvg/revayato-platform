@@ -22,6 +22,7 @@ import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.gestures.detectVerticalDragGestures
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
@@ -45,8 +46,10 @@ import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.PlaylistPlay
 import androidx.compose.material.icons.rounded.AspectRatio
@@ -56,13 +59,17 @@ import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.ClosedCaption
 import androidx.compose.material.icons.rounded.FastForward
 import androidx.compose.material.icons.rounded.Flag
+import androidx.compose.material.icons.rounded.Forward10
 import androidx.compose.material.icons.rounded.GraphicEq
+import androidx.compose.material.icons.rounded.KeyboardArrowDown
+import androidx.compose.material.icons.rounded.KeyboardArrowUp
 import androidx.compose.material.icons.rounded.Lock
 import androidx.compose.material.icons.rounded.LockOpen
 import androidx.compose.material.icons.rounded.Pause
 import androidx.compose.material.icons.rounded.PlayArrow
 import androidx.compose.material.icons.rounded.Refresh
 import androidx.compose.material.icons.rounded.Replay
+import androidx.compose.material.icons.rounded.Replay10
 import androidx.compose.material.icons.rounded.Settings
 import androidx.compose.material.icons.rounded.SkipNext
 import androidx.compose.material.icons.rounded.VolumeUp
@@ -100,11 +107,14 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.platform.LocalView
+import androidx.compose.ui.text.font.Font
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
@@ -112,6 +122,7 @@ import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.media3.ui.AspectRatioFrameLayout
 import androidx.media3.ui.PlayerView
+import com.revayato.app.R
 import com.revayato.app.core.theme.AccentYellow
 import com.revayato.app.core.theme.BgElevated
 import com.revayato.app.core.theme.Brand
@@ -120,6 +131,8 @@ import com.revayato.app.core.theme.OnPlayAccent
 import com.revayato.app.core.theme.PlayAccent
 import com.revayato.app.core.theme.PlayAccentSoft
 import com.revayato.app.core.theme.TextSecondary
+import com.revayato.app.core.theme.motionScale
+import com.revayato.app.core.theme.rememberedPressScale
 import com.revayato.app.ui.components.NetworkImage
 import kotlin.math.roundToInt
 import kotlinx.coroutines.delay
@@ -422,22 +435,11 @@ fun PlayerScreen(
                 onAudio = { showAudioSheet = true },
                 hasEpisodes = state.seasons.isNotEmpty(),
                 onEpisodes = { showEpisodesSheet = true },
-                onReport = {
-                    viewModel.resetContentReport()
-                    showReportSheet = true
-                },
-                resizeModeIndex = resizeModeIndex,
-                onCycleResize = { resizeModeIndex = (resizeModeIndex + 1) % 3 },
                 onLock = {
                     locked = true
                     controlsVisible = false
                 },
                 onCycleSpeed = { viewModel.setSpeed(nextSpeed(state.playbackSpeed)) },
-                appearance = subtitleAppearance,
-                onAppearanceChange = { updated ->
-                    subtitleAppearance = updated
-                    saveSubtitleAppearance(context, updated)
-                },
             )
         }
 
@@ -481,15 +483,35 @@ fun PlayerScreen(
                 onSpeed = { viewModel.setSpeed(it) },
                 onQuality = { viewModel.selectQuality(it) },
                 onSubtitleSync = { viewModel.nudgeSubtitleOffset(it) },
+                resizeModeIndex = resizeModeIndex,
+                onResizeMode = { resizeModeIndex = it },
+                onReport = {
+                    showSettingsSheet = false
+                    viewModel.resetContentReport()
+                    showReportSheet = true
+                },
+                onLock = {
+                    showSettingsSheet = false
+                    locked = true
+                    controlsVisible = false
+                },
             )
         }
     }
     if (showSubtitleSheet) {
-        ModalBottomSheet(onDismissRequest = { showSubtitleSheet = false }) {
+        ModalBottomSheet(
+            onDismissRequest = { showSubtitleSheet = false },
+            containerColor = BgElevated,
+        ) {
             SubtitleSheet(
                 subtitles = state.subtitles.map { it.label },
                 activeIndex = state.activeSubtitleIndex,
                 loading = state.subtitleLoading,
+                appearance = subtitleAppearance,
+                onAppearanceChange = { updated ->
+                    subtitleAppearance = updated
+                    saveSubtitleAppearance(context, updated)
+                },
                 onSelect = {
                     viewModel.selectSubtitleByUser(it)
                     showSubtitleSheet = false
@@ -642,13 +664,8 @@ private fun PlayerControls(
     onAudio: () -> Unit,
     hasEpisodes: Boolean,
     onEpisodes: () -> Unit,
-    onReport: () -> Unit,
-    resizeModeIndex: Int,
-    onCycleResize: () -> Unit,
     onLock: () -> Unit,
     onCycleSpeed: () -> Unit,
-    appearance: SubtitleAppearance,
-    onAppearanceChange: (SubtitleAppearance) -> Unit,
 ) {
     val insets = WindowInsets.safeDrawing.asPaddingValues()
     androidx.compose.runtime.CompositionLocalProvider(LocalLayoutDirection provides LayoutDirection.Ltr) {
@@ -666,144 +683,125 @@ private fun PlayerControls(
                     ),
                 ),
         ) {
-            // --- Top bar: exit (left) · settings (centre) · subtitle/audio (right) ---
-            val topPad = Modifier
-                .fillMaxWidth()
-                .padding(top = insets.calculateTopPadding())
-                .padding(horizontal = 12.dp, vertical = 8.dp)
-            Box(modifier = topPad.align(Alignment.TopCenter)) {
-                // Exit — left edge.
-                TopChip(
-                    icon = Icons.Rounded.Close,
-                    text = "خروج",
-                    onClick = onBack,
-                    modifier = Modifier.align(Alignment.CenterStart),
-                )
-                // Settings + report — centred pair.
-                Row(
-                    modifier = Modifier.align(Alignment.Center),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    TopChip(
-                        icon = Icons.Rounded.Settings,
-                        text = "تنظیمات",
-                        onClick = onSettings,
-                    )
-                    TopChip(
-                        icon = Icons.Rounded.Flag,
-                        text = "گزارش خطا",
-                        onClick = onReport,
-                        tint = AccentYellow,
-                    )
-                }
-                // Subtitle / audio / episodes — right edge.
-                Row(
-                    modifier = Modifier.align(Alignment.CenterEnd),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    if (hasEpisodes) {
-                        TopChip(
-                            icon = Icons.AutoMirrored.Rounded.PlaylistPlay,
-                            text = "قسمت‌ها",
-                            onClick = onEpisodes,
-                        )
-                    }
-                    TopChip(
-                        icon = Icons.Rounded.ClosedCaption,
-                        text = "${state.subtitles.size} زیرنویس",
-                        onClick = onSubtitles,
-                        tint = if (state.activeSubtitleIndex >= 0) Brand else Color.White,
-                    )
-                    TopChip(
-                        icon = Icons.Rounded.GraphicEq,
-                        text = "${state.audioTracks.size.coerceAtLeast(1)} صدا",
-                        onClick = onAudio,
-                    )
-                }
-            }
-
-            // --- Centre: single play / pause ---
-            CircleControl(
-                onClick = onPlayPause,
-                size = 82.dp,
-                background = Color(0x33FFFFFF),
-                modifier = Modifier.align(Alignment.Center),
+            // --- Top bar: exit · title · settings ---
+            Row(
+                modifier = Modifier
+                    .align(Alignment.TopCenter)
+                    .fillMaxWidth()
+                    .padding(top = insets.calculateTopPadding())
+                    .padding(horizontal = 16.dp, vertical = 10.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(12.dp),
             ) {
-                Icon(
-                    imageVector = if (state.playWhenReady && !state.ended) Icons.Rounded.Pause else Icons.Rounded.PlayArrow,
-                    contentDescription = "پخش/توقف",
-                    tint = Color.White,
-                    modifier = Modifier.size(50.dp),
+                GlassPlayerButton(
+                    icon = Icons.Rounded.Close,
+                    label = "خروج",
+                    onClick = onBack,
+                )
+                Column(
+                    modifier = Modifier.weight(1f),
+                    verticalArrangement = Arrangement.spacedBy(1.dp),
+                ) {
+                    Text(
+                        text = "در حال پخش",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = Color.White.copy(alpha = 0.64f),
+                    )
+                    Text(
+                        text = state.title.ifBlank { "روایتو" },
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.Bold,
+                        color = Color.White,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
+                GlassPlayerButton(
+                    icon = Icons.Rounded.Settings,
+                    label = "تنظیمات",
+                    onClick = onSettings,
                 )
             }
 
-            // --- Bottom: clusters + seek bar ---
+            // --- Centre: rewind 10s · play/pause · forward 10s ---
+            Row(
+                modifier = Modifier.align(Alignment.Center),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(30.dp),
+            ) {
+                SkipControl(
+                    forward = false,
+                    onClick = { onSeek((state.positionMs - 10_000L).coerceAtLeast(0L)) },
+                )
+                CircleControl(
+                    onClick = onPlayPause,
+                    size = 78.dp,
+                    background = Color(0x40FFFFFF),
+                    modifier = Modifier.border(1.dp, Color.White.copy(alpha = 0.18f), CircleShape),
+                ) {
+                    Icon(
+                        imageVector = if (state.playWhenReady && !state.ended) Icons.Rounded.Pause else Icons.Rounded.PlayArrow,
+                        contentDescription = "پخش/توقف",
+                        tint = Color.White,
+                        modifier = Modifier.size(46.dp),
+                    )
+                }
+                SkipControl(
+                    forward = true,
+                    onClick = {
+                        val target = state.positionMs + 10_000L
+                        onSeek(if (state.durationMs > 0) target.coerceAtMost(state.durationMs) else target)
+                    },
+                )
+            }
+
+            // --- Bottom: timeline · utility controls ---
             Column(
                 modifier = Modifier
                     .align(Alignment.BottomCenter)
                     .fillMaxWidth()
                     .padding(bottom = insets.calculateBottomPadding())
-                    .padding(horizontal = 16.dp, vertical = 10.dp),
-                verticalArrangement = Arrangement.spacedBy(6.dp),
+                    .padding(horizontal = 18.dp, vertical = 10.dp),
+                verticalArrangement = Arrangement.spacedBy(10.dp),
             ) {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    // Bottom-left cluster: lock · aspect · speed.
-                    Row(
-                        horizontalArrangement = Arrangement.spacedBy(6.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        LockToggle(locked = false, onClick = onLock)
-                        PlayerGlyphButton(
-                            icon = Icons.Rounded.AspectRatio,
-                            label = "نسبت تصویر",
-                            onClick = onCycleResize,
-                            tint = if (resizeModeIndex == 0) Color.White else Brand,
-                        )
-                        Box(
-                            modifier = Modifier
-                                .clip(CircleShape)
-                                .clickable(onClick = onCycleSpeed)
-                                .padding(horizontal = 8.dp, vertical = 6.dp),
-                            contentAlignment = Alignment.Center,
-                        ) {
-                            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                                Icon(
-                                    Icons.Rounded.FastForward,
-                                    contentDescription = "سرعت پخش",
-                                    tint = if (state.playbackSpeed == 1f) Color.White else Brand,
-                                    modifier = Modifier.size(24.dp),
-                                )
-                                if (state.playbackSpeed != 1f) {
-                                    Text(
-                                        "${formatSpeed(state.playbackSpeed)}×",
-                                        color = Brand,
-                                        style = MaterialTheme.typography.labelMedium,
-                                        fontWeight = FontWeight.Bold,
-                                    )
-                                }
-                            }
-                        }
-                    }
-                    Spacer(Modifier.weight(1f))
-                    // Bottom-right cluster: subtitle appearance controls.
-                    SubtitleAppearanceCluster(
-                        appearance = appearance,
-                        onAppearanceChange = onAppearanceChange,
-                    )
-                }
-
-                // Timeline, left-to-right like every player (elapsed left, total right).
                 SeekTimeline(
                     positionMs = state.positionMs,
                     durationMs = state.durationMs,
                     bufferedMs = state.bufferedMs,
                     onSeek = onSeek,
                 )
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(4.dp),
+                ) {
+                    LockToggle(locked = false, onClick = onLock)
+                    PlayerPill(
+                        icon = Icons.Rounded.FastForward,
+                        text = if (state.playbackSpeed == 1f) "سرعت" else "${formatSpeed(state.playbackSpeed)}×",
+                        onClick = onCycleSpeed,
+                        active = state.playbackSpeed != 1f,
+                    )
+                    if (hasEpisodes) {
+                        PlayerPill(
+                            icon = Icons.AutoMirrored.Rounded.PlaylistPlay,
+                            text = "قسمت‌ها",
+                            onClick = onEpisodes,
+                        )
+                    }
+                    Spacer(Modifier.weight(1f))
+                    PlayerPill(
+                        icon = Icons.Rounded.ClosedCaption,
+                        text = if (state.activeSubtitleIndex >= 0) "زیرنویس" else "زیرنویس",
+                        onClick = onSubtitles,
+                        active = state.activeSubtitleIndex >= 0,
+                    )
+                    PlayerPill(
+                        icon = Icons.Rounded.GraphicEq,
+                        text = "صدا",
+                        onClick = onAudio,
+                    )
+                }
             }
         }
     }
@@ -919,26 +917,84 @@ private fun SeekTimeline(
     }
 }
 
-/** A rounded pill (icon + short label) used across the player's top bar. */
+/** Circular glass control used for exit and settings in the player's top bar. */
 @Composable
-private fun TopChip(
+private fun GlassPlayerButton(
+    icon: androidx.compose.ui.graphics.vector.ImageVector,
+    label: String,
+    onClick: () -> Unit,
+) {
+    val interaction = remember { MutableInteractionSource() }
+    val scale = rememberedPressScale(interaction, pressedScale = 0.92f)
+    Box(
+        modifier = Modifier
+            .size(44.dp)
+            .motionScale(scale)
+            .clip(CircleShape)
+            .background(Color.Black.copy(alpha = 0.38f))
+            .border(1.dp, Color.White.copy(alpha = 0.16f), CircleShape)
+            .clickable(interactionSource = interaction, indication = null, onClick = onClick),
+        contentAlignment = Alignment.Center,
+    ) {
+        Icon(icon, contentDescription = label, tint = Color.White, modifier = Modifier.size(22.dp))
+    }
+}
+
+/** Rounded utility pill used along the player's bottom bar. */
+@Composable
+private fun PlayerPill(
     icon: androidx.compose.ui.graphics.vector.ImageVector,
     text: String,
     onClick: () -> Unit,
-    modifier: Modifier = Modifier,
-    tint: Color = Color.White,
+    active: Boolean = false,
 ) {
+    val interaction = remember { MutableInteractionSource() }
+    val scale = rememberedPressScale(interaction, pressedScale = 0.94f)
+    val tint = if (active) Brand else Color.White
     Row(
-        modifier = modifier
+        modifier = Modifier
+            .motionScale(scale)
             .clip(RoundedCornerShape(999.dp))
-            .background(Color(0x40000000))
-            .clickable(onClick = onClick)
-            .padding(horizontal = 12.dp, vertical = 7.dp),
+            .background(Color.Black.copy(alpha = 0.40f))
+            .then(
+                if (active) Modifier.border(1.dp, Brand.copy(alpha = 0.55f), RoundedCornerShape(999.dp))
+                else Modifier,
+            )
+            .clickable(interactionSource = interaction, indication = null, onClick = onClick)
+            .padding(horizontal = 11.dp, vertical = 7.dp),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(6.dp),
     ) {
-        Icon(icon, contentDescription = text, tint = tint, modifier = Modifier.size(18.dp))
-        Text(text, color = tint, style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.SemiBold)
+        Icon(icon, contentDescription = text, tint = tint, modifier = Modifier.size(19.dp))
+        Text(
+            text = text,
+            color = tint,
+            style = MaterialTheme.typography.labelMedium,
+            fontWeight = FontWeight.SemiBold,
+        )
+    }
+}
+
+/** A circular 10-second skip control flanking the main play/pause button. */
+@Composable
+private fun SkipControl(forward: Boolean, onClick: () -> Unit) {
+    val interaction = remember { MutableInteractionSource() }
+    val scale = rememberedPressScale(interaction, pressedScale = 0.90f)
+    Box(
+        modifier = Modifier
+            .size(54.dp)
+            .motionScale(scale)
+            .clip(CircleShape)
+            .background(Color.Black.copy(alpha = 0.24f))
+            .clickable(interactionSource = interaction, indication = null, onClick = onClick),
+        contentAlignment = Alignment.Center,
+    ) {
+        Icon(
+            imageVector = if (forward) Icons.Rounded.Forward10 else Icons.Rounded.Replay10,
+            contentDescription = if (forward) "۱۰ ثانیه جلو" else "۱۰ ثانیه عقب",
+            tint = Color.White,
+            modifier = Modifier.size(32.dp),
+        )
     }
 }
 
@@ -1103,11 +1159,14 @@ private fun CircleControl(
     modifier: Modifier = Modifier,
     content: @Composable () -> Unit,
 ) {
+    val interaction = remember { MutableInteractionSource() }
+    val scale = rememberedPressScale(interaction, pressedScale = 0.92f)
     Box(
         modifier = modifier
             .size(size)
+            .motionScale(scale)
             .background(background, CircleShape)
-            .clickable(onClick = onClick),
+            .clickable(interactionSource = interaction, indication = null, onClick = onClick),
         contentAlignment = Alignment.Center,
     ) { content() }
 }
@@ -1123,6 +1182,10 @@ private fun SettingsSheet(
     onSpeed: (Float) -> Unit,
     onQuality: (String) -> Unit,
     onSubtitleSync: (Long) -> Unit,
+    resizeModeIndex: Int,
+    onResizeMode: (Int) -> Unit,
+    onReport: () -> Unit,
+    onLock: () -> Unit,
 ) {
     Column(
         modifier = Modifier
@@ -1131,7 +1194,25 @@ private fun SettingsSheet(
             .padding(bottom = 24.dp),
         verticalArrangement = Arrangement.spacedBy(18.dp),
     ) {
-        Text("تنظیمات", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
+        Text("تنظیمات پخش", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
+
+        // --- Picture fit ---
+        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Text("نسبت تصویر", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                listOf("تطبیق", "پر کردن", "کشیده").forEachIndexed { index, label ->
+                    SelectableChip(
+                        label = label,
+                        selected = resizeModeIndex == index,
+                        onClick = { onResizeMode(index) },
+                        modifier = Modifier.weight(1f),
+                    )
+                }
+            }
+        }
 
         // --- Subtitle sync ---
         Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -1187,6 +1268,51 @@ private fun SettingsSheet(
                 }
             }
         }
+
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(10.dp),
+        ) {
+            SettingsActionButton(
+                icon = Icons.Rounded.Flag,
+                label = "گزارش مشکل",
+                onClick = onReport,
+                modifier = Modifier.weight(1f),
+            )
+            SettingsActionButton(
+                icon = Icons.Rounded.Lock,
+                label = "قفل صفحه",
+                onClick = onLock,
+                modifier = Modifier.weight(1f),
+            )
+        }
+    }
+}
+
+/** A quiet outlined action at the bottom of the settings sheet. */
+@Composable
+private fun SettingsActionButton(
+    icon: androidx.compose.ui.graphics.vector.ImageVector,
+    label: String,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    Row(
+        modifier = modifier
+            .clip(RoundedCornerShape(14.dp))
+            .background(NeutralSurface)
+            .clickable(onClick = onClick)
+            .padding(horizontal = 14.dp, vertical = 13.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        Icon(icon, contentDescription = null, tint = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.size(19.dp))
+        Text(
+            label,
+            style = MaterialTheme.typography.labelLarge,
+            fontWeight = FontWeight.SemiBold,
+            color = MaterialTheme.colorScheme.onSurface,
+        )
     }
 }
 
@@ -1229,20 +1355,210 @@ private fun AudioSheet(
     }
 }
 
-/** Track-selection-only subtitle picker (appearance lives on the player overlay). */
+/** Subtitle track picker plus live caption appearance controls. */
 @Composable
 private fun SubtitleSheet(
     subtitles: List<String>,
     activeIndex: Int,
     loading: Boolean,
+    appearance: SubtitleAppearance,
+    onAppearanceChange: (SubtitleAppearance) -> Unit,
     onSelect: (Int) -> Unit,
 ) {
-    Column(modifier = Modifier.fillMaxWidth().padding(16.dp)) {
-        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .verticalScroll(rememberScrollState())
+            .padding(horizontal = 20.dp)
+            .padding(bottom = 26.dp),
+        verticalArrangement = Arrangement.spacedBy(16.dp),
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(10.dp),
+        ) {
             Text("زیرنویس", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
-            if (loading) CircularProgressIndicator(color = Brand, strokeWidth = 2.dp, modifier = Modifier.size(16.dp))
+            if (loading) {
+                CircularProgressIndicator(color = Brand, strokeWidth = 2.dp, modifier = Modifier.size(16.dp))
+            }
+            Spacer(Modifier.weight(1f))
+            Text(
+                text = "بازنشانی",
+                style = MaterialTheme.typography.labelLarge,
+                color = Brand,
+                modifier = Modifier
+                    .clip(RoundedCornerShape(8.dp))
+                    .clickable { onAppearanceChange(SubtitleAppearance()) }
+                    .padding(horizontal = 8.dp, vertical = 6.dp),
+            )
         }
-        Spacer(Modifier.size(8.dp))
+
+        // Live preview: font, size, colour and vertical position all update exactly
+        // as they will over the picture. The 16:9 frame makes the position tangible.
+        BoxWithConstraints(
+            modifier = Modifier
+                .fillMaxWidth()
+                .aspectRatio(16f / 9f)
+                .clip(RoundedCornerShape(16.dp))
+                .background(Color(0xFF0B0B0D))
+                .border(1.dp, Color.White.copy(alpha = 0.08f), RoundedCornerShape(16.dp)),
+        ) {
+            Box(
+                Modifier
+                    .fillMaxSize()
+                    .background(
+                        Brush.verticalGradient(
+                            0f to Color(0xFF202027),
+                            1f to Color(0xFF070708),
+                        ),
+                    ),
+            )
+            Text(
+                text = "پیش‌نمایش زنده",
+                style = MaterialTheme.typography.labelSmall,
+                color = Color.White.copy(alpha = 0.5f),
+                modifier = Modifier
+                    .align(Alignment.TopEnd)
+                    .padding(10.dp),
+            )
+            Text(
+                text = "نمونهٔ زیرنویس فارسی",
+                color = Color(appearance.color.fg),
+                fontSize = appearance.size.sp.coerceIn(14f, 26f).sp,
+                fontFamily = appearance.font.previewFamily(),
+                fontWeight = FontWeight.Bold,
+                textAlign = TextAlign.Center,
+                modifier = Modifier
+                    .align(Alignment.BottomCenter)
+                    .padding(horizontal = 18.dp)
+                    .padding(
+                        bottom = (maxHeight * appearance.bottomPaddingFraction)
+                            .coerceIn(12.dp, maxHeight * 0.34f),
+                    ),
+            )
+        }
+
+        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Text("اندازه", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
+            LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                items(SubtitleSize.entries, key = { it.name }) { size ->
+                    SelectableChip(
+                        label = size.title,
+                        selected = appearance.size == size,
+                        onClick = { onAppearanceChange(appearance.copy(size = size)) },
+                    )
+                }
+            }
+        }
+
+        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Text("فونت", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
+            LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                items(SubtitleFont.entries, key = { it.name }) { font ->
+                    SelectableChip(
+                        label = font.title,
+                        selected = appearance.font == font,
+                        onClick = { onAppearanceChange(appearance.copy(font = font)) },
+                    )
+                }
+            }
+        }
+
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(
+                "رنگ",
+                style = MaterialTheme.typography.titleSmall,
+                fontWeight = FontWeight.Bold,
+            )
+            Spacer(Modifier.width(14.dp))
+            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                SubtitleColor.entries.forEach { color ->
+                    val selected = appearance.color == color
+                    val interaction = remember { MutableInteractionSource() }
+                    val scale = rememberedPressScale(interaction, pressedScale = 0.90f)
+                    Box(
+                        modifier = Modifier
+                            .size(32.dp)
+                            .motionScale(scale)
+                            .clip(CircleShape)
+                            .background(Color(color.fg))
+                            .border(
+                                width = if (selected) 3.dp else 1.dp,
+                                color = if (selected) PlayAccent else Color.White.copy(alpha = 0.35f),
+                                shape = CircleShape,
+                            )
+                            .clickable(interactionSource = interaction, indication = null) {
+                                onAppearanceChange(appearance.copy(color = color))
+                            },
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        if (selected) {
+                            Box(
+                                Modifier
+                                    .size(8.dp)
+                                    .clip(CircleShape)
+                                    .background(Color.Black.copy(alpha = 0.45f)),
+                            )
+                        }
+                    }
+                }
+            }
+        }
+
+        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Text(
+                "جای زیرنویس روی تصویر",
+                style = MaterialTheme.typography.titleSmall,
+                fontWeight = FontWeight.Bold,
+            )
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                SettingsActionButton(
+                    icon = Icons.Rounded.KeyboardArrowUp,
+                    label = "بالاتر",
+                    onClick = {
+                        onAppearanceChange(
+                            appearance.copy(
+                                bottomPaddingFraction = (appearance.bottomPaddingFraction + 0.03f).coerceIn(0.04f, 0.45f),
+                            ),
+                        )
+                    },
+                    modifier = Modifier.weight(1f),
+                )
+                SettingsActionButton(
+                    icon = Icons.Rounded.KeyboardArrowDown,
+                    label = "پایین‌تر",
+                    onClick = {
+                        onAppearanceChange(
+                            appearance.copy(
+                                bottomPaddingFraction = (appearance.bottomPaddingFraction - 0.03f).coerceIn(0.04f, 0.45f),
+                            ),
+                        )
+                    },
+                    modifier = Modifier.weight(1f),
+                )
+            }
+            Text(
+                "تغییرات همان لحظه روی پیش‌نمایش و پخش اعمال می‌شوند.",
+                style = MaterialTheme.typography.bodySmall,
+                color = TextSecondary,
+            )
+        }
+
+        if (subtitles.isNotEmpty()) {
+            Text(
+                "ترک زیرنویس",
+                style = MaterialTheme.typography.titleSmall,
+                fontWeight = FontWeight.Bold,
+                modifier = Modifier.padding(top = 2.dp),
+            )
+        }
         SubtitleOption("خاموش", activeIndex == -1) { onSelect(-1) }
         subtitles.forEachIndexed { index, label ->
             SubtitleOption(label, activeIndex == index) { onSelect(index) }
@@ -1251,34 +1567,48 @@ private fun SubtitleSheet(
             LinearProgressIndicator(
                 color = Brand,
                 trackColor = Color(0x33FFFFFF),
-                modifier = Modifier.fillMaxWidth().padding(top = 12.dp),
+                modifier = Modifier.fillMaxWidth().padding(top = 4.dp),
             )
             Text(
                 "در حال دریافت زیرنویس فارسی از سرور…",
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.padding(vertical = 12.dp),
             )
         }
     }
 }
 
+/** Compose equivalent of the Media3 typeface used on the real captions. */
+private fun SubtitleFont.previewFamily(): FontFamily = when (this) {
+    SubtitleFont.VAZIR -> FontFamily(Font(R.font.vazirmatn_bold, FontWeight.Bold))
+    SubtitleFont.SANS -> FontFamily.SansSerif
+    SubtitleFont.SERIF -> FontFamily.Serif
+    SubtitleFont.MONO -> FontFamily.Monospace
+}
+
 /** A pill toggle used for the subtitle font/size choices. */
 @Composable
-private fun SelectableChip(label: String, selected: Boolean, onClick: () -> Unit) {
+private fun SelectableChip(
+    label: String,
+    selected: Boolean,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
     Box(
-        modifier = Modifier
+        modifier = modifier
             .clip(RoundedCornerShape(999.dp))
             .background(if (selected) PlayAccentSoft else NeutralSurface)
             .then(if (selected) Modifier.border(1.dp, PlayAccent, RoundedCornerShape(999.dp)) else Modifier)
             .clickable(onClick = onClick)
             .padding(horizontal = 16.dp, vertical = 9.dp),
+        contentAlignment = Alignment.Center,
     ) {
         Text(
             label,
             style = MaterialTheme.typography.labelLarge,
             color = if (selected) PlayAccent else MaterialTheme.colorScheme.onSurface,
             fontWeight = if (selected) FontWeight.Bold else FontWeight.Normal,
+            textAlign = TextAlign.Center,
         )
     }
 }

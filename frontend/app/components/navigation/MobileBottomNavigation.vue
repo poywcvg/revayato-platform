@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import type { CinematicIconName } from '~/types'
 
-type MobileTabKey = 'home' | 'movies' | 'series' | 'search' | 'profile'
+type MobileTabKey = 'home' | 'movies' | 'series' | 'app' | 'profile'
 
 interface MobileTab {
   key: MobileTabKey
@@ -21,7 +21,7 @@ const tabs = computed<MobileTab[]>(() => [
   { key: 'home', label: 'خانه', to: '/', icon: 'home', match: path => path === '/' || path === '/welcome' },
   { key: 'movies', label: 'فیلم‌ها', to: '/movies', icon: 'movie', match: path => path.startsWith('/movies') },
   { key: 'series', label: 'سریال‌ها', to: '/series', icon: 'series', match: path => path.startsWith('/series') },
-  { key: 'search', label: 'جستجو', to: '/search', icon: 'search', match: path => path.startsWith('/search') },
+  { key: 'app', label: 'اپلیکیشن', to: '/app', icon: 'smartphone', match: path => path.startsWith('/app') },
   {
     key: 'profile',
     label: 'پروفایل',
